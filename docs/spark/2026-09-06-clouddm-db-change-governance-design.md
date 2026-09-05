@@ -1,7 +1,7 @@
 # CloudDM 数据库变更治理平台二次开发 · 业务方案设计 Spec
 
-> 日期：2026-09-06（rev.2：语句级版本化与失败修正闭环并入）
-> 状态：已与需求方逐节确认定稿（待最终审阅）
+> 日期：2026-09-06（rev.2：语句级版本化与失败修正闭环并入；rev.2.1：Phase 0 十项验证结论回填——触点 #6 锁定 `replaceTask`、新增触点 #7 `convertToChangeForm` 治理分支、SYSTEM 定向代审通道落定、D16 裁决入档）
+> 状态：已与需求方逐节确认定稿（审阅通过，已入库 main；§13 验证清单已完成回填）
 > 输入来源：`.claude/READY_PLAN.md`（治理平台愿景与调研任务书）、`.claude/CLOUDDM_SECOND_DEVELOPMENT_CODE_DESIGN.md`（P0 代码级实施设计）、`AGENTS.md`（工程规则）、open-cdm 4.2.0 代码库三轮实勘（现有能力地图 / 工单执行链细节 / AutoExec 多语句执行语义）
 > 产出方式：spark 头脑风暴流程，15 项关键决策逐一确认，全部设计断言以仓库真实代码为准
 
@@ -20,12 +20,13 @@
 | D7 | PRE 审批 | **按环境可配，PRE 默认全自动**（规则审计通过即由系统代审代确认执行）；**PROD 强制审批，不可配置关闭**；PRE 的 DDL 与 DML 对称自动（如需 PRE DML 人审，环境配置即可实现，不改代码） |
 | D8 | 部署形态 | **boot-alone 单机一体**；"禁止直连生产"靠补偿控制（见 §2.4）；幂等用 DB 唯一约束，不用分布式锁 |
 | D9 | 治理层结构 | **方案 A：新增治理域表 + 与工单弱关联**——治理表持有工单 id（主关联），`dm_approval.ticket_info`（`ApprovalMO` JSON）扩展治理引用字段（反向引用，零表结构改动）；`features` 列是纯枚举（`ApprovalFeature.PRE_INIT`）不可用作扩展槽 |
-| D10 | 多方言 | **MySQL 与 PostgreSQL 同时进入 P0**；治理层方言无关，方言差异收敛到 3 个触点（审计规则集按 `ruleDsRange` 路由 / Preflight 走现有 schema 元数据 SPI / DML Explain 的 PG 支持为实施期验证项）；语句与整单 hash 采用**方言中立契约**：`SHA256(原文 + 确定性空白规范化)`，字节级冻结、零改写，弃用 CODE_DESIGN 的 `normalized_sql` 重构方案 |
+| D10 | 多方言 | **MySQL 与 PostgreSQL 同时进入 P0**；治理层方言无关，方言差异收敛到 3 个触点（审计规则集按 `ruleDsRange` 路由 / Preflight 走现有 schema 元数据 SPI【已验证 §13-8】 / DML Explain 的 PG 支持【已验证 §13-3：部分支持，降级零代码】）；语句与整单 hash 采用**方言中立契约**：`SHA256(原文 + 确定性空白规范化)`，字节级冻结、零改写，弃用 CODE_DESIGN 的 `normalized_sql` 重构方案 |
 | D11 | 生产 DML 双入口 | 新增**路径 B：直发生产 DML**（定制化数据 PRE/PROD 不一致的正当场景），约束包全收：仅 DML（parser 行为判定）＋环境开关默认关＋专用权限标签＋回滚 SQL 强制＋EXPLAIN 影响行数阈值分级＋同一 Guard/Preflight/幂等/Timeline |
 | D12 | 执行确认 | **按环境可配，默认人工**：审批通过后由持确认权限者在平台点"确认执行"（触发行前 Guard+Preflight），形成"钉钉审批＋平台执行确认"双控；可配"审批通过即自动确认"（自动路径同样必经 Guard+Preflight） |
 | D13 | CI/CD 边界 | 治理链路**只走工单入口**；不结合、不修改、不依赖 CI/CD 变更流模块（`dm_change_flow`、`ChangeActionForApproval`、前端 `views/cicd/` 零改动）。CI/CD/GitOps 集成归 P2 |
 | D14 | **语句级版本化与失败修正闭环** | Revision 升级为**逐句 manifest**（idx/hash/version/pre_exec）；新增 `dm_db_change_stmt_version` 语句版本历史表；**PRE 修正闭环**：语句执行失败（预检全过后）→ 失败即停、整单 EXEC_FAIL → 推送钉钉通知（复用 `DingTalkMsgSendSpi`/`ImSenderService`，含语句定位+错误+深链）→ 提交人在平台修正该语句 → 版本+1 → 增量审计 → 替换执行任务 → `retryJob` 断点续跑（已成功语句不重放，引擎原生）；**门禁升级逐句比对**（门禁一：manifest 逐条一致+每句 pre_exec=SUCCESS；门禁二：整单+逐句 hash 复验）；**PROD 不允许就地修正**（通知机制复用，入口指向处置页：瞬态→retryJob、改 SQL→回 PRE）；路径 B 失败需改 SQL → 重新提交新的路径 B 工单（新 revision、重新审批）。废弃前一版"血缘新工单+语句跳过账本"设计 |
 | D15 | **执行配置策略（成分路由）** | **允许混合工单，不强制分单**；治理层按 parser 逐句判定成分路由执行配置：**纯 DML 单强制 `enableTransactional=true`**（整单一个事务，失败全回滚，PRE/PROD 同语义）；**含 DDL（纯 DDL 或混合）强制逐条 autocommit + `errorStrategy=NONE`**（失败即停），禁用事务模式（守卫引擎缺失的 MySQL DDL 隐式提交击穿事务问题）；治理工单**一律强制 NONE**（某句失败→定位该句→整单停止→退回提交人）；**治理 PROD 工单禁用 SKIP**（`errorStrategy` 不可选 SKIP，且 `skipTask`/`continueTask` 接口对治理 PROD 工单硬拦截——生产执行集必须=审批集）；配置由治理层注入（PRE 系统代审代确认时写入 `autoExecConfig`；PROD 人工确认界面锁定+门禁二校验 job config 合规），确认人不可改 |
+| D16 | **Phase 0 验证裁决（2026-09-06 回填）** | §13 十项验证全部完成（证据：`.trellis/tasks/09-06-gov-phase0-verification/research/`），三项裁决：① 语句替换锁定方案 (a) `AutoExecService.replaceTask`（触点 #6 落定）；⑥ 生产确认标签**复用 `RDP_WORKER_ORDER_EXECUTE`**，不新增 `RDP_DB_CHANGE_PROD_CONFIRM`；⑦ 治理审批表单 = **扩展 `convertToChangeForm` 加治理分支**（新增触点 #7，核心触点 6→7）。另：② SYSTEM 代审落定为定向通道（审批环节仿 `refreshApprovalStatus` 先例、确认环节新增 SYSTEM 入口） |
 
 ---
 
@@ -127,16 +128,17 @@
 
 代码归属（与现有模块边界一致）：治理层业务逻辑 → `cgdm-console`；DO/Mapper → `cgdm-dao`（MyBatis，XML 排版遵循 `DmApprovalProcessMapper.xml` 参考与 AGENTS.md Mapper 规则）；平台元数据库脚本 → `boot-initialization` Flyway Java；前端 → 现有 `views/` + `services/http/api/` 模式。**CI/CD 模块零改动（D13）。**
 
-### 2.2 核心触点总账（6 处小改动，其余全部纯新增）
+### 2.2 核心触点总账（7 处小改动，其余全部纯新增；#7 为 Phase 0 验证后新增，D16）
 
 | # | 核心改动 | 幅度 |
 |---|---|---|
-| 1 | 工单创建服务参数化 `approBiz`（默认值保持现行为 `DM_QUERY`）+ `ApprovalMO` 增加治理引用字段（`promotionId`/`revisionId`） | 一个方法签名 + 一个 POJO 字段 |
+| 1 | 工单创建服务参数化 `approBiz`（默认值保持现行为 `DM_QUERY`；已验证 §13-7：写死仅 `createSqlTicketInTransaction` 2 处，下游全支持 `DM_CHANGE`）+ `ApprovalMO` 增加治理引用字段（`promotionId`/`revisionId`；已验证 §13-9：Jackson 双保险安全，**必须先加 POJO 字段再让治理层写**——ticketInfo 存在读-改-写路径） | 一个方法签名 + 一个 POJO 字段 |
 | 2 | `ApprovalControlServiceImpl.prepareExecJobAsync` 开头调用治理门禁（工单无治理引用时零成本直通） | 一处调用点 |
 | 3 | `AutoExecServiceImpl.dispatchJob` 在 `claimJobForPackaging` 后同样门禁调用（覆盖重试/重新调度路径） | 一处调用点 |
 | 4 | 资源授权撤销路径保护带 `PERM_GROUP:` 标记的行（提示"该权限来自权限组，请在组内操作"） | 一处条件分支 |
 | 5 | `AutoExecServiceImpl.skipTask/continueTask` 入口治理防护：治理 PROD 工单拒绝操作（D15；无治理引用零成本直通） | 两处条件分支 |
-| 6 | 语句替换能力：治理专用的失败语句任务替换（`replaceTask` 式小扩展或直写 task 行，二选一取决于 §13-1 验证；新增方法不改现有行为） | 一个新方法或一条受控写路径 |
+| 6 | 语句替换能力（已验证 §13-1，锁定方案 a）：`AutoExecService` 新增治理专用 `replaceTask(jobBizId, failedTaskId, newExecSql)`——失败 task→CANCELED + 新文本行 WAIT_EXEC 入列（复用 exec_order、新 query_id/biz_id）。依据：`dm_exec_auto_task.exec_sql` 为单句权威文本、`dispatchJob` 打包读 task 行不重拆 rawSql、`retryJob` 只重放 WAIT_EXEC/FAILED/ROLLBACK。直写 task 行方案废弃（原地覆盖失版本链、query_id 复用串扰） | 一个新方法，不改现有行为 |
+| 7 | `ChangeApprovalHandler.convertToChangeForm` 加治理分支（D16 裁决；已验证 §13-7：该方法对外部审批强依赖 CI/CD 的 `changeId/changeOwnerUid`，治理 PROD 工单走第三方审批会抛异常）：`ticketInfo` 含治理引用时组装治理字段表单（§5.5 字段清单），无治理引用保持 CI/CD 原逻辑 | 一处条件分支 |
 
 纯新增：治理表 ×10、治理服务/推进器/门禁、PreInit 治理 handler（Spring List 注入零接线）、Flyway 脚本 ×1、前端页面与 API 模块、语句失败通知（复用 MsgSend SPI）。**不改**：状态机、审批引擎、钉钉 Provider、执行器核心、parser、脱敏、CI/CD。
 
@@ -145,8 +147,8 @@
 治理层方言无关；方言差异只允许出现在 3 个触点：
 
 1. **SQL 审计规则集**：规则引擎按 `dm_sec_rules.ruleDsRange` 数据源圈定路由；为 PG 配一套与 MySQL 对等的最低规则集（含 PG 特有项：`CREATE INDEX` 非 `CONCURRENTLY` 锁写、`ADD COLUMN NOT NULL DEFAULT` 版本行为差异、`TRUNCATE`/`DROP` 分级）；规则集按环境绑定（现有 `check_spec_id` 机制）。主要是配置+规则脚本工作
-2. **Preflight 元数据检查**：不手写方言 SQL，走 CloudDM 现有 schema 元数据抽象（`ds-postgres`/`sql-postgres` 插件已实现元数据获取；确切 SPI 名见 §13 验证清单）
-3. **DML Explain**：`DmlExplainPreInitHandler` 对 PG 的支持程度为实施期验证项；不支持则 PG 路径 B 降级为"规则审计+人工确认"，不阻塞主链
+2. **Preflight 元数据检查**：不手写方言 SQL，走 CloudDM 现有 schema 元数据抽象（已验证 §13-8：console 门面 `DsSchemaService`（`RemoteDsSchemaService`）→ RSocket `MetaRService` → sidecar `DsMetaService`，MySQL=`MyMetaService`/PG=`PgMetaService`；四项检查全用现成接口零新增，双方言覆盖）
+3. **DML Explain**：已验证（§13-3）：`PgExplainPlanSpi` 已注册但显式排除 INSERT/UPDATE/DELETE/MERGE 的行估算 → PG DML 的 `expectedAffectedRows` 恒为 0；handler 对 UNSUPPORTED 不抛错不阻断，工单照常走 → PG 路径 B **零代码降级**为"规则审计+人工确认"（`GOV_DML_ROW_LIMIT` 行阈值对 PG 自然失效，已知约束非缺陷），不阻塞主链
 
 执行语义差异（PG DDL 事务性 vs MySQL 隐式提交）由 D15 成分路由统一守卫：**事务模式只对纯 DML 工单开放**（两方言物理性一致），含 DDL 一律逐条 autocommit——治理层借此补上引擎缺失的方言防护。
 
@@ -352,7 +354,7 @@ CREATED → APPROVING → APPROVED → CONFIRMED → EXECUTING → SUCCEEDED   (
 1. promotion 状态 = APPROVED/CONFIRMED（审批结论只信 DB，不信任何请求参数）
 2. **hash 复验（整单+逐句）**：对工单当前 rawSql 重算整单 SHA256 与 `revision.sql_hash` 比对；对待执行 task 集逐句重算 hash 与 manifest 比对——任何一句不一致 → DENY 并定位到句（工单层被任何方式篡改、或语句替换集漂移，都能拦住）
 3. 绑定复验：当前逻辑库 PROD 绑定与 promotion 快照一致（防审批后换库）
-4. Preflight（走现有 schema 元数据 SPI，方言路由）：数据源连通 + 表存在；DDL：依赖列/索引状态符合语句预期（ADD COLUMN→列不存在、CREATE INDEX→索引不存在）；DML：目标表存在。**P0 为基础版**；长事务/元数据锁/复制延迟归 P1
+4. Preflight（已验证 §13-8，全走现成接口零新增：连通 `DsSchemaService#realTimeFetchVersion`、表存在 `#realTimeFetchSelectObject` 返 `RdbTable`/null、列 `RdbTable#getColumns()`、索引 `getIndices()/getPrimaryKey()/getUniqueKeys()`，双方言覆盖）：数据源连通 + 表存在；DDL：依赖列/索引状态符合语句预期（ADD COLUMN→列不存在、CREATE INDEX→索引不存在）；DML：目标表存在。**P0 为基础版**；长事务/元数据锁/复制延迟归 P1
 5. 幂等：`execution_key` UNIQUE + `depend_on_biz_id` UNIQUE 双层
 6. **执行配置合规（D15）**：job 的 `errorStrategy`/`enableTransactional` 与治理按 `change_type` 成分路由注入的值一致（防确认环节篡改配置）；治理 PROD 工单 `errorStrategy=SKIP` 一律拒绝
 
@@ -362,10 +364,10 @@ Preflight 失败策略（READY_PLAN 问题 4 的定论）：**直接 DENY，回 
 
 治理推进器 = 治理层**自有**的轻量调度循环（仿现有 `ApprovalStarter` 模式：独立守护线程、扫描式、无状态、重启自愈），职责四件：
 
-1. **自动推进**：PRE 治理环境 + 未配人工审批模板的工单，PRE_INIT 全部通过后，经**现有 service 漏斗**（`approvalFlowService.approvalTicket` → `confirmTicket`）以 SYSTEM 身份完成审批+确认，**确认时按 D15 成分路由注入 `autoExecConfig`**（纯 DML→事务模式；含 DDL→autocommit+NONE），事件表与工单过程表留痕（operator=SYSTEM）。**不绕过状态机私改状态**。⚠️ 实施期验证点：若漏斗内有"审批人必须是被指派人"的身份校验，为 SYSTEM 增加定向代审通道（小改动，见 §13）
+1. **自动推进**：PRE 治理环境 + 未配人工审批模板的工单，PRE_INIT 全部通过后，以 SYSTEM 身份经**定向代审通道**完成审批+确认（已验证 §13-2：`approvalTicket` Service 层硬校验 uid 在 `dm_approval_person`、`confirmTicket` 经 `checkJobOperationEnable` 硬校验确认人身份，直走现有漏斗不可行）。通道实现：**审批环节**仿第三方回调先例（`ApprovalProviderServiceImpl.refreshApprovalStatus` 直调 `handler.approvalApproved()`）；**确认环节**新增 SYSTEM 定向入口（绕过身份校验、保留状态机检查），**确认时按 D15 成分路由注入 `autoExecConfig`**（纯 DML→事务模式；含 DDL→autocommit+NONE；已验证 §13-5：config 为服务端可构造的透传对象，confirmUid 由 Controller 注入无耦合），事件表与工单过程表留痕（operator=SYSTEM）。**不绕过状态机私改状态**
 2. **冻结 Revision**：扫描 FINISHED 的 PRE 治理工单，无对应 revision 则冻结（整单 hash + 逐句 manifest 从 stmt_version 当前版 + task 终态汇总；`UNIQUE(source_ticket_id)` 幂等；不侵入现有 `completeExecution` 漏斗）
 3. **终态同步**：promotion 状态跟随工单终态；审批状态兜底同步复用现有钉钉 Stream/回调 + `ApprovalProviderSpi.getLastInfo` 机制，治理层不自建
-4. **失败通知**：治理工单语句失败（EXEC_FAIL）→ 组装语句定位+错误信息+深链，经现有 `DingTalkMsgSendSpi`/`ImSenderService` 推送提交人（PROD 失败加推 DBA/确认人）；通知只是入口，修正/处置动作在平台内强鉴权完成
+4. **失败通知**：治理工单语句失败（EXEC_FAIL）→ 组装语句定位+错误信息+深链，经现有 MsgSend SPI 推送提交人（PROD 失败加推 DBA/确认人）；通知只是入口，修正/处置动作在平台内强鉴权完成。已验证 §13-4 的实施约束：`MsgSendSpi`（钉钉/飞书/企微）**仅支持纯文本**（无模板表/Markdown/卡片），消息体纯文本拼装、深链格式 `/ticket/{id}`；入口用直配版 `ImSenderServiceImpl.sendMessage(ownerUid, ImSenderConfig, MsgContent)`（流程版强依赖 cicd `DmChangeFlowDO`，不用）；收件人取 `DmApprovalDO.ownerUid`；**未配置 IM Provider 时抛异常且无邮件/站内信降级** → 治理环境必须配置 IM Provider（纳入 Phase 12 灰度预检）
 
 PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→自动确认"（必经门禁二，配置注入同 D15）。
 
@@ -408,7 +410,7 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 | `RDP_DB_CHANGE_PROD_DML_DIRECT` | 发起直发生产 DML（路径 B） | 定向授予（数据订正负责人） |
 | `RDP_DB_CHANGE_GOVERN_READ` | 治理视图：发布列表/Timeline/门禁与 Preflight 证据 | DBA、Manager、审计员 |
 
-**复用现有、不新增**：PRE 变更提交与修正（`correctStatement` 鉴权 = 工单提交人身份 + 工单状态，不另设标签）→ 现有工单提交标签（`RDP_WORKER_ORDER_REQUEST`）；生产执行确认 → 优先复用现有工单确认权限（实施期确认 `ApprovalController.confirm` 现有标签，无则补 `RDP_DB_CHANGE_PROD_CONFIRM`，见 §13）；资源授权管理 → 现有 `RDP_AUTH_MANAGE`。
+**复用现有、不新增**：PRE 变更提交与修正（`correctStatement` 鉴权 = 工单提交人身份 + 工单状态，不另设标签）→ 现有工单提交标签（`RDP_WORKER_ORDER_REQUEST`）；生产执行确认 → **复用 `RDP_WORKER_ORDER_EXECUTE`**（已验证 §13-6 + D16 裁决：`ApprovalController.confirm` 现用标签即它、DBA-only 语义与授权矩阵一致；治理 PROD 的禁 SKIP 等额外约束由触点 #5 门禁承接，**不新增** `RDP_DB_CHANGE_PROD_CONFIRM`）；资源授权管理 → 现有 `RDP_AUTH_MANAGE`。
 
 ### 5.3 授权矩阵（典型角色 × 能力）
 
@@ -433,7 +435,7 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 
 ### 5.5 生产审批 Provider 策略
 
-治理层**不硬编码钉钉**：PROD 治理角色环境**必须配置审批模板**（门禁一第 7 条：无模板 → 拒绝创建 promotion），且**强制第三方 Provider（禁 Internal）**——防止小团队用 Internal 模板自己审自己、弱化双控。具体 Provider（DingTalk/Feishu/Wechat…）由模板配置决定；本期落地配置为钉钉，链路即 CODE_DESIGN 的钉钉方案：现有 `DingApprovalProviderSpi` 创建实例 → `ChangeForm` 填充治理字段（变更单号/逻辑库/环境/申请人/风险等级/影响行数/sql_hash/PRE 执行结果/SQL 摘要前 N 字符；完整 SQL 留在平台）→ Stream/回调更新审批状态 → **回调只更新状态、绝不直接执行 SQL**（执行统一走工单确认 → Guard → AutoExec 链路）。
+治理层**不硬编码钉钉**：PROD 治理角色环境**必须配置审批模板**（门禁一第 7 条：无模板 → 拒绝创建 promotion），且**强制第三方 Provider（禁 Internal）**——防止小团队用 Internal 模板自己审自己、弱化双控。具体 Provider（DingTalk/Feishu/Wechat…）由模板配置决定；本期落地配置为钉钉，链路即 CODE_DESIGN 的钉钉方案：现有 `DingApprovalProviderSpi` 创建实例 → `ChangeForm` 填充治理字段（变更单号/逻辑库/环境/申请人/风险等级/影响行数/sql_hash/PRE 执行结果/SQL 摘要前 N 字符；完整 SQL 留在平台。**触点 #7 / D16**：已验证 §13-7 `ChangeApprovalHandler.convertToChangeForm` 对外部审批强依赖 CI/CD 的 `changeId/changeOwnerUid`，治理 PROD 工单会抛异常 → 该方法加治理分支：`ticketInfo` 含治理引用时组装上述治理字段表单，无治理引用保持 CI/CD 原逻辑零变化）→ Stream/回调更新审批状态 → **回调只更新状态、绝不直接执行 SQL**（执行统一走工单确认 → Guard → AutoExec 链路）。
 
 ---
 
@@ -541,12 +543,12 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 | 1 | **平台元数据库脚本**：按 `boot-initialization` 现行 Flyway Java 模式新增一个升级脚本，创建治理层 10 张新表 + 注册新权限标签 + 新增 env param key 定义（纯平台基建，不碰业务库、不碰 CI/CD） | 脚本可执行、唯一约束生效、不动历史脚本、不改现有表 |
 | 2 | 权限组（CRUD/成员/资源/展开账本/`res_desc` 标记/撤销保护） | 入组即得、离组即失、各删各的、保护拦截生效 |
 | 3 | 逻辑库 + 环境绑定 + 治理角色参数 | `getBinding` 服务端解析不可被前端覆盖；env_id 引用正确 |
-| 4 | PRE 治理链路（`preSubmit` + 逐句拆分/成分路由 + `approBiz` 参数化 + 推进器系统代审 + Revision 冻结含 manifest） | DDL/DML/混合提单→自动→执行成功→冻结；含 DML 缺回滚 SQL 被拒；SYSTEM 留痕；事务/autocommit 配置按成分正确注入 |
+| 4 | PRE 治理链路（`preSubmit` + 逐句拆分/成分路由 + `approBiz` 参数化 + 推进器系统代审【定向通道，已验证 §13-2：审批仿 `refreshApprovalStatus` 先例 + 确认 SYSTEM 定向入口】 + Revision 冻结含 manifest） | DDL/DML/混合提单→自动→执行成功→冻结；含 DML 缺回滚 SQL 被拒；SYSTEM 留痕；事务/autocommit 配置按成分正确注入 |
 | 5 | **修正闭环**（失败通知 + `correctStatement` + 增量审计 + 任务替换 + 断点续跑 + `stmtTimeline`） | 失败→通知→修正→续跑全链；非提交人被拒；已成功语句不重放；版本史完整 |
 | 6 | Promotion + 门禁一（`availableRevisions` / `promote`，含逐句 manifest 核验） | 只能选到合格 revision；门禁逐条 DENY 可验证；夹带参数被拒 |
 | 7 | 执行链 Guard（门禁二双挂点 + 逐句 hash 复验 + Preflight + 配置合规校验 + skip/continue 防护 + `GOV_AUTO_CONFIRM`） | hash/绑定/配置复验；PREFLIGHT_FAIL 回 WAIT_CONFIRM；重试路径必经门禁；PROD skip 被拒 |
 | 8 | 路径 B 直发 DML（开关/行为判定/阈值分级/专用标签） | 仅 DML、默认关、超阈值按策略处置、同事务三对象一致 |
-| 9 | 钉钉表单治理字段 + 审批同步兜底验证 | 表单含单号/风险级/影响行数/hash/PRE 结果；回调丢失可同步；重复回调幂等 |
+| 9 | 钉钉表单治理字段（触点 #7：`convertToChangeForm` 治理分支，D16） + 审批同步兜底验证 | 表单含单号/风险级/影响行数/hash/PRE 结果；**CI/CD 工单表单行为零变化**；回调丢失可同步；重复回调幂等 |
 | 10 | 前端（权限组页→逻辑库页→工单治理模式+语句级视图→发布页/Timeline/处置页） | lint / check-i18n / `all_build.sh web` 全过 + 浏览器流程文档 |
 | 11 | 集成 + 安全测试 + 双方言回归 | DENY 矩阵 12 case 全覆盖；完成定义（§8.2）达成 |
 | 12 | 灰度上线 | 见 §8.3 |
@@ -592,7 +594,7 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 | ADR | 主题 | 对应章节 |
 |---|---|---|
 | ADR-001 | Role=功能权限 / Group=资源权限分离；权限组物化展开 +"总是展开、各删各的"+ 账本表 + `res_desc` 标记 + 撤销保护 | §3.2 / §5 |
-| ADR-002 | 复用 `dm_approval` + 薄治理层弱关联（治理表持工单 id；`ticket_info`/`ApprovalMO` 承载反向引用；核心触点总账 6 处） | §2.2 / §3.1 |
+| ADR-002 | 复用 `dm_approval` + 薄治理层弱关联（治理表持工单 id；`ticket_info`/`ApprovalMO` 承载反向引用；核心触点总账 7 处，#7 为 Phase 0 验证后新增） | §2.2 / §3.1 |
 | ADR-003 | 双来源门禁模型：安全底线改写为"任何 PROD SQL 必经冻结 Revision + 逐句 manifest 一致 + 路径全套门禁"；路径 B 仅 DML 约束包 | §4.1 / §4.4 |
 | ADR-004 | hash 方言中立契约：SHA256(原文+确定性空白规范化)，整单+逐句双层，字节级冻结零改写，弃用解析重构规范化 | D10 / §3.4 |
 | ADR-005 | 环境治理角色走 env param（`GOV_ROLE`），免改 `dm_sys_env`，附带逐环境灰度能力 | §3.3 / §8.3 |
@@ -608,18 +610,18 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 
 | # | 风险 | 缓解/处置 |
 |---|---|---|
-| 1 | 系统代审漏斗内可能存在审批人身份校验，SYSTEM 代审被拒 | 实施期验证点（§13-2）；需要时加 SYSTEM 定向代审通道（小改动） |
-| 2 | `DmlExplainPreInitHandler` 对 PG 的支持程度未证实 | 实施期验证项（§13-3）；不支持则 PG 路径 B 降级"规则审计+人工确认"，不阻塞主链 |
+| 1 | ~~可能~~ **已验证存在（§13-2）**：`approvalTicket`/`confirmTicket` 双层身份硬校验，SYSTEM 直走漏斗不可行 | 已落定定向代审通道（D16）：审批环节仿 `refreshApprovalStatus` 先例直调 `handler.approvalApproved()`；确认环节新增 SYSTEM 定向入口（保留状态机检查）；纳入 Phase 4 范围 |
+| 2 | ~~未证实~~ **已验证（§13-3）**：`PgExplainPlanSpi` 显式排除 DML 行估算，PG `expectedAffectedRows` 恒为 0 | 降级零代码成立：UNSUPPORTED 不阻断工单，PG 路径 B = 规则审计+人工确认；行阈值对 PG 自然失效（已知约束） |
 | 3 | EXPLAIN 行数是估算值 | 阈值分级只作风险信号，不作正确性依据；审批表单标注"预估" |
 | 4 | `env_name` 无 DB 唯一约束（现状缺陷，应用层仅按 owner 查重） | 治理绑定一律用 `env_id`，免疫此缺陷 |
 | 5 | 审批后-执行前窗口内绑定/表结构被改 | Guard 绑定复验 + 整单/逐句 hash 复验 + Preflight 三重收窄窗口 |
 | 6 | 展开行与人工授权行同键并存 | 对 LIKE 存在性鉴权无害（已核实机制）；撤销保护防账本打穿；展开绕过 merge 防 label 污染 |
 | 7 | boot-alone 单点故障 | P0 可接受（内部平台）；治理层全在 console，天然兼容后续拆分 console+sidecar 部署演进 |
-| 8 | 上游 CloudDM 官方演进冲突（4.2.0 刚改过工单表） | 核心改动收敛为 6 处小 hook + 治理表全独立 + 弱关联不依赖新列，升级合并成本受控 |
+| 8 | 上游 CloudDM 官方演进冲突（4.2.0 刚改过工单表） | 核心改动收敛为 7 处小 hook + 治理表全独立 + 弱关联不依赖新列，升级合并成本受控 |
 | 9 | 权限组展开数据量 = 成员数 × 资源数 | 企业内部规模可接受；量级担忧时再评估运行时 union 方案（P2+，ADR-001 记录取舍） |
 | 10 | 治理推进器与现有 `ApprovalTaskScheduler` 双循环竞争同一工单 | 推进器只经现有 service 漏斗操作（不直写状态），漏斗内部状态检查天然串行化；实施期以并发用例验证 |
 | 11 | **MySQL DDL 隐式提交静默击穿 `enableTransactional`（实勘确认引擎无守卫）** | D15 成分路由守卫：事务模式只对纯 DML 工单开放，含 DDL 强制 autocommit；门禁二校验配置合规防绕过 |
-| 12 | **语句替换的引擎能力不确定**（task 文本存储位置 / `dispatchJob` 打包读取源 / 一工单一 job 约束下无法重建 job） | §13-1 首位验证；两条实现路径备选（`replaceTask` 治理专用扩展 / 受控直写 task 行）；门禁二逐句复验兜底防替换集漂移 |
+| 12 | ~~不确定~~ **已验证消除（§13-1）**：`dm_exec_auto_task.exec_sql` 持有单句文本、`dispatchJob` 打包读 task 行（不重拆 rawSql）、`retryJob` 兼容新增行（exec_order 无连续性要求） | 锁定方案 (a) `AutoExecService.replaceTask`（失败 task→CANCELED+新行 WAIT_EXEC）；直写方案废弃（失版本链+query_id 串扰）；门禁二逐句复验兜底防替换集漂移 |
 | 13 | 通知深链的权限边界 | 通知只是入口不携带任何凭证；`correctStatement` 平台内强鉴权（仅本工单提交人 + EXEC_FAIL + PRE 治理环境），PROD 工单调用直接拒绝 |
 | 14 | 修正闭环中"增量审计通过但语义已偏离原审批意图"（PRE） | PRE 属低风险提示环境、修正仅提交人可为且全程版本留痕；PROD 侧由逐句 manifest 比对硬拦截任何未 PRE 验证的语句版本 |
 
@@ -642,18 +644,20 @@ PROD 环境的 `GOV_AUTO_CONFIRM=on` 时，推进器同样承担"审批通过→
 
 ---
 
-## 13. 实施期验证清单（Open Items，实施第一步逐项确认后回填结论）
+## 13. 实施期验证清单（Phase 0 已完成 · 2026-09-06 十项结论回填）
 
-1. **语句替换的引擎路径**（最高优先，影响 Phase 5/7）：`dm_exec_auto_task` 是否持有语句文本、`dispatchJob → create(jobId)` 打包 zip 的文本读取源；据此二选一：`AutoExecService` 新增治理专用 `replaceTask`（失败 task→CANCELED + 新版本 task 入列，`exec_order` 语义保持）或治理层受控直写 task 行；同时确认 `retryJob` 重打包对新 task 的兼容性
-2. **审批漏斗身份校验**：`approvalFlowService.approvalTicket` / `confirmTicket` 是否校验操作者必须为被指派审批人/确认人；SYSTEM 代审是否需要定向通道（影响 Phase 4）
-3. **`DmlExplainPreInitHandler` 的 PG 支持**：对 PG 数据源是否可用；不可用则路径 B PG 降级策略生效（影响 Phase 8）
-4. **通知能力复用**：`ImSenderService`/`DingTalkMsgSendSpi` 在 console 侧的通用调用入口、消息模板与深链格式（影响 Phase 5）
-5. **`autoExecConfig` 注入与锁定**：`DmConfirmTicketFO.autoExecConfig` 的治理注入点（系统代审传参）与 PROD 人工确认时的锁定方式（前端预置+门禁二配置合规校验兜底）（影响 Phase 4/7）
-6. **工单确认权限标签现状**：`ApprovalController.confirm` 现有 `@RequestAuth` 标签；决定复用还是新增 `RDP_DB_CHANGE_PROD_CONFIRM`（影响 Phase 7/10）
-7. **`approBiz` 参数化影响面**：`createSqlTicketInTransaction` 中 `DM_QUERY` 写死位置及下游对 bizType 的分支依赖（影响 Phase 4，核心触点 #1）
-8. **schema 元数据 SPI 确切名称**：Preflight 存在性检查所用的表/列/索引元数据获取接口（console 侧经 RSocket 到 sidecar 的调用路径）（影响 Phase 7）
-9. **`ApprovalMO` 扩展兼容性**：新增治理引用字段对 CI/CD 现有用法（`changeId/changeOwnerUid/autoExec`）的 Jackson 兼容性确认（影响 Phase 4，核心触点 #1）
-10. **`res_desc` 列的现有使用方式**：确认授权查询/展示逻辑不依赖 `res_desc` 语义，标记写入无副作用（影响 Phase 2）
+> 验证方式：4 路并行只读代码调研。完整证据（文件/类/方法/行号）见 `.trellis/tasks/09-06-gov-phase0-verification/research/`：`00-summary-decisions.md`（总结+裁决）、`item-01-task-replace-path.md`、`item-02-05-07-09-approval-chain.md`、`item-03-08-dialect-metadata.md`、`item-04-06-10-notify-label-resdesc.md`。用户裁决两项已入 D16。
+
+1. **语句替换的引擎路径** ✅ **可行，锁定方案 (a)**（触点 #6）：`dm_exec_auto_task.exec_sql`（longtext NOT NULL）持有拆分后的单句文本（`createJob` 写入）；`dispatchJob` 打包读 task 行 `getExecSql()`、不重拆 rawSql → 改 task 行即对下次派发生效；`retryJob` 重打包仅含 WAIT_EXEC/FAILED/ROLLBACK，FINISH/CANCELED 不重放；`exec_order` 无连续性要求，复用原序号无冲突（CANCELED 不入包、无 DB 唯一约束）。实现：`AutoExecService` 新增治理专用 `replaceTask(jobBizId, failedTaskId, newExecSql)`——失败 task→CANCELED + 新文本行 WAIT_EXEC（新 query_id/biz_id、复用 exec_order）。方案 (b) 直写 exec_sql 废弃（原地覆盖失版本链、query_id 复用串扰）。事务模式语义正确：失败整单回滚→修正后 ROLLBACK task 全部重放
+2. **审批漏斗身份校验** ⚠️ **SYSTEM 直走漏斗不可行 → 定向代审通道**（并入 Phase 4）：`approvalTicket` Service 层硬校验 uid 在 `dm_approval_person`；`confirmTicket` 经 `checkJobOperationEnable` 硬校验确认人（主账号 / owner+`RDP_WORKER_ORDER_EXECUTE` / 资源审批人）。通道：审批环节仿第三方回调先例（`ApprovalProviderServiceImpl.refreshApprovalStatus` 直调 `handler.approvalApproved()`）；确认环节新增 SYSTEM 定向入口（绕过身份校验、保留状态机检查），operator=SYSTEM 全程留痕
+3. **`DmlExplainPreInitHandler` 的 PG 支持** ✅ **部分支持，降级零代码**：handler 方言无关（EXPLAIN 委托 `ExplainPlanSpi`）；`PgExplainPlanSpi` 已注册但 `supportByQueryType` 显式排除 INSERT/UPDATE/DELETE/MERGE 行估算 → PG DML `expectedAffectedRows` 恒为 0（PG INSERT 字面行数仍可用，方言无关）；handler 对 UNSUPPORTED 不抛错不阻断 → PG 路径 B 天然降级"规则审计+人工确认"，`GOV_DML_ROW_LIMIT` 对 PG 自然失效（已知约束）；阈值读 `DmApprovalDO.expectedAffectedRows`（有专用 update 方法）可行
+4. **通知能力复用** ✅ **可行（纯文本约束）**：`MsgSendSpi`（钉钉/飞书/企微三实现）仅支持纯文本，无模板表/Markdown/卡片——语句定位+错误+深链用纯文本拼装，深链格式 `/ticket/{id}`；入口用直配版 `ImSenderServiceImpl.sendMessage(ownerUid, ImSenderConfig, MsgContent)`（流程版强依赖 cicd `DmChangeFlowDO`，不用）；收件人=`DmApprovalDO.ownerUid`；未配置 IM Provider 抛异常、无邮件/站内信降级 → 治理环境必须配置 IM Provider（纳入 Phase 12 灰度预检）；触发点仿 `ApprovalTaskScheduler` 扫描式守护线程
+5. **`autoExecConfig` 注入与锁定** ✅ **可行**：链路 `DmConfirmTicketFO.autoExecConfig`（`DmAutoExecConfigFO` 7 字段）→ `AutoExecCreateMO` → `RsExecAutoJobConfigObj` → `dm_exec_auto_job.config`；`confirmTicket` 现状原样透传前端 config、零合规校验；系统代审服务端构造 config 无耦合（confirmUid 为 @JsonIgnore 由 Controller 注入）；门禁二配置合规校验挂点=`prepareExecJobAsync` 开头（触点 #2 原位）
+6. **工单确认权限标签现状** ✅ **复用 `RDP_WORKER_ORDER_EXECUTE`**（D16）：`ApprovalController.confirm` 现用标签即它（DBA-only）；其余接口：create=REQUEST、cancel/close=REQUEST+APPROVE、retry=EXECUTE、skip/continue=READ、stop=EXECUTE。不新增 `RDP_DB_CHANGE_PROD_CONFIRM`；治理 PROD 额外约束由触点 #5 承接
+7. **`approBiz` 参数化影响面** ✅ **可行 + 发现新坑（→触点 #7）**：`DM_QUERY` 写死仅 `createSqlTicketInTransaction` 2 处（setApproBiz + createProcess）；下游（PreInit.supports / ApprovalStage.checkBiz / handler 路由 / 查询展示 / 前端）全部天然支持 `DM_CHANGE`，默认值 `DM_QUERY` 零行为变化。**坑**：`ChangeApprovalHandler.convertToChangeForm` 对外部审批强依赖 `ApprovalMO.changeId/changeOwnerUid`（CI/CD 耦合），治理 PROD 工单走第三方审批会抛异常 → D16 裁决：扩展该方法加治理分支（触点 #7，Phase 9）
+8. **schema 元数据 SPI 确切名称** ✅ **全现成接口，零新增**：链路=console 门面 `DsSchemaService`（impl `RemoteDsSchemaService`）→ RSocket `MetaRService` → sidecar `MetaRServiceProvider` → `DsMetaService`（MySQL=`MyMetaService`/PG=`PgMetaService`）。连通性=`#realTimeFetchVersion`；表存在=`#realTimeFetchSelectObject`（返 `RdbTable`/null）；列=`RdbTable#getColumns()`；索引=`getIndices()/getPrimaryKey()/getUniqueKeys()`；编程复用先例 `ConsoleMetaServiceImpl#fetchTableColumn`。双方言覆盖
+9. **`ApprovalMO` 扩展兼容性** ✅ **安全（有实施顺序要求）**：现有 4 字段（message/autoExec/changeOwnerUid/changeId）；类级 `@JsonIgnoreProperties(ignoreUnknown=true)` + 全局 `FAIL_ON_UNKNOWN_PROPERTIES=false` 双保险，新增 `promotionId`/`revisionId` 不破坏 CI/CD 读写。**顺序**：`updateAutoExecFlag`/`restoreExecutionConfirmation` 对 ticketInfo 有读-改-写路径 → 必须先加 POJO 字段（触点 #1 先行合入）再让治理层写入，否则新字段被静默丢弃
+10. **`res_desc` 列的现有使用方式** ✅ **标记方案可行**：`varchar(512) NOT NULL` 纯展示字段，无 WHERE/LIKE/格式解析依赖；写入点来自 `DmDsDO.instanceDesc` 或 ApplyAuth 透传；`mergeGrantedAuth` 同键同 duration 合并只 merge label 不碰 resDesc（但混 label 会致回收误删）→ **"展开绕过 merge 直接 insert"必要性被代码证实**；唯一副作用（审批表单拼 `resInstId(resDesc)` 暴露标记串）不在治理 DM_CHANGE 路径上
 
 ---
 
