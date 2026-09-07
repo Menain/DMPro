@@ -13,25 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.platform.dal.model.dbchange;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
-import lombok.Getter;
-import lombok.Setter;
-
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
-
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+/**
+ * Server-side change-type classification derived from parser behavior analysis.
+ * Drives D15 execution-config routing: pure DML → transactional; DDL/MIXED → autocommit.
+ */
+public enum ChangeType {
+    DDL,
+    DML,
+    MIXED
 }

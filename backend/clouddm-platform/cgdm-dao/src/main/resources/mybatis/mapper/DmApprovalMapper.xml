@@ -379,6 +379,21 @@
         LIMIT 20
     </select>
 
+    <select id="listFinishedTicketIdList" resultType="java.lang.Long">
+        SELECT
+            id
+        FROM
+            dm_approval
+        WHERE
+            ticket_status = 'FINISHED'
+            AND
+            appro_biz = #{approBiz}
+            AND
+            deleted = false
+        ORDER BY gmt_modified ASC
+        LIMIT 20
+    </select>
+
     <select id="listAuthTicketByConditionAndPage" resultMap="DmApprovalDO">
         SELECT
             <include refid="all_ticket_col"/>

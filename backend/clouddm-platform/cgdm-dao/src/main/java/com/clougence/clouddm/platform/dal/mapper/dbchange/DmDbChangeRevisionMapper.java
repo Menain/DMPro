@@ -13,25 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.platform.dal.mapper.dbchange;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO;
 
-import lombok.Getter;
-import lombok.Setter;
+public interface DmDbChangeRevisionMapper extends BaseMapper<DmDbChangeRevisionDO> {
 
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
-
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    DmDbChangeRevisionDO queryBySourceTicketId(Long sourceTicketId);
 }

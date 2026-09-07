@@ -98,7 +98,9 @@ public enum AuditType {
     CREATE_LOGICAL_DB,
     UPDATE_LOGICAL_DB,
     DELETE_LOGICAL_DB,
-    SET_LOGICAL_DB_BINDING;
+    SET_LOGICAL_DB_BINDING,
+    //******* DB CHANGE GOVERNANCE *******
+    SUBMIT_DB_CHANGE_PRE;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

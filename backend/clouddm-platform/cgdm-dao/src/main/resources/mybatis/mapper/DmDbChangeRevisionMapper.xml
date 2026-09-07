@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeRevisionMapper">
+    <resultMap id="dmDbChangeRevisionDO" type="com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="revision_code" property="revisionCode"/>
+        <result column="logical_db_id" property="logicalDbId"/>
+        <result column="env_id" property="envId"/>
+        <result column="source_type" property="sourceType"/>
+        <result column="source_ticket_id" property="sourceTicketId"/>
+        <result column="change_type" property="changeType"/>
+        <result column="sql_text" property="sqlText"/>
+        <result column="rollback_sql_text" property="rollbackSqlText"/>
+        <result column="sql_hash" property="sqlHash"/>
+        <result column="rollback_sql_hash" property="rollbackSqlHash"/>
+        <result column="stmt_manifest" property="stmtManifest"/>
+        <result column="audit_snapshot" property="auditSnapshot"/>
+    </resultMap>
+
+    <sql id="dmDbChangeRevision">
+        id,
+        gmt_create,
+        gmt_modified,
+        revision_code,
+        logical_db_id,
+        env_id,
+        source_type,
+        source_ticket_id,
+        change_type,
+        sql_text,
+        rollback_sql_text,
+        sql_hash,
+        rollback_sql_hash,
+        stmt_manifest,
+        audit_snapshot
+    </sql>
+
+    <select id="queryBySourceTicketId" resultMap="dmDbChangeRevisionDO">
+        SELECT
+            <include refid="dmDbChangeRevision"/>
+        FROM
+            dm_db_change_revision
+        WHERE
+            source_ticket_id = #{sourceTicketId}
+        LIMIT 1
+    </select>
+</mapper>

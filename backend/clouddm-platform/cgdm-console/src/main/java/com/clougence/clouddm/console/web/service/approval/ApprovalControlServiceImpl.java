@@ -114,6 +114,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ApprovalControlServiceImpl implements ApprovalControlService {
 
     private static final int            AUTO_EXEC_TASK_SQL_SUMMARY_LENGTH = 200;
+    private static final String         SYSTEM_OPERATOR                    = "SYSTEM";
 
     @Resource
     private SystemDal                   systemDal;
@@ -718,15 +719,20 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
 
     @Override
     public DmTicketResultVO createSqlTicket(String puid, String uid, DmAddTicketFO fo) {
+        return this.createSqlTicket(puid, uid, fo, ApprovalBiz.DM_QUERY);
+    }
+
+    @Override
+    public DmTicketResultVO createSqlTicket(String puid, String uid, DmAddTicketFO fo, ApprovalBiz approBiz) {
         TransactionTemplate transaction = new TransactionTemplate(this.txManager);
-        DmTicketResultVO result = transaction.execute(status -> this.createSqlTicketInTransaction(puid, uid, fo));
+        DmTicketResultVO result = transaction.execute(status -> this.createSqlTicketInTransaction(puid, uid, fo, approBiz));
         if (result != null && result.getTicketId() != null) {
             this.approvalTaskScheduler.trySchedule(result.getTicketId());
         }
         return result;
     }
 
-    private DmTicketResultVO createSqlTicketInTransaction(String puid, String uid, DmAddTicketFO fo) {
+    private DmTicketResultVO createSqlTicketInTransaction(String puid, String uid, DmAddTicketFO fo, ApprovalBiz approBiz) {
         DsLevels dsLevels = this.dmDsConfigService.parseLevels(fo.getDbLevels());
         DmDsDO dsDO = dsLevels.dsDO();
         DmSysEnvDO envDO = this.systemDal.envMapper().queryByEnvID(puid, dsDO.getDsEnvId());
@@ -806,7 +812,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         ticket.setDescription(fo.getDescription());
         ticket.setTicketTitle(fo.getTicketTitle());
         ticket.setTicketStatus(ApprovalStatus.PRE_INIT_WAIT);
-        ticket.setApproBiz(ApprovalBiz.DM_QUERY);
+        ticket.setApproBiz(approBiz);
         ticket.setStatusMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.TICKET_STATUS_WAIT_EXPLAIN.name()));
         ticket.setApproType(ApprovalType.valueOf(ticketConfig.getType()));
         ticket.setApproTemplateIdentity(ticketConfig.getTemplateId());
@@ -831,7 +837,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             this.approvalService.confirmSqlFile(ticket.getId(), fo.getAttachmentId(), uid);
         }
 
-        this.approvalFlowService.createProcess(ticket.getId(), ApprovalBiz.DM_QUERY, mo.getMessage() == null);
+        this.approvalFlowService.createProcess(ticket.getId(), approBiz, mo.getMessage() == null);
 
         result.setTicketId(ticket.getId());
         return result;
@@ -984,6 +990,116 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             this.approvalStateService.resetExecutionProgress(ticketId);
             this.approvalDal.approvalMapper().updateStatusByEnum(ticketId, ApprovalStatus.WAIT_CONFIRM, message);
         });
+    }
+
+    // --------------------------------------------------------------------------------
+    // SYSTEM-directed confirm entry (governance promoter) — new methods, does not
+    // modify existing confirmTicket / confirmTicketInTransaction / prepareExecJobAsync.
+    // Copies the original logic, deletes checkJobOperationEnable (L910/L874) and
+    // replaces queryByUid (L920) with hardcoded SYSTEM to avoid NPE.
+    // --------------------------------------------------------------------------------
+
+    @Override
+    public void confirmTicketBySystem(long ticketId, DmAutoExecConfigFO autoExecConfig) {
+        DmConfirmTicketFO fo = new DmConfirmTicketFO();
+        fo.setTicketId(ticketId);
+        fo.setConfirmActionType(DmConfirmActionType.CONFIRM);
+        fo.setConfirmUid(SYSTEM_OPERATOR);
+        fo.setAutoExecConfig(autoExecConfig);
+
+        ApprovalStatus actionStatus = statusFromConfirmAction(fo.getConfirmActionType(), fo.getAutoExecConfig().getAutoExecType());
+        if (actionStatus == ApprovalStatus.WAIT_EXEC) {
+            String jobBizId = DmTeamUtils.nextExecJobBizId();
+            Locale locale = DmI18nUtils.getLocale();
+            this.confirmTicketBySystemInNewTransaction(ticketId, fo, actionStatus);
+            if (!this.approvalTaskScheduler.submitControlTask(ticketId, () -> this.prepareExecJobAsSystemAsync(ticketId, fo, jobBizId, locale))) {
+                String message = DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_EXEC_TASK_SUBMIT_BUSY.name());
+                this.restoreExecutionConfirmation(ticketId, message);
+                throw new ErrorMessageException(message);
+            }
+            return;
+        }
+        this.confirmTicketBySystemInNewTransaction(ticketId, fo, actionStatus);
+    }
+
+    private void confirmTicketBySystemInNewTransaction(long ticketId, DmConfirmTicketFO fo, ApprovalStatus actionStatus) {
+        TransactionTemplate transaction = new TransactionTemplate(this.txManager);
+        transaction.executeWithoutResult(status -> this.confirmTicketBySystemInTransaction(ticketId, fo, actionStatus));
+    }
+
+    private void confirmTicketBySystemInTransaction(long ticketId, DmConfirmTicketFO fo, ApprovalStatus actionStatus) {
+        DmApprovalDO rdpTicketDO = this.approvalDal.approvalMapper().selectByIdForUpdate(ticketId);
+        if (rdpTicketDO == null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+        }
+        // checkJobOperationEnable intentionally skipped — SYSTEM has no user record.
+
+        if (rdpTicketDO.getTicketStatus() != ApprovalStatus.WAIT_CONFIRM) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_OPERATOR_TYPE_NOT_MATCH_STATUS.name()));
+        }
+        DmApprovalDO dmTicketDO = this.approvalDal.approvalMapper().queryByBizId(rdpTicketDO.getBizId());
+        if (dmTicketDO == null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+        }
+
+        // Hardcode SYSTEM — queryByUid("SYSTEM") returns null → NPE in original path.
+        ApprovalStageMO cContext = new ApprovalStageMO();
+        cContext.setExecUserName(Collections.singletonList(SYSTEM_OPERATOR));
+        if (StringUtils.isNotBlank(fo.getComment())) {
+            cContext.setExecMsg(fo.getComment());
+        }
+
+        this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.CONFIRM, ApprovalProcessStatus.FINISH, JsonUtils.toJson(cContext));
+
+        ApprovalStageMO nContext = new ApprovalStageMO();
+        if (fo.getAutoExecConfig().getAutoExecType() != AutoExecType.MANUAL_EXEC) {
+            nContext.setAutoExecute(true);
+        }
+        nContext.setExecUserName(Collections.singletonList(SYSTEM_OPERATOR));
+        if (actionStatus == ApprovalStatus.REJECTED) {
+            this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.EXECUTION, ApprovalProcessStatus.REJECT, JsonUtils.toJson(nContext));
+        } else if (actionStatus == ApprovalStatus.FINISHED) {
+            nContext.setExecMsg(DmI18nUtils.getMessage(I18nDmMsgKeys.TICKET_STATUS_COMPLETE_MESSAGE.name()));
+            this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.EXECUTION, ApprovalProcessStatus.FINISH, JsonUtils.toJson(nContext));
+        } else if (actionStatus == ApprovalStatus.WAIT_EXEC) {
+            this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.EXECUTION, ApprovalProcessStatus.INIT, JsonUtils.toJson(nContext));
+            this.approvalStateService.initializeExecutionProgress(ticketId);
+        }
+        String statusMessage = actionStatus == ApprovalStatus.WAIT_EXEC ? DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_STATUS_WAIT_EXEC_MESSAGE.name()) : fo.getComment();
+        if (ApprovalStatus.isEndStatus(actionStatus)) {
+            this.approvalFlowService.transitionTicketToTerminal(ticketId, actionStatus, statusMessage);
+        } else {
+            this.approvalDal.approvalMapper().updateStatusByEnum(ticketId, actionStatus, statusMessage);
+        }
+    }
+
+    private void prepareExecJobAsSystemAsync(long ticketId, DmConfirmTicketFO fo, String jobBizId, Locale locale) {
+        try {
+            DmApprovalDO rdpTicketDO = this.checkTicket(ticketId);
+            // checkJobOperationEnable intentionally skipped — SYSTEM has no user record.
+            if (rdpTicketDO.getTicketStatus() != ApprovalStatus.WAIT_EXEC) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_OPERATOR_TYPE_NOT_MATCH_STATUS.name()));
+            }
+
+            DmApprovalDO dmTicketDO = this.approvalDal.approvalMapper().queryByBizId(rdpTicketDO.getBizId());
+            if (dmTicketDO == null) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+            }
+            this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
+            this.updateAutoExecFlag(ticketId, true);
+            this.autoExecService.startJob(jobBizId, SYSTEM_OPERATOR);
+        } catch (RuntimeException e) {
+            log.error("Prepare ticket execution job failed (SYSTEM), ticketId={}", ticketId, e);
+            try {
+                this.autoExecService.deleteJob(jobBizId);
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+                log.error("Cleanup prepared auto execution job failed, jobBizId={}", jobBizId, cleanupError);
+            }
+            String failure = StringUtils.isBlank(e.getMessage()) ? e.getClass().getSimpleName() : e.getMessage();
+            String message = DmI18nUtils.getMessage(I18nDmMsgKeys.AUTO_EXEC_JOB_PREPARE_ERROR_MESSAGE.name(), locale, failure);
+            this.restoreExecutionConfirmation(ticketId, message);
+        }
     }
 
     private void createExecJob(DmConfirmTicketFO fo, DmApprovalDO rdpTicket, DmApprovalDO dmTicket, String jobBizId, Locale locale) {

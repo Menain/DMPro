@@ -22,6 +22,7 @@ import org.apache.ibatis.annotations.Param;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.ArgApprovalQueryObj;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
@@ -51,6 +52,8 @@ public interface DmApprovalMapper extends BaseMapper<DmApprovalDO> {
     int updateModified(Long id);
 
     List<Long> listUnFinishTicketIdList();
+
+    List<Long> listFinishedTicketIdList(@Param("approBiz") ApprovalBiz approBiz);
 
     DmApprovalDO selectByIdForUpdate(@Param("ticketId") Long ticketId);
 

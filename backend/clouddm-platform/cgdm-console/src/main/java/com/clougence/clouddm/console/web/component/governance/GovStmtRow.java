@@ -13,25 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
-
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+package com.clougence.clouddm.console.web.component.governance;
 
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * Single statement row produced by GovStmtSplitService — ready for stmt_version insert.
+ * stmtIndex starts at 1 (aligns with dm_exec_auto_task.exec_order, design D3).
+ */
 @Getter
 @Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+public class GovStmtRow {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    private int    stmtIndex;
+    private String stmtText;
+    private String stmtHash;
 }

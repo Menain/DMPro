@@ -143,7 +143,8 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.CREATE_LOGICAL_DB, //
                 AuditType.UPDATE_LOGICAL_DB, //
                 AuditType.DELETE_LOGICAL_DB, //
-                AuditType.SET_LOGICAL_DB_BINDING));
+                AuditType.SET_LOGICAL_DB_BINDING, //
+                AuditType.SUBMIT_DB_CHANGE_PRE));
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());

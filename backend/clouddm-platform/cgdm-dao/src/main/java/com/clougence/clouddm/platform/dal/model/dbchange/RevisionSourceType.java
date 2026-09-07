@@ -13,25 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.platform.dal.model.dbchange;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
-import lombok.Getter;
-import lombok.Setter;
-
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
-
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+/**
+ * Source type of a frozen revision.
+ * PRE_TICKET: path A — frozen from a successful PRE governance ticket.
+ * DIRECT_PROD_DML: path B — frozen from a direct-production DML ticket.
+ */
+public enum RevisionSourceType {
+    PRE_TICKET,
+    DIRECT_PROD_DML
 }

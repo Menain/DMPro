@@ -13,25 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.console.web.component.governance;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import java.util.List;
+
+import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
 
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * Result of governance SQL split: change type + per-statement rows.
+ */
 @Getter
 @Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+public class GovSplitResult {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    private ChangeType        changeType;
+    private List<GovStmtRow>  stmts;
 }

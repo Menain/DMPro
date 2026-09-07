@@ -13,25 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.platform.dal.model.dbchange;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
-import lombok.Getter;
-import lombok.Setter;
-
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
-
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+/**
+ * Governance event types recorded in dm_db_change_event (append-only).
+ */
+public enum GovEventType {
+    SUBMIT,
+    SYSTEM_APPROVE,
+    SYSTEM_CONFIRM,
+    REVISION_FROZEN,
+    FREEZE_ANOMALY
 }

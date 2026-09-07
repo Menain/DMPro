@@ -13,25 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.platform.dal.mapper.dbchange;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import java.util.List;
 
-import lombok.Getter;
-import lombok.Setter;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+public interface DmDbChangeEventMapper extends BaseMapper<DmDbChangeEventDO> {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
+    List<DmDbChangeEventDO> queryByTicketId(Long ticketId);
 
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    List<DmDbChangeEventDO> queryByRevisionId(Long revisionId);
 }

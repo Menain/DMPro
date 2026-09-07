@@ -13,25 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.console.web.service.governance;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 
-import lombok.Getter;
-import lombok.Setter;
+public interface DbChangeGovernService {
 
-@Getter
-@Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
-
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    /**
+     * Governance preSubmit: resolve PRE binding → check auth → split + classify →
+     * create DM_CHANGE ticket with governance ticketInfo → insert stmt_version rows → append SUBMIT event.
+     */
+    DmTicketResultVO preSubmit(String puid, String uid, GovPreSubmitFO fo);
 }

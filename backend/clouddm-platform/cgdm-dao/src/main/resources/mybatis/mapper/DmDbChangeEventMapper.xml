@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper">
+    <resultMap id="dmDbChangeEventDO" type="com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="promotion_id" property="promotionId"/>
+        <result column="revision_id" property="revisionId"/>
+        <result column="ticket_id" property="ticketId"/>
+        <result column="event_type" property="eventType"/>
+        <result column="from_status" property="fromStatus"/>
+        <result column="to_status" property="toStatus"/>
+        <result column="operator_uid" property="operatorUid"/>
+        <result column="event_data" property="eventData"/>
+    </resultMap>
+
+    <sql id="dmDbChangeEvent">
+        id,
+        gmt_create,
+        gmt_modified,
+        promotion_id,
+        revision_id,
+        ticket_id,
+        event_type,
+        from_status,
+        to_status,
+        operator_uid,
+        event_data
+    </sql>
+
+    <select id="queryByTicketId" resultMap="dmDbChangeEventDO">
+        SELECT
+            <include refid="dmDbChangeEvent"/>
+        FROM
+            dm_db_change_event
+        WHERE
+            ticket_id = #{ticketId}
+        ORDER BY
+            gmt_create
+    </select>
+
+    <select id="queryByRevisionId" resultMap="dmDbChangeEventDO">
+        SELECT
+            <include refid="dmDbChangeEvent"/>
+        FROM
+            dm_db_change_event
+        WHERE
+            revision_id = #{revisionId}
+        ORDER BY
+            gmt_create
+    </select>
+</mapper>

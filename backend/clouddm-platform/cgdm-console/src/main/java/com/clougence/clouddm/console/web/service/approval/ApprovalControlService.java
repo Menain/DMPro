@@ -23,6 +23,7 @@ import com.clougence.clouddm.console.web.model.vo.DmBizLogVO;
 import com.clougence.clouddm.console.web.model.vo.DmPageVO;
 import com.clougence.clouddm.console.web.model.vo.RdpApproTemplateVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.*;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 
 /**
@@ -37,7 +38,16 @@ public interface ApprovalControlService {
 
     DmTicketResultVO createSqlTicket(String puid, String uid, DmAddTicketFO fo);
 
+    DmTicketResultVO createSqlTicket(String puid, String uid, DmAddTicketFO fo, ApprovalBiz approBiz);
+
     String confirmTicket(String puid, long ticketId, DmConfirmTicketFO fo);
+
+    /**
+     * SYSTEM-directed confirm entry: bypasses user identity checks (checkJobOperationEnable)
+     * but retains state-machine guards. The autoExecConfig is server-constructed (D15 routing),
+     * not user-supplied. Does not modify existing confirmTicket behavior.
+     */
+    void confirmTicketBySystem(long ticketId, DmAutoExecConfigFO autoExecConfig);
 
     void createAuthTicket(String ownerUid, String uid, RdpAddAuthTicketFO fo);
 
