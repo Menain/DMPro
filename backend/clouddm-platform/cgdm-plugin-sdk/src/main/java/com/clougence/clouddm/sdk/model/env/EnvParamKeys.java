@@ -25,4 +25,13 @@ public interface EnvParamKeys {
     String SQL_TICKET_INFO         = "ticket_info";
     String CHANGE_TICKET_INFO      = "ticket_info_of_change";
     String DM_ALLOW_ALL_STATEMENTS = "dm_allow_all_statements";
+
+    // Database change governance: PRE / PROD / null(unmanaged)
+    String GOV_ROLE          = "GOV_ROLE";
+    // Path B direct production DML switch: on / off (default off)
+    String GOV_DML_DIRECT    = "GOV_DML_DIRECT";
+    // Path B EXPLAIN affected-row thresholds, e.g. warn:1000,block:100000
+    String GOV_DML_ROW_LIMIT = "GOV_DML_ROW_LIMIT";
+    // Auto-confirm execution after approval: on / off (default off)
+    String GOV_AUTO_CONFIRM  = "GOV_AUTO_CONFIRM";
 }

@@ -200,4 +200,23 @@ public interface SecRoleAuthLabel {
 
     @AuthLabel(order = 1, category = SecAuthCategory.CAT_DM_SQL_AUDIT, i18nKey = SecAuthI18nKeys.AUTH_KEY_DM_SQL_AUDIT_READ, tag = SecSysRole.DBA_ROLE_NAME)
     String DM_SQL_AUDIT                    = "DM_SQL_AUDIT";
+
+    // ================================ CAT_RDP_DB_CHANGE_GOVERN =================================
+
+    @AuthLabel(order = 0, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_DB_CHANGE_GOVERN_READ, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                                                  SecSysRole.ADMIN_ROLE_NAME })
+    String RDP_DB_CHANGE_GOVERN_READ       = "RDP_DB_CHANGE_GOVERN_READ";
+
+    @AuthLabel(order = 1, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_PERM_GROUP_MANAGE, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                                                 SecSysRole.ADMIN_ROLE_NAME })
+    String RDP_PERM_GROUP_MANAGE            = "RDP_PERM_GROUP_MANAGE";
+
+    @AuthLabel(order = 2, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_LOGICAL_DB_MANAGE, tag = SecSysRole.DBA_ROLE_NAME)
+    String RDP_LOGICAL_DB_MANAGE            = "RDP_LOGICAL_DB_MANAGE";
+
+    @AuthLabel(order = 3, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_DB_CHANGE_PROD_PROMOTE, tag = SecSysRole.DBA_ROLE_NAME)
+    String RDP_DB_CHANGE_PROD_PROMOTE       = "RDP_DB_CHANGE_PROD_PROMOTE";
+
+    @AuthLabel(order = 4, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_DB_CHANGE_PROD_DML_DIRECT, tag = SecSysRole.DBA_ROLE_NAME)
+    String RDP_DB_CHANGE_PROD_DML_DIRECT    = "RDP_DB_CHANGE_PROD_DML_DIRECT";
 }

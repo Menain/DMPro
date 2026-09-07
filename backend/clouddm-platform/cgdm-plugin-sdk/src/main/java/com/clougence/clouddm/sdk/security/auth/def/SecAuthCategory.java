@@ -102,4 +102,10 @@ public interface SecAuthCategory {
 
     @AuthCategory(order = 7, parent = CAT_RDP, i18nKey = SecAuthI18nKeys.CAT_DM_SQL_AUDIT)
     String CAT_DM_SQL_AUDIT             = "CAT_DM_SQL_AUDIT";
+
+    // ----------------------------------------------------
+    // Database Change Governance
+    // ----------------------------------------------------
+    @AuthCategory(order = 8, i18nKey = SecAuthI18nKeys.CAT_KEY_RDP_DB_CHANGE_GOVERN)
+    String CAT_RDP_DB_CHANGE_GOVERN      = "CAT_RDP_DB_CHANGE_GOVERN";
 }
