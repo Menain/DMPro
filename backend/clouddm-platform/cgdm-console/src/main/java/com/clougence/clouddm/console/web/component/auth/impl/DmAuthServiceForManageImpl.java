@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.clougence.clouddm.api.common.boot.UnifiedPostConstruct;
+import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.auth.DmAuthLabelService;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForManage;
@@ -74,6 +75,8 @@ public class DmAuthServiceForManageImpl implements DmAuthServiceForManage, Unifi
     private ScheduledExecutorService cleanExpiredAuthExecutor;
 
     private final AtomicBoolean      running = new AtomicBoolean(false);
+
+    private static final String       PERM_GROUP_DESC_PREFIX = "PERM_GROUP:";
 
     public void init() {
         if (running.compareAndSet(false, true)) {
@@ -383,6 +386,7 @@ public class DmAuthServiceForManageImpl implements DmAuthServiceForManage, Unifi
             if (CollectionUtils.isEmpty(list)) {
                 continue;
             }
+            assertNotPermGroupGranted(list);
             this.authDal.resMapper().deleteByPath(authDO.getResId(), targetUid, kindType, authDO.getResPath());
 
             // keep unknown
@@ -404,6 +408,9 @@ public class DmAuthServiceForManageImpl implements DmAuthServiceForManage, Unifi
 
         for (DmAuthResDO authDO : authDOs) {
             String key = targetUid + "-" + authDO.getResId() + "-" + authDO.getKindType() + "-" + authDO.getResPath();
+            if (oldAuthMap.containsKey(key)) {
+                assertNotPermGroupGranted(oldAuthMap.get(key));
+            }
             this.authDal.resMapper().deleteByPath(authDO.getResId(), targetUid, kindType, authDO.getResPath());
             if (oldAuthMap.containsKey(key)) {
                 keepUnknownLabels(oldAuthMap.get(key));
@@ -460,9 +467,11 @@ public class DmAuthServiceForManageImpl implements DmAuthServiceForManage, Unifi
                 continue;
             }
             if (finalLabels.isEmpty()) {
+                assertNotPermGroupGranted(Collections.singletonList(existingAuth));
                 this.authDal.resMapper().deleteById(existingAuth.getId());
                 continue;
             }
+            assertNotPermGroupGranted(Collections.singletonList(existingAuth));
             existingAuth.setAuthLabels(new ArrayList<>(finalLabels));
             existingAuth.setGmtModified(new Date());
             this.authDal.resMapper().updateById(existingAuth);
@@ -597,6 +606,15 @@ public class DmAuthServiceForManageImpl implements DmAuthServiceForManage, Unifi
         authDO.setLevelOne(GLOBAL_RESOURCE_PATH);
         if (CollectionUtils.isEmpty(authDO.getAuthLabels())) {
             authDO.setAuthLabels(this.allDataAuthLabels());
+        }
+    }
+
+    // touchpoint #4: reject individual revocation of permission-group-expanded auth rows
+    private void assertNotPermGroupGranted(List<DmAuthResDO> rows) {
+        for (DmAuthResDO row : rows) {
+            if (row.getResDesc() != null && row.getResDesc().startsWith(PERM_GROUP_DESC_PREFIX)) {
+                throw new ErrorMessageException("该权限来自权限组，请在组内操作");
+            }
         }
     }
 }

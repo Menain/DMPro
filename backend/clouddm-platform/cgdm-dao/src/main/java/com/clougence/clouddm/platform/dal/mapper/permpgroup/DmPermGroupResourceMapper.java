@@ -13,27 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.platform.dal.mapper.permpgroup;
 
-/**
- * @author bucketli 2020/2/29 11:49
- */
-public enum ResourceType {
+import java.util.List;
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP;
+import org.apache.ibatis.annotations.Param;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.clougence.clouddm.platform.dal.model.permpgroup.DmPermGroupResourceDO;
+
+public interface DmPermGroupResourceMapper extends BaseMapper<DmPermGroupResourceDO> {
+
+    List<DmPermGroupResourceDO> listByGroupId(@Param("groupId") long groupId);
+
+    int deleteByGroupId(@Param("groupId") long groupId);
 }

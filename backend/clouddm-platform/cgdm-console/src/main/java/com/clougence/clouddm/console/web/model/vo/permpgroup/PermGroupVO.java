@@ -13,27 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.console.web.model.vo.permpgroup;
 
-/**
- * @author bucketli 2020/2/29 11:49
- */
-public enum ResourceType {
+import java.util.Date;
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP;
+import lombok.Getter;
+import lombok.Setter;
+
+@Getter
+@Setter
+public class PermGroupVO {
+
+    private Long   id;
+    private String groupCode;
+    private String groupName;
+    private String description;
+    private String status;
+    private String creatorUid;
+    private Date   gmtCreate;
+    private int    memberCount;
+    private int    resourceCount;
 }

@@ -83,7 +83,17 @@ public enum AuditType {
 
     UPDATE_SYSTEM_CONFIG,
     AUTHORIZE_ACCESS_TO_ALIYUN,
-    REVOKE_ACCESS_TO_ALIYUN;
+    REVOKE_ACCESS_TO_ALIYUN,
+    //******* PERMISSION GROUP *******
+    CREATE_PERM_GROUP,
+    UPDATE_PERM_GROUP,
+    DELETE_PERM_GROUP,
+    ENABLE_PERM_GROUP,
+    DISABLE_PERM_GROUP,
+    ADD_PERM_GROUP_MEMBER,
+    REMOVE_PERM_GROUP_MEMBER,
+    GRANT_PERM_GROUP_RESOURCE,
+    REVOKE_PERM_GROUP_RESOURCE;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

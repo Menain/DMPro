@@ -88,7 +88,8 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 ResourceType.DATA_EXPORT, //
                 ResourceType.ACCOUNT, //
                 ResourceType.ROLE, //
-                ResourceType.DS_ENV));
+                ResourceType.DS_ENV, //
+                ResourceType.PERM_GROUP));
 
         auditTypes.addAll(Arrays.asList(AuditType.ADD_DATA_SOURCE, //
                 AuditType.DELETE_DATA_SOURCE, //
@@ -124,7 +125,16 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.UPDATE_ACCOUNT_OP_PWD, //
                 AuditType.UPDATE_SYSTEM_CONFIG, //
                 AuditType.AUTHORIZE_ACCESS_TO_ALIYUN, //
-                AuditType.REVOKE_ACCESS_TO_ALIYUN));
+                AuditType.REVOKE_ACCESS_TO_ALIYUN, //
+                AuditType.CREATE_PERM_GROUP, //
+                AuditType.UPDATE_PERM_GROUP, //
+                AuditType.DELETE_PERM_GROUP, //
+                AuditType.ENABLE_PERM_GROUP, //
+                AuditType.DISABLE_PERM_GROUP, //
+                AuditType.ADD_PERM_GROUP_MEMBER, //
+                AuditType.REMOVE_PERM_GROUP_MEMBER, //
+                AuditType.GRANT_PERM_GROUP_RESOURCE, //
+                AuditType.REVOKE_PERM_GROUP_RESOURCE));
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());
