@@ -743,4 +743,32 @@ public class AutoExecServiceImpl implements AutoExecService {
 
         return sendDTO;
     }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void replaceTask(String bizId, long failedTaskId, String newExecSql) {
+        DmExecAutoJobDO job = requireJob(bizId);
+
+        DmExecAutoTaskDO failedTask = this.execDal.autoTaskMapper().selectById(failedTaskId);
+        if (failedTask == null || !Objects.equals(failedTask.getAutoExecJobId(), job.getId())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.AUTO_EXEC_TASK_JOB_NOT_MATCH_ERROR_MESSAGE.name()));
+        }
+
+        if (failedTask.getStatus() != AutoExecTaskStatus.FAILED && failedTask.getStatus() != AutoExecTaskStatus.ROLLBACK) {
+            throw new ErrorMessageException("Only FAILED or ROLLBACK tasks can be replaced, current status: " + failedTask.getStatus());
+        }
+
+        // Old task → CANCELED (never replayed: CANCELED ∉ retryTask/create replay set)
+        this.execDal.autoTaskMapper().updateStatusByTaskId(failedTaskId, AutoExecTaskStatus.CANCELED);
+
+        // New task row: reuses exec_order, new biz_id/query_id (same generators as createJob)
+        DmExecAutoTaskDO newTask = new DmExecAutoTaskDO();
+        newTask.setExecSql(newExecSql);
+        newTask.setExecOrder(failedTask.getExecOrder());
+        newTask.setStatus(AutoExecTaskStatus.WAIT_EXEC);
+        newTask.setAutoExecJobId(job.getId());
+        newTask.setBizId(DmTeamUtils.nextExecTaskBizId());
+        newTask.setQueryId(UUID.randomUUID().toString());
+        this.execDal.autoTaskMapper().batchInsert(List.of(newTask));
+    }
 }

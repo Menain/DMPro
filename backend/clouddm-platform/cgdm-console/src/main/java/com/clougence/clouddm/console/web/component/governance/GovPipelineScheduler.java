@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.api.common.boot.UnifiedPostConstruct;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
+import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 import com.clougence.utils.ThreadUtils;
 
@@ -42,6 +43,8 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
     private GovAutoAdvanceService  govAutoAdvanceService;
     @Resource
     private RevisionFreezeService  revisionFreezeService;
+    @Resource
+    private GovFailureNotifyService govFailureNotifyService;
 
     @Override
     public void init() throws Exception {
@@ -84,7 +87,13 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
             log.error("[GovPipeline] freezeFinishedRevisions error", e);
         }
 
-        // Phase 5: notifyFailedStatements();
+        // Duty 3: notify failed statements (Phase 5)
+        try {
+            govFailureNotifyService.scanAndNotify();
+        } catch (Throwable e) {
+            log.error("[GovPipeline] scanAndNotify error", e);
+        }
+
         // Phase 6: syncPromotionStatus();
     }
 }

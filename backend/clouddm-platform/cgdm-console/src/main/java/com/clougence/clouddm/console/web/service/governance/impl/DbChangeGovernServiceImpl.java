@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.service.governance.impl;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -33,7 +34,9 @@ import com.clougence.clouddm.console.web.component.governance.GovSplitResult;
 import com.clougence.clouddm.console.web.component.governance.GovStmtRow;
 import com.clougence.clouddm.console.web.component.governance.GovStmtSplitService;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAddTicketFO;
+import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
@@ -42,6 +45,7 @@ import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
 import com.clougence.clouddm.console.web.util.DsResPathObj;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.ExecutionDal;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
@@ -51,6 +55,9 @@ import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeStmtVersionDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbchange.StmtSource;
+import com.clougence.clouddm.platform.dal.model.execution.AutoExecTaskStatus;
+import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
+import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoTaskDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 import com.clougence.clouddm.sdk.security.auth.AuthKind;
 import com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel;
@@ -78,6 +85,8 @@ public class DbChangeGovernServiceImpl implements DbChangeGovernService {
     private DbChangeGovernDal     dbChangeGovernDal;
     @Resource
     private ApprovalDal            approvalDal;
+    @Resource
+    private ExecutionDal           executionDal;
     @Resource
     private PlatformTransactionManager txManager;
 
@@ -200,5 +209,97 @@ public class DbChangeGovernServiceImpl implements DbChangeGovernService {
         eventDO.setEventData(JsonUtils.toJson(data));
 
         dbChangeGovernDal.eventMapper().insert(eventDO);
+    }
+
+    @Override
+    public StmtTimelineVO stmtTimeline(String puid, String uid, GovStmtTimelineFO fo) {
+        long ticketId = fo.getTicketId();
+
+        // Source 1: stmt_version rows — group by stmt_index, sort by version ascending
+        List<DmDbChangeStmtVersionDO> stmtVersions = dbChangeGovernDal.stmtVersionMapper().queryByTicketId(ticketId);
+        Map<Integer, List<DmDbChangeStmtVersionDO>> versionGroups = new LinkedHashMap<>();
+        for (DmDbChangeStmtVersionDO row : stmtVersions) {
+            versionGroups.computeIfAbsent(row.getStmtIndex(), k -> new ArrayList<>()).add(row);
+        }
+        for (List<DmDbChangeStmtVersionDO> group : versionGroups.values()) {
+            group.sort((a, b) -> Integer.compare(a.getStmtVersion(), b.getStmtVersion()));
+        }
+
+        // Source 2: task terminal states — resolve via ticket → bizId → job → tasks
+        Map<Integer, String> taskStatusByIndex = new LinkedHashMap<>();
+        Map<Integer, Integer> correctionCountByIndex = new LinkedHashMap<>();
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket != null && ticket.getBizId() != null) {
+            DmExecAutoJobDO job = executionDal.autoJobMapper().queryByDependOnBizId(ticket.getBizId());
+            if (job != null) {
+                List<DmExecAutoTaskDO> tasks = executionDal.autoTaskMapper().queryListByJobId(job.getId(), null);
+                // Group by exec_order, pick the latest non-CANCELED status per order
+                Map<Integer, DmExecAutoTaskDO> latestByOrder = new LinkedHashMap<>();
+                Map<Integer, Integer> canceledCountByOrder = new HashMap<>();
+                for (DmExecAutoTaskDO task : tasks) {
+                    int order = task.getExecOrder();
+                    if (task.getStatus() == AutoExecTaskStatus.CANCELED) {
+                        canceledCountByOrder.merge(order, 1, Integer::sum);
+                    } else {
+                        DmExecAutoTaskDO existing = latestByOrder.get(order);
+                        if (existing == null || task.getId() > existing.getId()) {
+                            latestByOrder.put(order, task);
+                        }
+                    }
+                }
+                for (Map.Entry<Integer, DmExecAutoTaskDO> entry : latestByOrder.entrySet()) {
+                    taskStatusByIndex.put(entry.getKey(), entry.getValue().getStatus().name());
+                }
+                for (Map.Entry<Integer, Integer> entry : canceledCountByOrder.entrySet()) {
+                    correctionCountByIndex.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+
+        // Source 3: CORRECTION events — filter from event list
+        List<DmDbChangeEventDO> events = dbChangeGovernDal.eventMapper().queryByTicketId(ticketId);
+        Map<Integer, Integer> eventCorrectionCount = new HashMap<>();
+        for (DmDbChangeEventDO event : events) {
+            if (!GovEventType.CORRECTION.name().equals(event.getEventType())) {
+                continue;
+            }
+            if (StringUtils.isBlank(event.getEventData())) {
+                continue;
+            }
+            Map<String, Object> data = JsonUtils.toObj(event.getEventData(), HashMap.class);
+            Object stmtIdx = data.get("stmtIndex");
+            if (stmtIdx != null) {
+                int idx = Integer.parseInt(String.valueOf(stmtIdx));
+                eventCorrectionCount.merge(idx, 1, Integer::sum);
+            }
+        }
+
+        // Aggregate: one StmtGroup per stmt_index
+        List<StmtTimelineVO.StmtGroup> groups = new ArrayList<>();
+        for (Map.Entry<Integer, List<DmDbChangeStmtVersionDO>> entry : versionGroups.entrySet()) {
+            int stmtIndex = entry.getKey();
+            StmtTimelineVO.StmtGroup group = new StmtTimelineVO.StmtGroup();
+            group.setStmtIndex(stmtIndex);
+            group.setCurrentStatus(taskStatusByIndex.getOrDefault(stmtIndex, "UNKNOWN"));
+            group.setCorrectionCount(eventCorrectionCount.getOrDefault(stmtIndex, 0));
+
+            List<StmtTimelineVO.VersionEntry> versions = new ArrayList<>();
+            for (DmDbChangeStmtVersionDO row : entry.getValue()) {
+                StmtTimelineVO.VersionEntry version = new StmtTimelineVO.VersionEntry();
+                version.setVersion(row.getStmtVersion());
+                version.setStmtHash(row.getStmtHash());
+                version.setSource(row.getSource());
+                version.setFailReason(row.getFailReason());
+                version.setOperatorUid(row.getOperatorUid());
+                version.setGmtCreate(row.getGmtCreate());
+                versions.add(version);
+            }
+            group.setVersions(versions);
+            groups.add(group);
+        }
+
+        StmtTimelineVO vo = new StmtTimelineVO();
+        vo.setGroups(groups);
+        return vo;
     }
 }

@@ -13,17 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.console.web.model.fo.governance;
+
+import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.Setter;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Governance stmtTimeline request FO — read-only per-statement timeline view.
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED
+@Getter
+@Setter
+public class GovStmtTimelineFO {
+
+    @NotNull
+    private Long ticketId;
 }

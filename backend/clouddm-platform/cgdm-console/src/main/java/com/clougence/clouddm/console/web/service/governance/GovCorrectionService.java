@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.console.web.service.governance;
+
+import com.clougence.clouddm.console.web.model.fo.governance.GovCorrectStatementFO;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Governance statement correction service — PRE failure correction loop (spec §4.6, §6.1-③, Phase 5 design D2).
+ * <p>
+ * Flow: auth triple → locate failed task → incremental audit (zero side-effects) →
+ * stmt_version+1 (CORRECTION) + event → replaceTask → retryJob.
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED
+public interface GovCorrectionService {
+
+    long correctStatement(String puid, String uid, GovCorrectStatementFO fo);
 }

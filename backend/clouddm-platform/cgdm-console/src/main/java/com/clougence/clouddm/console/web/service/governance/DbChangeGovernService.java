@@ -16,6 +16,8 @@
 package com.clougence.clouddm.console.web.service.governance;
 
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
+import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 
 public interface DbChangeGovernService {
@@ -25,4 +27,10 @@ public interface DbChangeGovernService {
      * create DM_CHANGE ticket with governance ticketInfo → insert stmt_version rows → append SUBMIT event.
      */
     DmTicketResultVO preSubmit(String puid, String uid, GovPreSubmitFO fo);
+
+    /**
+     * Read-only per-statement timeline view — aggregates stmt_version history, task terminal state,
+     * and correction events by stmt_index (spec §3.4, Phase 5 design D5).
+     */
+    StmtTimelineVO stmtTimeline(String puid, String uid, GovStmtTimelineFO fo);
 }

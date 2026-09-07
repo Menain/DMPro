@@ -13,17 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.console.web.service.governance;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Governance failure notification service — Phase 5 design D3.
+ * <p>
+ * Scans EXEC_FAIL governance tickets, sends a plain-text IM notification to the submitter
+ * (statement location + error summary + deep link), and records a FAIL_NOTIFIED event for idempotency.
+ * Notifications never block the correction loop.
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED
+public interface GovFailureNotifyService {
+
+    void scanAndNotify();
 }

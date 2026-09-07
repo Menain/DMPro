@@ -16,6 +16,7 @@
 package com.clougence.clouddm.console.web.controller.governance;
 
 import static com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH;
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_READ;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_REQUEST;
 
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,10 +28,14 @@ import com.clougence.clouddm.api.common.rpc.ResWebData;
 import com.clougence.clouddm.api.common.rpc.ResWebDataUtils;
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
+import com.clougence.clouddm.console.web.model.fo.governance.GovCorrectStatementFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
+import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.DbChangeGovernService;
+import com.clougence.clouddm.console.web.service.governance.GovCorrectionService;
 import com.clougence.clouddm.platform.dal.model.ResourceType;
 import com.clougence.clouddm.platform.dal.model.monitor.AuditType;
 import com.clougence.rdp.service.RdpOpAuditService;
@@ -48,6 +53,8 @@ public class DbChangeGovernController {
     @Resource
     private DbChangeGovernService dbChangeGovernService;
     @Resource
+    private GovCorrectionService  govCorrectionService;
+    @Resource
     private RdpOpAuditService    rdpOpAuditService;
 
     @RequestAuth(level = HIGH, value = RDP_WORKER_ORDER_REQUEST)
@@ -58,6 +65,26 @@ public class DbChangeGovernController {
         DmTicketResultVO vo = dbChangeGovernService.preSubmit(puid, uid, fo);
         rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
             fo.getLogicalDbId(), fo, HIGH, AuditType.SUBMIT_DB_CHANGE_PRE, ResourceType.LOGICAL_DB);
+        return ResWebDataUtils.buildSuccess(vo);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_WORKER_ORDER_REQUEST)
+    @RequestMapping(value = "/correctStatement", method = RequestMethod.POST)
+    public ResWebData<?> correctStatement(@Valid @RequestBody GovCorrectStatementFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        long logicalDbId = govCorrectionService.correctStatement(puid, uid, fo);
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            logicalDbId, fo, HIGH, AuditType.CORRECT_DB_CHANGE_STMT, ResourceType.LOGICAL_DB);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_WORKER_ORDER_READ)
+    @RequestMapping(value = "/stmtTimeline", method = RequestMethod.POST)
+    public ResWebData<StmtTimelineVO> stmtTimeline(@Valid @RequestBody GovStmtTimelineFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        StmtTimelineVO vo = dbChangeGovernService.stmtTimeline(puid, uid, fo);
         return ResWebDataUtils.buildSuccess(vo);
     }
 }

@@ -60,4 +60,19 @@ public interface AutoExecService {
 
     void delete(long attachmentId);
 
+    /**
+     * Governance correction touchpoint #6: replace a failed task's SQL with corrected text.
+     * <p>
+     * Failed task → CANCELED; new task row created with WAIT_EXEC status, reusing the original exec_order
+     * and generating a new biz_id/query_id. The old task is never replayed (CANCELED ∉ retryTask/create
+     * replay set), the new task is always replayed (WAIT_EXEC ∈ replay set).
+     * <p>
+     * Existing methods are unchanged — this is a pure addition (spec §2.2 touchpoint #6).
+     *
+     * @param bizId        ticket bizId (same semantics as retryJob/skipTask — job is found via queryByDependOnBizId)
+     * @param failedTaskId the FAILED or ROLLBACK task to replace
+     * @param newExecSql   corrected single-statement SQL text
+     */
+    void replaceTask(String bizId, long failedTaskId, String newExecSql);
+
 }

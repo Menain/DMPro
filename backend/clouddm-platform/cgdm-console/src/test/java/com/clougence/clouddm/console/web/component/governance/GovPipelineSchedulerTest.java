@@ -22,6 +22,7 @@ import org.junit.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
+import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 
 public class GovPipelineSchedulerTest {
@@ -29,55 +30,71 @@ public class GovPipelineSchedulerTest {
     private GovPipelineScheduler scheduler;
     private GovAutoAdvanceService  advanceService;
     private RevisionFreezeService   freezeService;
+    private GovFailureNotifyService  notifyService;
 
     @Before
     public void setUp() {
         scheduler = new GovPipelineScheduler();
         advanceService = mock(GovAutoAdvanceService.class);
         freezeService = mock(RevisionFreezeService.class);
+        notifyService = mock(GovFailureNotifyService.class);
         ReflectionTestUtils.setField(scheduler, "govAutoAdvanceService", advanceService);
         ReflectionTestUtils.setField(scheduler, "revisionFreezeService", freezeService);
+        ReflectionTestUtils.setField(scheduler, "govFailureNotifyService", notifyService);
     }
 
     @Test
-    public void doSchedule_advanceThrows_freezeStillRuns() throws Exception {
+    public void doSchedule_advanceThrows_freezeAndNotifyStillRun() throws Exception {
         doThrow(new RuntimeException("advance error"))
             .when(advanceService).advancePreTickets();
 
-        // Invoke doSchedule via reflection (private method)
-        java.lang.reflect.Method method = GovPipelineScheduler.class.getDeclaredMethod("doSchedule");
-        method.setAccessible(true);
-        method.invoke(scheduler);
+        invokeDoSchedule();
 
-        // freeze must still be called despite advance throwing
+        verify(freezeService).freezeFinishedRevisions();
+        verify(notifyService).scanAndNotify();
+    }
+
+    @Test
+    public void doSchedule_freezeThrows_advanceAndNotifyStillRun() throws Exception {
+        doThrow(new RuntimeException("freeze error"))
+            .when(freezeService).freezeFinishedRevisions();
+
+        invokeDoSchedule();
+
+        verify(advanceService).advancePreTickets();
+        verify(notifyService).scanAndNotify();
+    }
+
+    @Test
+    public void doSchedule_notifyThrows_advanceAndFreezeStillRun() throws Exception {
+        doThrow(new RuntimeException("notify error"))
+            .when(notifyService).scanAndNotify();
+
+        invokeDoSchedule();
+
+        verify(advanceService).advancePreTickets();
         verify(freezeService).freezeFinishedRevisions();
     }
 
     @Test
-    public void doSchedule_freezeThrows_advanceStillRan() throws Exception {
-        doThrow(new RuntimeException("freeze error"))
-            .when(freezeService).freezeFinishedRevisions();
-
-        java.lang.reflect.Method method = GovPipelineScheduler.class.getDeclaredMethod("doSchedule");
-        method.setAccessible(true);
-        method.invoke(scheduler);
-
-        verify(advanceService).advancePreTickets();
-    }
-
-    @Test
-    public void doSchedule_bothThrow_noExceptionEscapes() throws Exception {
+    public void doSchedule_allThrow_noExceptionEscapes() throws Exception {
         doThrow(new RuntimeException("advance error"))
             .when(advanceService).advancePreTickets();
         doThrow(new RuntimeException("freeze error"))
             .when(freezeService).freezeFinishedRevisions();
+        doThrow(new RuntimeException("notify error"))
+            .when(notifyService).scanAndNotify();
 
-        java.lang.reflect.Method method = GovPipelineScheduler.class.getDeclaredMethod("doSchedule");
-        method.setAccessible(true);
-        // Should not throw
-        method.invoke(scheduler);
+        invokeDoSchedule();
 
         verify(advanceService).advancePreTickets();
         verify(freezeService).freezeFinishedRevisions();
+        verify(notifyService).scanAndNotify();
+    }
+
+    private void invokeDoSchedule() throws Exception {
+        java.lang.reflect.Method method = GovPipelineScheduler.class.getDeclaredMethod("doSchedule");
+        method.setAccessible(true);
+        method.invoke(scheduler);
     }
 }
