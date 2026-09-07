@@ -13,28 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.console.web.model.vo.logicaldb;
 
-/**
- * @author bucketli 2020/2/29 11:49
- */
-public enum ResourceType {
+import lombok.Getter;
+import lombok.Setter;
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP,
-    LOGICAL_DB;
+@Getter
+@Setter
+public class MyLogicalDbVO {
+
+    private Long   id;
+    private String resourceCode;
+    private String resourceName;
 }

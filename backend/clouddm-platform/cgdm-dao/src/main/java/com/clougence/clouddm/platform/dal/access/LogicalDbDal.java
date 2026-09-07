@@ -13,28 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.platform.dal.access;
 
-/**
- * @author bucketli 2020/2/29 11:49
- */
-public enum ResourceType {
+import com.clougence.clouddm.platform.dal.mapper.logicaldb.DmLogicalDbEnvBindingMapper;
+import com.clougence.clouddm.platform.dal.mapper.logicaldb.DmLogicalDbMapper;
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP,
-    LOGICAL_DB;
+public interface LogicalDbDal {
+
+    DmLogicalDbMapper logicalDbMapper();
+
+    DmLogicalDbEnvBindingMapper bindingMapper();
 }

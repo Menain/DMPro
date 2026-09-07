@@ -13,28 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.platform.dal.mapper.logicaldb;
 
-/**
- * @author bucketli 2020/2/29 11:49
- */
-public enum ResourceType {
+import java.util.List;
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP,
-    LOGICAL_DB;
+import org.apache.ibatis.annotations.Param;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbEnvBindingDO;
+
+public interface DmLogicalDbEnvBindingMapper extends BaseMapper<DmLogicalDbEnvBindingDO> {
+
+    List<DmLogicalDbEnvBindingDO> listByLogicalDbId(@Param("logicalDbId") long logicalDbId);
+
+    int deleteByLogicalDbId(@Param("logicalDbId") long logicalDbId);
 }

@@ -13,28 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.platform.dal.model.logicaldb;
 
 /**
- * @author bucketli 2020/2/29 11:49
+ * Governance role assigned to an environment via the GOV_ROLE env param.
+ * PRE: pre-production validation environment; PROD: production enforcement environment.
  */
-public enum ResourceType {
-
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP,
-    LOGICAL_DB;
+public enum GovRole {
+    PRE,
+    PROD
 }

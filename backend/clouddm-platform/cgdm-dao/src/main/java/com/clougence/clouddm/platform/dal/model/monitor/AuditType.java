@@ -93,7 +93,12 @@ public enum AuditType {
     ADD_PERM_GROUP_MEMBER,
     REMOVE_PERM_GROUP_MEMBER,
     GRANT_PERM_GROUP_RESOURCE,
-    REVOKE_PERM_GROUP_RESOURCE;
+    REVOKE_PERM_GROUP_RESOURCE,
+    //******* LOGICAL DB *******
+    CREATE_LOGICAL_DB,
+    UPDATE_LOGICAL_DB,
+    DELETE_LOGICAL_DB,
+    SET_LOGICAL_DB_BINDING;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

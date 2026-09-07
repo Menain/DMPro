@@ -13,28 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model;
+package com.clougence.clouddm.console.web.model.vo.logicaldb;
+
+import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
+
+import lombok.Getter;
+import lombok.Setter;
 
 /**
- * @author bucketli 2020/2/29 11:49
+ * Internal resolution result from getBinding — not an HTTP VO.
+ * Consumed by Phase 4 (preSubmit) and Phase 6 (promote).
  */
-public enum ResourceType {
+@Getter
+@Setter
+public class LogicalDbTarget {
 
-    CATALOG,
-    PURE_URL,
-    DATASOURCE,
-    CLUSTER,
-    WORKER,
-    CONSOLE_JOB,
-    DS_ENV,
-    TICKET,
-    PACKAGE,
-    QUERY,
-    DATA_EXPORT,
-    ACCOUNT,
-    ROLE,
-    CONSOLE_USER,
-    CONSOLE,
-    PERM_GROUP,
-    LOGICAL_DB;
+    private Long     bindingId;
+    private Long     logicalDbId;
+    private Long     envId;
+    private Long     dsId;
+    private String   resPath;
+    private GovRole  govRole;
 }
