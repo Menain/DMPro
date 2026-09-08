@@ -338,7 +338,9 @@ public class GovDirectDmlServiceImpl implements GovDirectDmlService {
         } else {
             thresholdEvidence = "riskLevel=" + riskLevel + ", row_limit not configured";
         }
-        items.add(buildGateItem(6, "Threshold", true, thresholdEvidence, now));
+        Map<String, Object> thresholdItem = buildGateItem(6, "Threshold", true, thresholdEvidence, now);
+        thresholdItem.put("riskLevel", riskLevel); // structured field for Phase 9 form consumption
+        items.add(thresholdItem);
 
         return JsonUtils.toJson(items);
     }

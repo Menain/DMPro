@@ -21,7 +21,8 @@ import lombok.Setter;
 /**
  * Result of a direct DML submit — three-object summary for the frontend success page.
  * riskLevel: NORMAL (≤warn or unconfigured) / HIGH (warn<x≤block).
- * Phase 9 reads gate_result for the approval form risk-level field; Phase 10 frontend consumes this VO.
+ * Phase 9 (resolved): {@code GovChangeFormAssembler} reads gate_result riskLevel for the
+ * approval form risk-level field on path-B tickets; Phase 10 frontend consumes this VO.
  */
 @Getter
 @Setter

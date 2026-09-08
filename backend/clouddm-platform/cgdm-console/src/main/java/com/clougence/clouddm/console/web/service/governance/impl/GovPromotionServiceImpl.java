@@ -235,17 +235,16 @@ public class GovPromotionServiceImpl implements GovPromotionService {
     // ======= promote (gate-one + create promotion + create PROD ticket) =======
 
     /**
-     * Phase 9 gap (design D10, spec §2.2 touchpoint #7):
+     * Phase 9 gap (design D10, spec §2.2 touchpoint #7) — resolved by Phase 9:
      * <p>
-     * PROD ticket creation succeeds in this method, but the asynchronous PRE_INIT → WAIT_APPROVAL →
-     * ApprovalTaskScheduler → external-approval-instance-creation chain will fail in real environments
-     * because {@code ChangeApprovalHandler.convertToChangeForm} (L278) depends on CI/CD fields
-     * ({@code changeId}/{@code changeOwnerUid}) that governance tickets do not carry. The exception is
-     * caught at L233 → {@code failTicket} → ticket FAILED → duty-4 sync maps promotion to FAILED.
+     * Previously, PROD ticket creation succeeded but the asynchronous PRE_INIT → WAIT_APPROVAL →
+     * ApprovalTaskScheduler → external-approval-instance-creation chain would fail because
+     * {@code ChangeApprovalHandler.convertToChangeForm} (L278) depended on CI/CD fields
+     * ({@code changeId}/{@code changeOwnerUid}) that governance tickets do not carry.
      * <p>
-     * This is the spec-mandated Phase 9 sequencing gap (touchpoint #7 = Phase 9), NOT a Phase 6 defect.
-     * Phase 9 will extend {@code convertToChangeForm} with a governance branch. Until then, real PROD
-     * promotions terminate at FAILED in production; unit tests mock the boundary at ticket-creation success.
+     * Phase 9 (touchpoint #7) eliminated this gap: {@code convertToChangeForm} now has a governance
+     * branch ({@code GovChangeFormAssembler}) that assembles the §5.5 nine fields from server-side DB
+     * sources. Governance PROD tickets now successfully create external approval instances.
      */
     @Override
     public long promote(String puid, String uid, GovPromoteFO fo) {

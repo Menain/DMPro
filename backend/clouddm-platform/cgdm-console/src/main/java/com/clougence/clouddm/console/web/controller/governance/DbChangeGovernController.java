@@ -153,8 +153,9 @@ public class DbChangeGovernController {
      * DBA-only label + server-side resource auth double insurance.
      * Resolves PROD binding, evaluates threshold, creates three objects in one transaction.
      * <p>
-     * Phase 9 seam: gate_result riskLevel/estimatedRows is a data source for the
-     * approval form risk-level field (convertToChangeForm governance branch).
+     * Phase 9 seam (resolved): gate_result riskLevel/estimatedRows is consumed by
+     * {@code GovChangeFormAssembler} (convertToChangeForm governance branch) for the
+     * approval form risk-level field on path-B direct DML tickets.
      */
     @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_PROD_DML_DIRECT)
     @RequestMapping(value = "/directDmlSubmit", method = RequestMethod.POST)

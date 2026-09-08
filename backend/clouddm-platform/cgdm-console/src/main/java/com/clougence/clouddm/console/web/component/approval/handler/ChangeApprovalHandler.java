@@ -29,6 +29,7 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.cicd.ImMessageType;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.cicd.model.ChangeTicketInfo;
+import com.clougence.clouddm.console.web.component.governance.GovChangeFormAssembler;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.vo.PrimaryUserVO;
@@ -75,6 +76,8 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     private ApprovalStateService approvalStateService;
     @Resource
     private ChangeCascadeService changeCascadeService;
+    @Resource
+    private GovChangeFormAssembler govChangeFormAssembler;
 
     @Override
     public ApprovalBiz handleType() {
@@ -273,7 +276,18 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     }
 
     private ChangeForm convertToChangeForm(DmApprovalDO ticketDO, String templateId) {
-        ApprovalMO info = JsonUtils.toObj(ticketDO.getTicketInfo(), ApprovalMO.class);
+        ApprovalMO info;
+        try {
+            info = JsonUtils.toObj(ticketDO.getTicketInfo(), ApprovalMO.class);
+        } catch (Exception e) {
+            // D8: parse failure → fallback to CI/CD path (never let governance detection become a CI/CD failure mode)
+            info = null;
+        }
+        // Phase 9 touchpoint #7: governance branch (PRE/PROD governance tickets)
+        if (info != null && info.getGovRole() != null) {
+            return govChangeFormAssembler.build(ticketDO, info, templateId);
+        }
+        // —— CI/CD original logic (zero change) ——
         if (info == null || info.getChangeOwnerUid() == null || info.getChangeId() == null) {
             throw new IllegalArgumentException("ticket info is null");
         }
