@@ -72,6 +72,7 @@ import com.clougence.clouddm.platform.dal.access.ExecutionDal;
 import com.clougence.clouddm.platform.dal.access.ObjectCacheDao;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.access.entry.DsCacheEntry;
+import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.*;
 import com.clougence.clouddm.platform.dal.model.system.DmSysWorkerDO;
@@ -106,6 +107,8 @@ public class AutoExecServiceImpl implements AutoExecService {
     @Resource
     private ExecutionDal               execDal;
     @Resource
+    private com.clougence.clouddm.platform.dal.access.ApprovalDal approvalDal;
+    @Resource
     private DataSourceDal              dsDal;
     @Resource
     private ObjectCacheDao             cacheDao;
@@ -123,6 +126,11 @@ public class AutoExecServiceImpl implements AutoExecService {
     private LocalFileService           localFileService;
     @Resource
     private PlatformTransactionManager txManager;
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.approval.ApprovalControlService approvalControlService;
+    @Resource
+    private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
@@ -256,6 +264,23 @@ public class AutoExecServiceImpl implements AutoExecService {
     public void dispatchJob(Long jobId) {
         if (this.execDal.autoJobMapper().claimJobForPackaging(jobId) != 1) {
             return;
+        }
+        // Phase 7 touchpoint #3: gate-two guard (covers retry/reschedule paths — §4.6)
+        DmExecAutoJobDO guardJob = this.execDal.autoJobMapper().queryById(jobId);
+        if (guardJob != null) {
+            DmApprovalDO guardTicket = this.approvalDal.approvalMapper().queryByBizId(guardJob.getDependOnBizId());
+            if (guardTicket != null) {
+                com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
+                    = this.govExecutionGuardService.checkByJob(guardTicket.getPrimaryUid(), jobId);
+                if (guardConclusion.isDeny()) {
+                    // Delete job+tasks (not markJobFailed) to free the depend_on_biz_id
+                    // UNIQUE constraint (uk_exec_auto_job_depend_biz) for re-confirmation —
+                    // matches prepareExecJobAsync catch pattern (deleteJob + restore).
+                    this.doDeleteJob(jobId);
+                    this.approvalControlService.restoreExecutionConfirmationByGuard(guardTicket.getId(), guardConclusion.getSummary());
+                    return;
+                }
+            }
         }
         AutoExecTaskPackageInfo taskPackage;
         try {

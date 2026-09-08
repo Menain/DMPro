@@ -49,6 +49,13 @@ public interface ApprovalControlService {
      */
     void confirmTicketBySystem(long ticketId, DmAutoExecConfigFO autoExecConfig);
 
+    /**
+     * Guard-directed restore entry (Phase 7 touchpoint #3): delegates to the existing
+     * private restoreExecutionConfirmation, exposing it for AutoExecServiceImpl's dispatchJob
+     * guard DENY path. W3 read-modify-write preserves all ticketInfo governance fields.
+     */
+    void restoreExecutionConfirmationByGuard(long ticketId, String message);
+
     void createAuthTicket(String ownerUid, String uid, RdpAddAuthTicketFO fo);
 
     void retryJob(String puid, String uid, long ticketId);

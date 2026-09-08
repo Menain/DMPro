@@ -70,6 +70,15 @@
             id = #{id}
     </update>
 
+    <update id="updatePreflightResult">
+        UPDATE
+            dm_db_change_promotion
+        SET
+            preflight_result = #{preflightResult}
+        WHERE
+            id = #{id}
+    </update>
+
     <select id="listNonTerminal" resultMap="dmDbChangePromotionDO">
         SELECT
             <include refid="dmDbChangePromotion"/>

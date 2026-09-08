@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.api.common.boot.UnifiedPostConstruct;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
+import com.clougence.clouddm.console.web.service.governance.GovAutoConfirmService;
 import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
 import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
@@ -48,6 +49,8 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
     private GovFailureNotifyService govFailureNotifyService;
     @Resource
     private GovPromotionSyncService govPromotionSyncService;
+    @Resource
+    private GovAutoConfirmService   govAutoConfirmService;
 
     @Override
     public void init() throws Exception {
@@ -102,6 +105,13 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
             govPromotionSyncService.syncPromotionStatus();
         } catch (Throwable e) {
             log.error("[GovPipeline] syncPromotionStatus error", e);
+        }
+
+        // Duty 5: auto-confirm PROD governance tickets when GOV_AUTO_CONFIRM=on (Phase 7)
+        try {
+            govAutoConfirmService.autoConfirmProdTickets();
+        } catch (Throwable e) {
+            log.error("[GovPipeline] autoConfirmProdTickets error", e);
         }
     }
 }

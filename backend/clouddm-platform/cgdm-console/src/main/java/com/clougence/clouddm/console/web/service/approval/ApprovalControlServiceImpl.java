@@ -156,6 +156,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private ApprovalTaskScheduler       approvalTaskScheduler;
     @Resource
     private PlatformTransactionManager  txManager;
+    @Resource
+    private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
 
     //
     // ticket list
@@ -886,6 +888,12 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (dmTicketDO == null) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
             }
+            // Phase 7 touchpoint #2: gate-two guard (non-governance/PRE short-circuits to PASS)
+            com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
+                = this.govExecutionGuardService.checkByTicket(rdpTicketDO.getPrimaryUid(), dmTicketDO, toJobConfig(fo.getAutoExecConfig()));
+            if (guardConclusion.isDeny()) {
+                throw new ErrorMessageException(guardConclusion.getSummary());
+            }
             this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
             this.updateAutoExecFlag(ticketId, true);
             this.autoExecService.startJob(jobBizId, fo.getConfirmUid());
@@ -992,6 +1000,22 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         });
     }
 
+    @Override
+    public void restoreExecutionConfirmationByGuard(long ticketId, String message) {
+        this.restoreExecutionConfirmation(ticketId, message);
+    }
+
+    private static com.clougence.clouddm.platform.dal.model.execution.RsExecAutoJobConfigObj toJobConfig(DmAutoExecConfigFO fo) {
+        com.clougence.clouddm.platform.dal.model.execution.RsExecAutoJobConfigObj config
+            = new com.clougence.clouddm.platform.dal.model.execution.RsExecAutoJobConfigObj();
+        config.setEnableTransactional(fo.isEnableTransactional());
+        config.setErrorStrategy(fo.getErrorStrategy());
+        config.setRetryWaitTime(fo.getRetryWaitTime());
+        config.setRetryCount(fo.getRetryCount());
+        config.setLanguageTag(null);
+        return config;
+    }
+
     // --------------------------------------------------------------------------------
     // SYSTEM-directed confirm entry (governance promoter) — new methods, does not
     // modify existing confirmTicket / confirmTicketInTransaction / prepareExecJobAsync.
@@ -1084,6 +1108,12 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             DmApprovalDO dmTicketDO = this.approvalDal.approvalMapper().queryByBizId(rdpTicketDO.getBizId());
             if (dmTicketDO == null) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+            }
+            // Phase 7 touchpoint #2 (SYSTEM path): gate-two guard — same as prepareExecJobAsync
+            com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
+                = this.govExecutionGuardService.checkByTicket(rdpTicketDO.getPrimaryUid(), dmTicketDO, toJobConfig(fo.getAutoExecConfig()));
+            if (guardConclusion.isDeny()) {
+                throw new ErrorMessageException(guardConclusion.getSummary());
             }
             this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
             this.updateAutoExecFlag(ticketId, true);
@@ -1178,6 +1208,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     public void skipTask(String puid, String uid, DmQueryAutoExecFO fo) {
         DmApprovalDO ticketDO = this.checkTicket(fo.getTicketId());
         checkJobOperationEnable(ticketDO, uid);
+        this.govExecutionGuardService.assertNotGovernanceProd(ticketDO);
         this.autoExecService.skipTask(ticketDO.getBizId(), fo.getTaskId());
     }
 
@@ -1185,6 +1216,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     public void canceledSkipTask(String puid, String uid, DmQueryAutoExecFO fo) {
         DmApprovalDO ticketDO = this.checkTicket(fo.getTicketId());
         checkJobOperationEnable(ticketDO, uid);
+        this.govExecutionGuardService.assertNotGovernanceProd(ticketDO);
         this.autoExecService.continueTask(ticketDO.getBizId(), fo.getTaskId());
     }
 

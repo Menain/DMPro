@@ -13,23 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.console.web.service.governance;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Duty 5 of the governance pipeline scheduler (Phase 7, design D9).
+ * Auto-confirms PROD governance tickets when GOV_AUTO_CONFIRM=on.
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED,
-    PROMOTION_CREATED,
-    GATE_DENY,
-    STATUS_SYNC,
-    GUARD_PASS,
-    GUARD_DENY,
-    AUTO_CONFIRM
+public interface GovAutoConfirmService {
+
+    /**
+     * Scan non-terminal governance PROD tickets in WAIT_CONFIRM status.
+     * If the PROD env has GOV_AUTO_CONFIRM=on, call confirmTicketBySystem
+     * (which naturally triggers the touchpoint #2 guard — gate-two is always on the path).
+     */
+    void autoConfirmProdTickets();
 }

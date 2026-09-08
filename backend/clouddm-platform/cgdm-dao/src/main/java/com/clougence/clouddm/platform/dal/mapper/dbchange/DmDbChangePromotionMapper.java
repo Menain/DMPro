@@ -40,6 +40,12 @@ public interface DmDbChangePromotionMapper extends BaseMapper<DmDbChangePromotio
     int updateProdApprovalId(@Param("id") long id, @Param("prodApprovalId") long prodApprovalId);
 
     /**
+     * Single-field update for preflight_result (Phase 7 guard evidence).
+     * Non-status field — only this column is written, status stays on the state machine.
+     */
+    int updatePreflightResult(@Param("id") long id, @Param("preflightResult") String preflightResult);
+
+    /**
      * Scan non-terminal promotions (including FAILED — needed for the revival edge).
      */
     List<DmDbChangePromotionDO> listNonTerminal();

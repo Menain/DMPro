@@ -663,8 +663,8 @@ public class GovPromotionServiceImpl implements GovPromotionService {
 
         // Parse gate_result JSON to VO list
         vo.setGateResult(parseGateResult(promotion.getGateResult()));
-        // preflight_result always empty in Phase 6
-        vo.setPreflightResult(List.of());
+        // Parse preflight_result JSON (Phase 7 guard writes this — items have String item names)
+        vo.setPreflightResult(parsePreflightResult(promotion.getPreflightResult()));
 
         // Revision summary
         DmDbChangeRevisionDO revision = dbChangeGovernDal.revisionMapper().selectById(promotion.getRevisionId());
@@ -731,6 +731,33 @@ public class GovPromotionServiceImpl implements GovPromotionService {
             gvo.setPass(Boolean.TRUE.equals(item.get("pass")));
             gvo.setReason(item.get("reason") != null ? String.valueOf(item.get("reason")) : null);
             gvo.setTimestamp(item.get("timestamp") != null ? String.valueOf(item.get("timestamp")) : null);
+            result.add(gvo);
+        }
+        return result;
+    }
+
+    private List<PromotionDetailVO.GateItemVO> parsePreflightResult(String preflightResultJson) {
+        if (StringUtils.isBlank(preflightResultJson)) {
+            return List.of();
+        }
+        Map<String, Object> root = JsonUtils.toObj(preflightResultJson, Map.class);
+        if (root == null) {
+            return List.of();
+        }
+        Object itemsObj = root.get("items");
+        if (itemsObj == null || !(itemsObj instanceof List)) {
+            return List.of();
+        }
+        List<Map<String, Object>> items = (List<Map<String, Object>>) itemsObj;
+        List<PromotionDetailVO.GateItemVO> result = new ArrayList<>();
+        for (Map<String, Object> item : items) {
+            PromotionDetailVO.GateItemVO gvo = new PromotionDetailVO.GateItemVO();
+            Object itemVal = item.get("item");
+            gvo.setItem(itemVal instanceof Number ? ((Number) itemVal).intValue() : 0);
+            gvo.setLabel(item.get("item") != null ? String.valueOf(item.get("item")) : null);
+            gvo.setPass(Boolean.TRUE.equals(item.get("pass")));
+            gvo.setReason(item.get("evidence") != null ? String.valueOf(item.get("evidence")) : null);
+            gvo.setTimestamp(item.get("ts") != null ? String.valueOf(item.get("ts")) : null);
             result.add(gvo);
         }
         return result;

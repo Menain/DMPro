@@ -22,6 +22,7 @@ import org.junit.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
+import com.clougence.clouddm.console.web.service.governance.GovAutoConfirmService;
 import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
 import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
@@ -33,6 +34,7 @@ public class GovPipelineSchedulerTest {
     private RevisionFreezeService   freezeService;
     private GovFailureNotifyService  notifyService;
     private GovPromotionSyncService  syncService;
+    private GovAutoConfirmService    autoConfirmService;
 
     @Before
     public void setUp() {
@@ -41,10 +43,12 @@ public class GovPipelineSchedulerTest {
         freezeService = mock(RevisionFreezeService.class);
         notifyService = mock(GovFailureNotifyService.class);
         syncService = mock(GovPromotionSyncService.class);
+        autoConfirmService = mock(GovAutoConfirmService.class);
         ReflectionTestUtils.setField(scheduler, "govAutoAdvanceService", advanceService);
         ReflectionTestUtils.setField(scheduler, "revisionFreezeService", freezeService);
         ReflectionTestUtils.setField(scheduler, "govFailureNotifyService", notifyService);
         ReflectionTestUtils.setField(scheduler, "govPromotionSyncService", syncService);
+        ReflectionTestUtils.setField(scheduler, "govAutoConfirmService", autoConfirmService);
     }
 
     @Test
@@ -57,6 +61,7 @@ public class GovPipelineSchedulerTest {
         verify(freezeService).freezeFinishedRevisions();
         verify(notifyService).scanAndNotify();
         verify(syncService).syncPromotionStatus();
+        verify(autoConfirmService).autoConfirmProdTickets();
     }
 
     @Test
@@ -69,6 +74,7 @@ public class GovPipelineSchedulerTest {
         verify(advanceService).advancePreTickets();
         verify(freezeService).freezeFinishedRevisions();
         verify(notifyService).scanAndNotify();
+        verify(autoConfirmService).autoConfirmProdTickets();
     }
 
     @Test
@@ -81,6 +87,22 @@ public class GovPipelineSchedulerTest {
             .when(notifyService).scanAndNotify();
         doThrow(new RuntimeException("sync error"))
             .when(syncService).syncPromotionStatus();
+        doThrow(new RuntimeException("confirm error"))
+            .when(autoConfirmService).autoConfirmProdTickets();
+
+        invokeDoSchedule();
+
+        verify(advanceService).advancePreTickets();
+        verify(freezeService).freezeFinishedRevisions();
+        verify(notifyService).scanAndNotify();
+        verify(syncService).syncPromotionStatus();
+        verify(autoConfirmService).autoConfirmProdTickets();
+    }
+
+    @Test
+    public void doSchedule_autoConfirmThrows_othersStillRun() throws Exception {
+        doThrow(new RuntimeException("confirm error"))
+            .when(autoConfirmService).autoConfirmProdTickets();
 
         invokeDoSchedule();
 
