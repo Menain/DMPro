@@ -23,14 +23,16 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
 import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
+import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 
 public class GovPipelineSchedulerTest {
 
     private GovPipelineScheduler scheduler;
-    private GovAutoAdvanceService  advanceService;
+    private GovAutoAdvanceService   advanceService;
     private RevisionFreezeService   freezeService;
     private GovFailureNotifyService  notifyService;
+    private GovPromotionSyncService  syncService;
 
     @Before
     public void setUp() {
@@ -38,13 +40,15 @@ public class GovPipelineSchedulerTest {
         advanceService = mock(GovAutoAdvanceService.class);
         freezeService = mock(RevisionFreezeService.class);
         notifyService = mock(GovFailureNotifyService.class);
+        syncService = mock(GovPromotionSyncService.class);
         ReflectionTestUtils.setField(scheduler, "govAutoAdvanceService", advanceService);
         ReflectionTestUtils.setField(scheduler, "revisionFreezeService", freezeService);
         ReflectionTestUtils.setField(scheduler, "govFailureNotifyService", notifyService);
+        ReflectionTestUtils.setField(scheduler, "govPromotionSyncService", syncService);
     }
 
     @Test
-    public void doSchedule_advanceThrows_freezeAndNotifyStillRun() throws Exception {
+    public void doSchedule_advanceThrows_othersStillRun() throws Exception {
         doThrow(new RuntimeException("advance error"))
             .when(advanceService).advancePreTickets();
 
@@ -52,28 +56,19 @@ public class GovPipelineSchedulerTest {
 
         verify(freezeService).freezeFinishedRevisions();
         verify(notifyService).scanAndNotify();
+        verify(syncService).syncPromotionStatus();
     }
 
     @Test
-    public void doSchedule_freezeThrows_advanceAndNotifyStillRun() throws Exception {
-        doThrow(new RuntimeException("freeze error"))
-            .when(freezeService).freezeFinishedRevisions();
-
-        invokeDoSchedule();
-
-        verify(advanceService).advancePreTickets();
-        verify(notifyService).scanAndNotify();
-    }
-
-    @Test
-    public void doSchedule_notifyThrows_advanceAndFreezeStillRun() throws Exception {
-        doThrow(new RuntimeException("notify error"))
-            .when(notifyService).scanAndNotify();
+    public void doSchedule_syncThrows_othersStillRun() throws Exception {
+        doThrow(new RuntimeException("sync error"))
+            .when(syncService).syncPromotionStatus();
 
         invokeDoSchedule();
 
         verify(advanceService).advancePreTickets();
         verify(freezeService).freezeFinishedRevisions();
+        verify(notifyService).scanAndNotify();
     }
 
     @Test
@@ -84,12 +79,15 @@ public class GovPipelineSchedulerTest {
             .when(freezeService).freezeFinishedRevisions();
         doThrow(new RuntimeException("notify error"))
             .when(notifyService).scanAndNotify();
+        doThrow(new RuntimeException("sync error"))
+            .when(syncService).syncPromotionStatus();
 
         invokeDoSchedule();
 
         verify(advanceService).advancePreTickets();
         verify(freezeService).freezeFinishedRevisions();
         verify(notifyService).scanAndNotify();
+        verify(syncService).syncPromotionStatus();
     }
 
     private void invokeDoSchedule() throws Exception {

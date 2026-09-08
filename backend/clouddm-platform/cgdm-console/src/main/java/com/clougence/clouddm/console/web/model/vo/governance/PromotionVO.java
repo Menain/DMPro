@@ -13,21 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.console.web.model.vo.governance;
 
-import java.util.List;
+import java.util.Date;
 
-import org.apache.ibatis.annotations.Param;
+import lombok.Getter;
+import lombok.Setter;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO;
+@Getter
+@Setter
+public class PromotionVO {
 
-public interface DmDbChangeRevisionMapper extends BaseMapper<DmDbChangeRevisionDO> {
-
-    DmDbChangeRevisionDO queryBySourceTicketId(Long sourceTicketId);
-
-    /**
-     * List all revisions in the tenant domain (via JOIN dm_logical_db.creator_uid = puid).
-     */
-    List<DmDbChangeRevisionDO> listByTenant(@Param("puid") String puid);
+    private Long   id;
+    private String promotionCode;
+    private String promotionType;
+    private Long   revisionId;
+    private Long   logicalDbId;
+    private String status;
+    private Date   gmtCreate;
+    private Date   gmtModified;
 }

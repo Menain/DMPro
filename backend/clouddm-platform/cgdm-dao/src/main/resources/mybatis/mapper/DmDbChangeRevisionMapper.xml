@@ -47,4 +47,31 @@
             source_ticket_id = #{sourceTicketId}
         LIMIT 1
     </select>
+
+    <select id="listByTenant" resultMap="dmDbChangeRevisionDO">
+        SELECT
+            r.id,
+            r.gmt_create,
+            r.gmt_modified,
+            r.revision_code,
+            r.logical_db_id,
+            r.env_id,
+            r.source_type,
+            r.source_ticket_id,
+            r.change_type,
+            r.sql_text,
+            r.rollback_sql_text,
+            r.sql_hash,
+            r.rollback_sql_hash,
+            r.stmt_manifest,
+            r.audit_snapshot
+        FROM
+            dm_db_change_revision r
+        INNER JOIN
+            dm_logical_db l
+            ON r.logical_db_id = l.id
+            AND l.creator_uid = #{puid}
+        ORDER BY
+            r.gmt_create DESC
+    </select>
 </mapper>

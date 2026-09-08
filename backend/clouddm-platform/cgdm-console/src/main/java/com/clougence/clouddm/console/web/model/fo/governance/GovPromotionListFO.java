@@ -13,21 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.console.web.model.fo.governance;
 
-import java.util.List;
+import com.clougence.clouddm.platform.dal.util.PageObj;
 
-import org.apache.ibatis.annotations.Param;
+import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.Setter;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO;
+/**
+ * Promotion list query FO — paginated with optional status/type filters.
+ */
+@Getter
+@Setter
+public class GovPromotionListFO {
 
-public interface DmDbChangeRevisionMapper extends BaseMapper<DmDbChangeRevisionDO> {
+    @NotNull
+    private PageObj page;
 
-    DmDbChangeRevisionDO queryBySourceTicketId(Long sourceTicketId);
+    private String status;
 
-    /**
-     * List all revisions in the tenant domain (via JOIN dm_logical_db.creator_uid = puid).
-     */
-    List<DmDbChangeRevisionDO> listByTenant(@Param("puid") String puid);
+    private String promotionType;
 }

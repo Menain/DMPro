@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import com.clougence.clouddm.api.common.boot.UnifiedPostConstruct;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
 import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
+import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
 import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 import com.clougence.utils.ThreadUtils;
 
@@ -45,6 +46,8 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
     private RevisionFreezeService  revisionFreezeService;
     @Resource
     private GovFailureNotifyService govFailureNotifyService;
+    @Resource
+    private GovPromotionSyncService govPromotionSyncService;
 
     @Override
     public void init() throws Exception {
@@ -94,6 +97,11 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
             log.error("[GovPipeline] scanAndNotify error", e);
         }
 
-        // Phase 6: syncPromotionStatus();
+        // Duty 4: sync promotion status from source ticket (Phase 6)
+        try {
+            govPromotionSyncService.syncPromotionStatus();
+        } catch (Throwable e) {
+            log.error("[GovPipeline] syncPromotionStatus error", e);
+        }
     }
 }

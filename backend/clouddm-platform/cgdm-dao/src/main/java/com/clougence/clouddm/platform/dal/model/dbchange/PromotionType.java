@@ -13,21 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.platform.dal.model.dbchange;
 
-import java.util.List;
-
-import org.apache.ibatis.annotations.Param;
-
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO;
-
-public interface DmDbChangeRevisionMapper extends BaseMapper<DmDbChangeRevisionDO> {
-
-    DmDbChangeRevisionDO queryBySourceTicketId(Long sourceTicketId);
-
-    /**
-     * List all revisions in the tenant domain (via JOIN dm_logical_db.creator_uid = puid).
-     */
-    List<DmDbChangeRevisionDO> listByTenant(@Param("puid") String puid);
+/**
+ * Promotion source type — how the revision enters production.
+ * PRE_PROMOTION: path A — frozen from a successful PRE governance ticket.
+ * DIRECT_PROD_DML: path B — direct production DML ticket (Phase 8).
+ */
+public enum PromotionType {
+    PRE_PROMOTION,
+    DIRECT_PROD_DML
 }

@@ -51,4 +51,15 @@
         ORDER BY
             gmt_create
     </select>
+
+    <select id="queryByPromotionId" resultMap="dmDbChangeEventDO">
+        SELECT
+            <include refid="dmDbChangeEvent"/>
+        FROM
+            dm_db_change_event
+        WHERE
+            promotion_id = #{promotionId}
+        ORDER BY
+            gmt_create
+    </select>
 </mapper>

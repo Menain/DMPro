@@ -13,21 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.console.web.service.governance;
 
-import java.util.List;
+/**
+ * Governance promotion status sync service — Phase 6 duty 4 (design D6).
+ * <p>
+ * Scans non-terminal promotions (including FAILED for the revival edge),
+ * maps the source ticket status to the promotion target via D2 table,
+ * and performs a conditional state-machine transit (idempotent).
+ */
+public interface GovPromotionSyncService {
 
-import org.apache.ibatis.annotations.Param;
-
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeRevisionDO;
-
-public interface DmDbChangeRevisionMapper extends BaseMapper<DmDbChangeRevisionDO> {
-
-    DmDbChangeRevisionDO queryBySourceTicketId(Long sourceTicketId);
-
-    /**
-     * List all revisions in the tenant domain (via JOIN dm_logical_db.creator_uid = puid).
-     */
-    List<DmDbChangeRevisionDO> listByTenant(@Param("puid") String puid);
+    void syncPromotionStatus();
 }

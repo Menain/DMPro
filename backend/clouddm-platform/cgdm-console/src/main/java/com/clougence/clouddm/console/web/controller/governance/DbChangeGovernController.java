@@ -16,6 +16,8 @@
 package com.clougence.clouddm.console.web.controller.governance;
 
 import static com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH;
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_DB_CHANGE_GOVERN_READ;
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_DB_CHANGE_PROD_PROMOTE;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_READ;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_REQUEST;
 
@@ -30,12 +32,20 @@ import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.governance.GovCorrectStatementFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovPromotionListFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovPromoteFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
+import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbIdFO;
+import com.clougence.clouddm.console.web.model.vo.DmPageVO;
+import com.clougence.clouddm.console.web.model.vo.governance.AvailableRevisionVO;
+import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
+import com.clougence.clouddm.console.web.model.vo.governance.PromotionVO;
 import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.DbChangeGovernService;
 import com.clougence.clouddm.console.web.service.governance.GovCorrectionService;
+import com.clougence.clouddm.console.web.service.governance.GovPromotionService;
 import com.clougence.clouddm.platform.dal.model.ResourceType;
 import com.clougence.clouddm.platform.dal.model.monitor.AuditType;
 import com.clougence.rdp.service.RdpOpAuditService;
@@ -54,6 +64,8 @@ public class DbChangeGovernController {
     private DbChangeGovernService dbChangeGovernService;
     @Resource
     private GovCorrectionService  govCorrectionService;
+    @Resource
+    private GovPromotionService   govPromotionService;
     @Resource
     private RdpOpAuditService    rdpOpAuditService;
 
@@ -85,6 +97,45 @@ public class DbChangeGovernController {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
         StmtTimelineVO vo = dbChangeGovernService.stmtTimeline(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess(vo);
+    }
+
+    // ======================== Phase 6: Promotion ========================
+
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_GOVERN_READ)
+    @RequestMapping(value = "/availableRevisions", method = RequestMethod.POST)
+    public ResWebData<java.util.List<AvailableRevisionVO>> availableRevisions(HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        java.util.List<AvailableRevisionVO> list = govPromotionService.availableRevisions(puid, uid);
+        return ResWebDataUtils.buildSuccess(list);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_PROD_PROMOTE)
+    @RequestMapping(value = "/promote", method = RequestMethod.POST)
+    public ResWebData<?> promote(@Valid @RequestBody GovPromoteFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        long promotionId = govPromotionService.promote(puid, uid, fo);
+        long logicalDbId = govPromotionService.resolveLogicalDbId(puid, promotionId);
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            logicalDbId, fo, HIGH, AuditType.PROMOTE_DB_CHANGE, ResourceType.LOGICAL_DB);
+        return ResWebDataUtils.buildSuccess(promotionId);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_GOVERN_READ)
+    @RequestMapping(value = "/promotionList", method = RequestMethod.POST)
+    public ResWebData<DmPageVO<PromotionVO>> promotionList(@Valid @RequestBody GovPromotionListFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        DmPageVO<PromotionVO> page = govPromotionService.promotionList(puid, fo);
+        return ResWebDataUtils.buildSuccess(page);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_GOVERN_READ)
+    @RequestMapping(value = "/promotionDetail", method = RequestMethod.POST)
+    public ResWebData<PromotionDetailVO> promotionDetail(@Valid @RequestBody LogicalDbIdFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        PromotionDetailVO vo = govPromotionService.promotionDetail(puid, fo.getId());
         return ResWebDataUtils.buildSuccess(vo);
     }
 }

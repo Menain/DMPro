@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
+import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangePromotionMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeRevisionMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeStmtVersionMapper;
 
@@ -35,6 +36,8 @@ public class DbChangeGovernDalImpl implements DbChangeGovernDal {
     private DmDbChangeRevisionMapper   revisionMapper;
     @Resource
     private DmDbChangeEventMapper      eventMapper;
+    @Resource
+    private DmDbChangePromotionMapper  promotionMapper;
 
     @Override
     public DmDbChangeStmtVersionMapper stmtVersionMapper() {
@@ -49,5 +52,10 @@ public class DbChangeGovernDalImpl implements DbChangeGovernDal {
     @Override
     public DmDbChangeEventMapper eventMapper() {
         return eventMapper;
+    }
+
+    @Override
+    public DmDbChangePromotionMapper promotionMapper() {
+        return promotionMapper;
     }
 }

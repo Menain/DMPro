@@ -25,4 +25,6 @@ public interface DmDbChangeEventMapper extends BaseMapper<DmDbChangeEventDO> {
     List<DmDbChangeEventDO> queryByTicketId(Long ticketId);
 
     List<DmDbChangeEventDO> queryByRevisionId(Long revisionId);
+
+    List<DmDbChangeEventDO> queryByPromotionId(Long promotionId);
 }

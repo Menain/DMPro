@@ -16,12 +16,14 @@
 package com.clougence.clouddm.platform.dal.access;
 
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
+import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangePromotionMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeRevisionMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeStmtVersionMapper;
 
 /**
  * Immutability contract (spec §3.4): revision and stmt_version tables are insert + read only.
  * Event table is append-only (insert only). No update/delete doorways.
+ * Promotion table is mutable via controlled state-machine methods only (transitStatus / updateProdApprovalId).
  */
 public interface DbChangeGovernDal {
 
@@ -30,4 +32,6 @@ public interface DbChangeGovernDal {
     DmDbChangeRevisionMapper revisionMapper();
 
     DmDbChangeEventMapper eventMapper();
+
+    DmDbChangePromotionMapper promotionMapper();
 }

@@ -16,17 +16,23 @@
 package com.clougence.clouddm.platform.dal.model.dbchange;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Promotion status — the state machine for a production deployment artifact.
+ * <p>
+ * Main trunk: CREATED -> APPROVING -> APPROVED -> CONFIRMED -> EXECUTING -> SUCCEEDED
+ * Branches:   REJECTED, CANCELLED, FAILED
+ * <p>
+ * Terminal states (no outgoing transitions): SUCCEEDED, REJECTED, CANCELLED.
+ * FAILED has exactly one revival edge: FAILED -> EXECUTING (when the source ticket
+ * recovers from EXEC_FAIL via retryJob — spec §4.6 "瞬态→retryJob 断点续跑").
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED,
-    PROMOTION_CREATED,
-    GATE_DENY,
-    STATUS_SYNC
+public enum PromotionStatus {
+    CREATED,
+    APPROVING,
+    APPROVED,
+    CONFIRMED,
+    EXECUTING,
+    SUCCEEDED,
+    REJECTED,
+    CANCELLED,
+    FAILED
 }
