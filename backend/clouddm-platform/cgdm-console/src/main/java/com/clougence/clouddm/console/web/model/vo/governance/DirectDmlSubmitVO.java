@@ -13,25 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.console.web.model.vo.governance;
+
+import lombok.Getter;
+import lombok.Setter;
 
 /**
- * Governance event types recorded in dm_db_change_event (append-only).
+ * Result of a direct DML submit — three-object summary for the frontend success page.
+ * riskLevel: NORMAL (≤warn or unconfigured) / HIGH (warn<x≤block).
+ * Phase 9 reads gate_result for the approval form risk-level field; Phase 10 frontend consumes this VO.
  */
-public enum GovEventType {
-    SUBMIT,
-    SYSTEM_APPROVE,
-    SYSTEM_CONFIRM,
-    REVISION_FROZEN,
-    FREEZE_ANOMALY,
-    CORRECTION,
-    FAIL_NOTIFIED,
-    PROMOTION_CREATED,
-    GATE_DENY,
-    STATUS_SYNC,
-    GUARD_PASS,
-    GUARD_DENY,
-    AUTO_CONFIRM,
-    DIRECT_DML_SUBMIT,
-    DIRECT_DML_DENY
+@Getter
+@Setter
+public class DirectDmlSubmitVO {
+
+    private Long    ticketId;
+    private Long    revisionId;
+    private String  revisionCode;
+    private Long    promotionId;
+    private String  promotionCode;
+    private String  riskLevel;
 }

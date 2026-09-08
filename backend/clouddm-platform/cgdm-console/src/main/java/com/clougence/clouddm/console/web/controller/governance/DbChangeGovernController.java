@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.controller.governance;
 
 import static com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_DB_CHANGE_GOVERN_READ;
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_DB_CHANGE_PROD_DML_DIRECT;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_DB_CHANGE_PROD_PROMOTE;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_READ;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_REQUEST;
@@ -31,6 +32,7 @@ import com.clougence.clouddm.api.common.rpc.ResWebDataUtils;
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.governance.GovCorrectStatementFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovDirectDmlSubmitFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPromotionListFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPromoteFO;
@@ -38,6 +40,7 @@ import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbIdFO;
 import com.clougence.clouddm.console.web.model.vo.DmPageVO;
 import com.clougence.clouddm.console.web.model.vo.governance.AvailableRevisionVO;
+import com.clougence.clouddm.console.web.model.vo.governance.DirectDmlSubmitVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionVO;
 import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
@@ -45,6 +48,7 @@ import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.DbChangeGovernService;
 import com.clougence.clouddm.console.web.service.governance.GovCorrectionService;
+import com.clougence.clouddm.console.web.service.governance.GovDirectDmlService;
 import com.clougence.clouddm.console.web.service.governance.GovPromotionService;
 import com.clougence.clouddm.platform.dal.model.ResourceType;
 import com.clougence.clouddm.platform.dal.model.monitor.AuditType;
@@ -66,6 +70,8 @@ public class DbChangeGovernController {
     private GovCorrectionService  govCorrectionService;
     @Resource
     private GovPromotionService   govPromotionService;
+    @Resource
+    private GovDirectDmlService   govDirectDmlService;
     @Resource
     private RdpOpAuditService    rdpOpAuditService;
 
@@ -136,6 +142,28 @@ public class DbChangeGovernController {
     public ResWebData<PromotionDetailVO> promotionDetail(@Valid @RequestBody LogicalDbIdFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         PromotionDetailVO vo = govPromotionService.promotionDetail(puid, fo.getId());
+        return ResWebDataUtils.buildSuccess(vo);
+    }
+
+    // ======================== Phase 8: Path B Direct DML ========================
+
+    /**
+     * Direct production DML submit (Path B).
+     * <p>
+     * DBA-only label + server-side resource auth double insurance.
+     * Resolves PROD binding, evaluates threshold, creates three objects in one transaction.
+     * <p>
+     * Phase 9 seam: gate_result riskLevel/estimatedRows is a data source for the
+     * approval form risk-level field (convertToChangeForm governance branch).
+     */
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_PROD_DML_DIRECT)
+    @RequestMapping(value = "/directDmlSubmit", method = RequestMethod.POST)
+    public ResWebData<DirectDmlSubmitVO> directDmlSubmit(@Valid @RequestBody GovDirectDmlSubmitFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        DirectDmlSubmitVO vo = govDirectDmlService.directDmlSubmit(puid, uid, fo);
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            fo.getLogicalDbId(), fo, HIGH, AuditType.SUBMIT_DB_CHANGE_DIRECT_DML, ResourceType.LOGICAL_DB);
         return ResWebDataUtils.buildSuccess(vo);
     }
 }
