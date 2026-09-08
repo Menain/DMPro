@@ -139,6 +139,36 @@ public class GovFailureNotifyServiceTest {
     }
 
     @Test
+    public void notify_deepLinkContainsNoCredentials() {
+        // A4: the deep link /ticket/{id} is a pure entry point — authentication happens on the
+        // platform. The message body must not carry token, jwt, password, secret, or session IDs.
+        setupExecFailTicket();
+        setupJob();
+        setupFailedTask();
+        setupBizLog("error");
+        setupMessenger(true);
+        when(eventMapper.queryByTicketId(TICKET_ID)).thenReturn(Collections.emptyList());
+
+        service.scanAndNotify();
+
+        ArgumentCaptor<MsgContent> msgCaptor = ArgumentCaptor.forClass(MsgContent.class);
+        verify(imSenderService).sendMessage(eq(UID), any(ImSenderConfig.class), msgCaptor.capture());
+        String body = msgCaptor.getValue().getBody();
+
+        // Deep link present
+        assertTrue(body.contains("/ticket/" + TICKET_ID));
+        // No credential-like fields in the message body
+        String lowerBody = body.toLowerCase();
+        assertFalse("message body must not contain 'token'", lowerBody.contains("token"));
+        assertFalse("message body must not contain 'jwt'", lowerBody.contains("jwt"));
+        assertFalse("message body must not contain 'password'", lowerBody.contains("password"));
+        assertFalse("message body must not contain 'secret'", lowerBody.contains("secret"));
+        assertFalse("message body must not contain 'sessionid'", lowerBody.contains("sessionid"));
+        assertFalse("message body must not contain 'credential'", lowerBody.contains("credential"));
+        assertFalse("message body must not contain 'access_key'", lowerBody.contains("access_key"));
+    }
+
+    @Test
     public void notify_alreadyNotified_skipSend() {
         setupExecFailTicket();
         setupJob();

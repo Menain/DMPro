@@ -106,6 +106,36 @@ public class GovPromotionSyncServiceTest {
         verify(eventMapper).insert(any(com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO.class));
     }
 
+    // ======= B4: EXECUTING restart three-state =======
+
+    @Test
+    public void sync_ticketRunning_promotionStaysExecuting_idempotentSkip() {
+        // Restart while ticket is still RUNNING — promotion already EXECUTING, no transit.
+        DmDbChangePromotionDO promo = buildPromotion(PromotionStatus.EXECUTING, TICKET_ID);
+        when(promotionMapper.listNonTerminal()).thenReturn(List.of(promo));
+        setupTicket(TICKET_ID, ApprovalStatus.RUNNING);
+        when(stateMachine.mapTicketStatus("RUNNING", PromotionStatus.EXECUTING)).thenReturn(PromotionStatus.EXECUTING);
+
+        service.syncPromotionStatus();
+
+        verify(stateMachine, never()).transit(anyLong(), any(), any());
+        verify(eventMapper, never()).insert(any(com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO.class));
+    }
+
+    @Test
+    public void sync_ticketExecPause_promotionStaysExecuting_idempotentSkip() {
+        // Restart while ticket is EXEC_PAUSE — promotion already EXECUTING, no transit.
+        DmDbChangePromotionDO promo = buildPromotion(PromotionStatus.EXECUTING, TICKET_ID);
+        when(promotionMapper.listNonTerminal()).thenReturn(List.of(promo));
+        setupTicket(TICKET_ID, ApprovalStatus.EXEC_PAUSE);
+        when(stateMachine.mapTicketStatus("EXEC_PAUSE", PromotionStatus.EXECUTING)).thenReturn(PromotionStatus.EXECUTING);
+
+        service.syncPromotionStatus();
+
+        verify(stateMachine, never()).transit(anyLong(), any(), any());
+        verify(eventMapper, never()).insert(any(com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO.class));
+    }
+
     @Test
     public void sync_execFail_promotionTransitToFailed() {
         DmDbChangePromotionDO promo = buildPromotion(PromotionStatus.EXECUTING, TICKET_ID);

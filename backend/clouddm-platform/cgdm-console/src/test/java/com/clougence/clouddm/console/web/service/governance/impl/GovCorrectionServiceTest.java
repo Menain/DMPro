@@ -20,7 +20,9 @@ import static org.mockito.Mockito.*;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -33,6 +35,7 @@ import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.base.metadata.ds.DataSourceConfig;
 import com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
+import com.clougence.clouddm.console.web.component.detectrule.SecRulesCheckResult;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
@@ -64,6 +67,8 @@ import com.clougence.clouddm.platform.dal.model.monitor.DmMonBizLogDO;
 import com.clougence.clouddm.platform.dal.model.monitor.Loglevel;
 import com.clougence.clouddm.platform.dal.model.monitor.LogDependBizType;
 import com.clougence.clouddm.platform.dal.mapper.monitor.DmMonBizLogMapper;
+import com.clougence.clouddm.sdk.sql.parser.SplitScript;
+import com.clougence.clouddm.sdk.sql.parser.SplitQueryType;
 import com.clougence.utils.JsonUtils;
 
 public class GovCorrectionServiceTest {
@@ -285,6 +290,150 @@ public class GovCorrectionServiceTest {
         verify(autoExecService).retryJob(BIZ_ID);
     }
 
+    // ======= B1: transactional full-rollback rerun =======
+
+    @Test
+    public void correct_transactionalFullRollback_allTasksRollback_retryJobResetsAll() {
+        // Pure DML ticket (enableTransactional=true): engine rolls back ALL tasks on failure.
+        // 3 statements, all in ROLLBACK state after transactional failure.
+        setupTicket(UID, ApprovalStatus.EXEC_FAIL, GovRole.PRE.name());
+        setupJob();
+        long taskId1 = 300L;
+        long taskId2 = 301L;
+        long taskId3 = 302L;
+        DmExecAutoTaskDO task1 = buildTask(taskId1, 1, AutoExecTaskStatus.ROLLBACK, "INSERT INTO t VALUES (1)");
+        DmExecAutoTaskDO task2 = buildTask(taskId2, 2, AutoExecTaskStatus.ROLLBACK, "INSERT INTO t VALUES (2)");
+        DmExecAutoTaskDO task3 = buildTask(taskId3, 3, AutoExecTaskStatus.ROLLBACK, "INSERT INTO t VALUES (3)");
+        when(autoTaskMapper.queryListByJobId(JOB_ID, null)).thenReturn(List.of(task1, task2, task3));
+
+        // stmt_version v1 for stmt_index=2 (the statement being corrected)
+        String oldSql = "INSERT INTO t VALUES (2)";
+        String newSql = "INSERT INTO t VALUES (22)";
+        DmDbChangeStmtVersionDO v1 = buildStmtVersion(2, 1, oldSql, GovSqlHashUtils.hash(oldSql));
+        when(stmtVersionMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(v1));
+
+        setupBinding();
+        setupAuditPass();
+        setupBizLog("auto-Task-301", "constraint violation on t");
+
+        GovCorrectStatementFO fo = new GovCorrectStatementFO();
+        fo.setTicketId(TICKET_ID);
+        fo.setStmtIndex(2);
+        fo.setNewSql(newSql);
+        fo.setReason("fix value");
+
+        service.correctStatement(PUID, UID, fo);
+
+        // replaceTask called only for the corrected statement (task2) — tasks 1 and 3 untouched
+        ArgumentCaptor<String> bizIdCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Long> taskIdCaptor = ArgumentCaptor.forClass(Long.class);
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(autoExecService, times(1)).replaceTask(bizIdCaptor.capture(), taskIdCaptor.capture(), sqlCaptor.capture());
+        assertEquals(BIZ_ID, bizIdCaptor.getValue());
+        assertEquals(taskId2, taskIdCaptor.getValue().longValue());
+        assertEquals(newSql, sqlCaptor.getValue());
+
+        // retryJob called — this resets ALL ROLLBACK tasks (the "all re-run" contract)
+        verify(autoExecService).retryJob(BIZ_ID);
+    }
+
+    // ======= B2: mixed ticket DDL already applied =======
+
+    @Test
+    public void correct_mixedTicket_ddlSuccessDmlFailed_onlyFailedTaskReplaced() {
+        // Mixed ticket (DDL + DML, non-transactional): DDL succeeds, DML fails.
+        // DDL task is FINISH (already applied, not replayed); DML task is FAILED.
+        setupTicket(UID, ApprovalStatus.EXEC_FAIL, GovRole.PRE.name());
+        setupJob();
+        long ddlTaskId = 300L;
+        long dmlTaskId = 301L;
+        DmExecAutoTaskDO ddlTask = buildTask(ddlTaskId, 1, AutoExecTaskStatus.FINISH, "CREATE TABLE t (id INT)");
+        DmExecAutoTaskDO dmlTask = buildTask(dmlTaskId, 2, AutoExecTaskStatus.FAILED, "INSERT INTO t VALUES (2)");
+        when(autoTaskMapper.queryListByJobId(JOB_ID, null)).thenReturn(List.of(ddlTask, dmlTask));
+
+        String oldSql = "INSERT INTO t VALUES (2)";
+        String newSql = "INSERT INTO t VALUES (22)";
+        DmDbChangeStmtVersionDO v1 = buildStmtVersion(2, 1, oldSql, GovSqlHashUtils.hash(oldSql));
+        when(stmtVersionMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(v1));
+
+        setupBinding();
+        setupAuditPass();
+        setupBizLog("auto-Task-301", "duplicate key");
+
+        GovCorrectStatementFO fo = new GovCorrectStatementFO();
+        fo.setTicketId(TICKET_ID);
+        fo.setStmtIndex(2);
+        fo.setNewSql(newSql);
+        fo.setReason("fix value");
+
+        service.correctStatement(PUID, UID, fo);
+
+        // replaceTask called only for the FAILED DML task — DDL task (FINISH) never touched
+        verify(autoExecService, times(1)).replaceTask(BIZ_ID, dmlTaskId, newSql);
+        verify(autoExecService, never()).replaceTask(any(), eq(ddlTaskId), any());
+
+        // retryJob called — engine resumes from failure point (FINISH tasks not replayed)
+        verify(autoExecService).retryJob(BIZ_ID);
+    }
+
+    // ======= B3: first success full chain =======
+
+    @Test
+    public void correct_firstSuccess_fullChain_versionIncrementEventReplaceTaskRetryJob() {
+        // Only v1 (INITIAL) exists — first correction from version 1 to version 2.
+        setupTicket(UID, ApprovalStatus.EXEC_FAIL, GovRole.PRE.name());
+        setupJob();
+        setupFailedTask();
+        String oldSql = "INSERT INTO t VALUES (1)";
+        String newSql = "INSERT INTO t VALUES (2)";
+        DmDbChangeStmtVersionDO v1 = buildStmtVersion(1, 1, oldSql, GovSqlHashUtils.hash(oldSql));
+        when(stmtVersionMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(v1));
+
+        setupBinding();
+        setupAuditPass();
+        setupBizLog("auto-Task-old001", "syntax error");
+
+        GovCorrectStatementFO fo = new GovCorrectStatementFO();
+        fo.setTicketId(TICKET_ID);
+        fo.setStmtIndex(1);
+        fo.setNewSql(newSql);
+        fo.setReason("fix typo");
+
+        service.correctStatement(PUID, UID, fo);
+
+        // Version row: version=2, source=CORRECTION, hash matches new SQL
+        ArgumentCaptor<DmDbChangeStmtVersionDO> stmtCaptor = ArgumentCaptor.forClass(DmDbChangeStmtVersionDO.class);
+        verify(stmtVersionMapper).insert(stmtCaptor.capture());
+        DmDbChangeStmtVersionDO inserted = stmtCaptor.getValue();
+        assertEquals(Long.valueOf(TICKET_ID), inserted.getTicketId());
+        assertEquals(Integer.valueOf(1), inserted.getStmtIndex());
+        assertEquals(Integer.valueOf(2), inserted.getStmtVersion());
+        assertEquals(newSql, inserted.getStmtText());
+        assertEquals(GovSqlHashUtils.hash(newSql), inserted.getStmtHash());
+        assertEquals(StmtSource.CORRECTION.name(), inserted.getSource());
+        assertEquals(UID, inserted.getOperatorUid());
+        assertEquals("syntax error", inserted.getFailReason());
+
+        // CORRECTION event: fromVersion=1, toVersion=2, reason
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.CORRECTION.name(), event.getEventType());
+        assertEquals(ApprovalStatus.EXEC_FAIL.name(), event.getFromStatus());
+        assertEquals(ApprovalStatus.EXEC_FAIL.name(), event.getToStatus());
+        assertEquals(UID, event.getOperatorUid());
+        java.util.Map<String, Object> data = JsonUtils.toObj(event.getEventData(), java.util.HashMap.class);
+        assertEquals(1, data.get("stmtIndex"));
+        assertEquals(1, data.get("fromVersion"));
+        assertEquals(2, data.get("toVersion"));
+        assertEquals("fix typo", data.get("reason"));
+
+        // replaceTask called with correct args
+        verify(autoExecService).replaceTask(BIZ_ID, TASK_ID, newSql);
+        // retryJob called
+        verify(autoExecService).retryJob(BIZ_ID);
+    }
+
     // ======= helpers =======
 
     private GovCorrectStatementFO buildFO() {
@@ -336,6 +485,31 @@ public class GovCorrectionServiceTest {
         return task;
     }
 
+    private DmExecAutoTaskDO buildTask(long id, int execOrder, AutoExecTaskStatus status, String execSql) {
+        DmExecAutoTaskDO task = new DmExecAutoTaskDO();
+        task.setId(id);
+        task.setAutoExecJobId(JOB_ID);
+        task.setExecOrder(execOrder);
+        task.setStatus(status);
+        task.setBizId("auto-Task-" + id);
+        task.setQueryId("old-query-" + id);
+        task.setExecSql(execSql);
+        return task;
+    }
+
+    private void setupAuditPass() {
+        // Rule audit: no FAILURE results (empty SecRulesCheckResult)
+        when(queryAnalysisService.analysisRulesStream(any(), any(), any(), anyInt(), anyInt(), any()))
+            .thenReturn(Stream.of(new SecRulesCheckResult()));
+
+        // Behavior analysis: all SQL is DML (INSERT) — used by isDml/isDdl checks
+        SplitScript dmlScript = new SplitScript();
+        dmlScript.setType(EnumSet.of(SplitQueryType.INSERT));
+        dmlScript.setScript("INSERT INTO t VALUES (2)");
+        when(queryAnalysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
+            .thenAnswer(invocation -> Stream.of(dmlScript));
+    }
+
     private void setupBinding() {
         LogicalDbTarget target = new LogicalDbTarget();
         target.setBindingId(1L);
@@ -370,8 +544,12 @@ public class GovCorrectionServiceTest {
     }
 
     private void setupBizLog(String errorContent) {
-        DmMonBizLogDO logDO = new DmMonBizLogDO(Loglevel.ERROR, errorContent, LogDependBizType.AUTO_EXEC_TASK, "auto-Task-old001");
-        when(bizLogMapper.queryListByBizIdAndType("auto-Task-old001", LogDependBizType.AUTO_EXEC_TASK))
+        setupBizLog("auto-Task-old001", errorContent);
+    }
+
+    private void setupBizLog(String taskBizId, String errorContent) {
+        DmMonBizLogDO logDO = new DmMonBizLogDO(Loglevel.ERROR, errorContent, LogDependBizType.AUTO_EXEC_TASK, taskBizId);
+        when(bizLogMapper.queryListByBizIdAndType(taskBizId, LogDependBizType.AUTO_EXEC_TASK))
             .thenReturn(List.of(logDO));
     }
 

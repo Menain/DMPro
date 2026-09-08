@@ -429,6 +429,83 @@ public class PermGroupServiceImplTest {
         verify(grantRecordMapper).deleteById(1L);
     }
 
+    // ==================== B5: sweeper expiry — mixed orphan/non-orphan ====================
+
+    @Test
+    public void cleanOrphanGrantRecords_expiredExpandedRowDeleted_nonExpiredRowUntouched() {
+        // Simulates the deleteByEndTimeExceed sweeper having deleted the expired
+        // expanded auth_res row. The non-expired expanded auth_res row still exists.
+        // cleanOrphanGrantRecords (called during re-activation) should delete only
+        // the orphan grant record, not the non-orphan one.
+        DmPermGroupDO group = activeGroup();
+        group.setStatus(PermGroupStatus.INACTIVE.name());
+        when(groupMapper.selectById(GROUP_ID)).thenReturn(group);
+
+        // Grant record for expired expanded row (auth_res deleted by sweeper)
+        DmPermGroupGrantRecordDO expiredRecord = new DmPermGroupGrantRecordDO();
+        expiredRecord.setId(1L);
+        expiredRecord.setAuthResId(500L);
+        expiredRecord.setMemberUid(MEMBER_UID);
+
+        // Grant record for non-expired expanded row (auth_res still exists)
+        DmPermGroupGrantRecordDO activeRecord = new DmPermGroupGrantRecordDO();
+        activeRecord.setId(2L);
+        activeRecord.setAuthResId(501L);
+        activeRecord.setMemberUid(MEMBER_UID);
+
+        when(grantRecordMapper.listByGroupId(GROUP_ID)).thenReturn(Arrays.asList(expiredRecord, activeRecord));
+
+        // selectBatchIds: only the non-expired auth_res row exists
+        DmAuthResDO activeAuthRes = new DmAuthResDO();
+        activeAuthRes.setId(501L);
+        when(resMapper.selectBatchIds(Arrays.asList(500L, 501L))).thenReturn(Collections.singletonList(activeAuthRes));
+
+        // no members/resources to re-expand (focus on orphan cleanup)
+        when(memberMapper.listByGroupId(GROUP_ID)).thenReturn(Collections.emptyList());
+        when(resourceMapper.listByGroupId(GROUP_ID)).thenReturn(Collections.emptyList());
+
+        service.updateGroupStatus(PUID, "uid", GROUP_ID, "ACTIVE");
+
+        // Orphan grant record (expired expanded row) should be deleted
+        verify(grantRecordMapper).deleteById(1L);
+        // Non-orphan grant record (non-expired expanded row) should NOT be deleted
+        verify(grantRecordMapper, never()).deleteById(2L);
+    }
+
+    @Test
+    public void cleanOrphanGrantRecords_directGrantRows_notInLedger_notAffected() {
+        // Direct-grant rows (without PERM_GROUP marker) are created via the user
+        // management path, not the PermGroupService expansion path. They have no
+        // corresponding grant record in dm_perm_group_grant_record, so
+        // cleanOrphanGrantRecords cannot touch them — the ledger only contains
+        // expanded rows. This test pins that structural contract.
+        DmPermGroupDO group = activeGroup();
+        group.setStatus(PermGroupStatus.INACTIVE.name());
+        when(groupMapper.selectById(GROUP_ID)).thenReturn(group);
+
+        // Grant record only for the expanded row — no grant record for direct-grant
+        DmPermGroupGrantRecordDO expandedRecord = new DmPermGroupGrantRecordDO();
+        expandedRecord.setId(1L);
+        expandedRecord.setAuthResId(500L);
+        expandedRecord.setMemberUid(MEMBER_UID);
+        when(grantRecordMapper.listByGroupId(GROUP_ID)).thenReturn(Collections.singletonList(expandedRecord));
+
+        // The expanded auth_res row still exists (not expired)
+        DmAuthResDO expandedAuthRes = new DmAuthResDO();
+        expandedAuthRes.setId(500L);
+        when(resMapper.selectBatchIds(Collections.singletonList(500L))).thenReturn(Collections.singletonList(expandedAuthRes));
+
+        when(memberMapper.listByGroupId(GROUP_ID)).thenReturn(Collections.emptyList());
+        when(resourceMapper.listByGroupId(GROUP_ID)).thenReturn(Collections.emptyList());
+
+        service.updateGroupStatus(PUID, "uid", GROUP_ID, "ACTIVE");
+
+        // Expanded grant record NOT deleted (auth_res still exists)
+        verify(grantRecordMapper, never()).deleteById(1L);
+        // Direct-grant rows were never in the ledger — no deleteById calls at all
+        verify(grantRecordMapper, never()).deleteById(anyLong());
+    }
+
     // ==================== Label cascade ====================
 
     @Test

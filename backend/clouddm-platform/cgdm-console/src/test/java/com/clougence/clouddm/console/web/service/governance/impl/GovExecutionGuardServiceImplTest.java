@@ -170,6 +170,26 @@ public class GovExecutionGuardServiceImplTest {
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G1"));
         verify(revisionMapper, never()).selectById(any());
+        // Event trail: GUARD_DENY written
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
+    }
+
+    @Test
+    public void checkByTicket_promotionStatusRejected_denyG1() {
+        // DENY matrix ③: REJECTED variant (previously only CREATED was tested)
+        when(promotionMapper.selectById(PROMOTION_ID)).thenReturn(buildPromotion(PromotionStatus.REJECTED));
+        RsExecAutoJobConfigObj config = buildConfig(ErrorStrategy.NONE, false);
+
+        var result = service.checkByTicket(PUID, buildTicket("PROD"), config);
+
+        assertTrue(result.isDeny());
+        assertTrue(result.getSummary().contains("G1"));
+        verify(revisionMapper, never()).selectById(any());
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     @Test
@@ -181,6 +201,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         verify(revisionMapper, never()).selectById(any());
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= G2: hash re-verification =======
@@ -200,6 +223,9 @@ public class GovExecutionGuardServiceImplTest {
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G2"));
         assertTrue(result.getSummary().contains("hash"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     @Test
@@ -212,6 +238,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G2"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= G3: binding re-verification =======
@@ -230,6 +259,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G3"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     @Test
@@ -244,6 +276,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G3"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= G4: Preflight =======
@@ -267,6 +302,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G4"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= G5: idempotency =======
@@ -291,6 +329,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G5"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= G6: config compliance =======
@@ -305,6 +346,9 @@ public class GovExecutionGuardServiceImplTest {
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G6"));
         assertTrue(result.getSummary().contains("SKIP"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     @Test
@@ -317,6 +361,9 @@ public class GovExecutionGuardServiceImplTest {
 
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G6"));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= full pass =======
@@ -448,6 +495,10 @@ public class GovExecutionGuardServiceImplTest {
         assertTrue(result.isDeny());
         assertTrue(result.getSummary().contains("G2"));
         assertTrue(result.getSummary().contains("idx=1"));
+        // Event trail: GUARD_DENY written at dispatch time
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GUARD_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= persistence =======

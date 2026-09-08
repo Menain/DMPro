@@ -159,7 +159,9 @@ public class GateOneTest {
             assertTrue(e.getMessage().contains("gate denied"));
         }
 
-        verify(eventMapper).insert(any(DmDbChangeEventDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
     }
 
@@ -186,6 +188,69 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
+    }
+
+    @Test
+    public void gate2_manifestPreExecNotSuccess_deny() {
+        // DENY matrix ⑤ variant: pre_exec mismatch (manifest pre_exec != SUCCESS)
+        List<Map<String, Object>> manifest = new ArrayList<>();
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("idx", 1);
+        item.put("stmt_hash", "hash-1");
+        item.put("version", 1);
+        item.put("pre_exec", "FAILED");
+        manifest.add(item);
+
+        DmDbChangeRevisionDO revision = buildRevision(GovSqlHashUtils.hash(RAW_SQL), JsonUtils.toJson(manifest));
+        setupAllGatesPassingExcept(revision);
+
+        GovPromoteFO fo = new GovPromoteFO();
+        fo.setRevisionId(REVISION_ID);
+
+        try {
+            service.promote(PUID, UID, fo);
+            fail("Should have thrown");
+        } catch (ErrorMessageException e) {
+            assertTrue(e.getMessage().contains("gate denied"));
+        }
+
+        verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
+    }
+
+    @Test
+    public void gate2_manifestVersionHashStale_deny() {
+        // DENY matrix ⑤ variant: version mismatch — manifest carries an old version's hash
+        // that doesn't match the current stmt_version hash
+        DmDbChangeRevisionDO revision = buildRevision(GovSqlHashUtils.hash(RAW_SQL), buildManifest());
+        setupAllGatesPassingExcept(revision);
+        // Override: stmt_version has a different hash than the manifest
+        DmDbChangeStmtVersionDO sv = new DmDbChangeStmtVersionDO();
+        sv.setTicketId(TICKET_ID);
+        sv.setStmtIndex(1);
+        sv.setStmtVersion(2); // newer version with different hash
+        sv.setStmtHash("new-hash-version-2");
+        when(stmtVersionMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(sv));
+
+        GovPromoteFO fo = new GovPromoteFO();
+        fo.setRevisionId(REVISION_ID);
+
+        try {
+            service.promote(PUID, UID, fo);
+            fail("Should have thrown");
+        } catch (ErrorMessageException e) {
+            assertTrue(e.getMessage().contains("gate denied"));
+        }
+
+        verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= Gate 3: PROD resource auth =======
@@ -209,6 +274,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= Gate 4: getBinding(PROD) resolvable =======
@@ -232,6 +300,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= Gate 5: revision not already promoted =======
@@ -256,6 +327,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= Gate 6: DML without rollback =======
@@ -278,6 +352,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= Gate 7: PROD approval template not configured (Internal) =======
@@ -304,6 +381,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     @Test
@@ -324,6 +404,9 @@ public class GateOneTest {
         }
 
         verify(promotionMapper, never()).insert(any(DmDbChangePromotionDO.class));
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.GATE_DENY.name(), eventCaptor.getValue().getEventType());
     }
 
     // ======= All PASS: success chain =======
