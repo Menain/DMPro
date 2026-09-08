@@ -23,6 +23,9 @@ import { logViewApi } from '@/services/http/api/logView';
 import { initApi } from '@/services/http/api/init';
 import { mfaApi } from '@/services/http/api/mfa';
 import { sshConfigApi } from '@/services/http/api/sshConfig';
+import { permGroupApi } from '@/services/http/api/permGroup';
+import { logicalDbApi } from '@/services/http/api/logicalDb';
+import { dbChangeApi } from '@/services/http/api/dbChange';
 
 export const api = {
   ...authApi,
@@ -49,5 +52,8 @@ export const api = {
   ...logViewApi,
   ...initApi,
   ...mfaApi,
-  ...sshConfigApi
+  ...sshConfigApi,
+  ...permGroupApi,
+  ...logicalDbApi,
+  ...dbChangeApi
 };

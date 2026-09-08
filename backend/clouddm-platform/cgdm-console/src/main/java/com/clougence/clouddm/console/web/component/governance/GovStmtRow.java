@@ -15,18 +15,23 @@
  */
 package com.clougence.clouddm.console.web.component.governance;
 
+import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
+
 import lombok.Getter;
 import lombok.Setter;
 
 /**
  * Single statement row produced by GovStmtSplitService — ready for stmt_version insert.
  * stmtIndex starts at 1 (aligns with dm_exec_auto_task.exec_order, design D3).
+ * changeType is the per-statement classification (DDL or DML); MIXED only when a single
+ * statement's parsed types contain both DDL and DML (rare but possible).
  */
 @Getter
 @Setter
 public class GovStmtRow {
 
-    private int    stmtIndex;
-    private String stmtText;
-    private String stmtHash;
+    private int         stmtIndex;
+    private String      stmtText;
+    private String      stmtHash;
+    private ChangeType  changeType;
 }

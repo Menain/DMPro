@@ -95,6 +95,13 @@ public class GovStmtSplitServiceImpl implements GovStmtSplitService {
             row.setStmtIndex((int) script.getIndex() + 1);
             row.setStmtText(script.getScript());
             row.setStmtHash(GovSqlHashUtils.hash(script.getScript()));
+            if (stmtIsDml && stmtIsDdl) {
+                row.setChangeType(ChangeType.MIXED);
+            } else if (stmtIsDml) {
+                row.setChangeType(ChangeType.DML);
+            } else {
+                row.setChangeType(ChangeType.DDL);
+            }
             rows.add(row);
         }
 

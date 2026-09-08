@@ -13,23 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.model.vo.logicaldb;
+package com.clougence.clouddm.console.web.model.fo.governance;
 
+import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * Revision detail request FO — read-only detail of a frozen revision.
+ * <p>
+ * Visibility: the caller must pass the same filter as {@code availableRevisions}
+ * (tenant ownership + PROD resource auth) — see {@code GovPromotionServiceImpl#revisionDetail}.
+ */
 @Getter
 @Setter
-public class MyLogicalDbVO {
+public class GovRevisionDetailFO {
 
-    private Long   id;
-    private String resourceCode;
-    private String resourceName;
-
-    /**
-     * Datasource type resolved from the PRE binding (e.g. {@code MySQL}, {@code PostgreSQL}).
-     * Null when the logical DB has no PRE binding or resolution failed — never throws on this coarse visibility layer.
-     * Used by the frontend to pick the correct Monaco SQL dialect for syntax highlighting.
-     */
-    private String dsType;
+    @NotNull
+    private Long revisionId;
 }

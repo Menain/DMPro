@@ -23,6 +23,7 @@ import com.clougence.clouddm.console.web.model.vo.DmPageVO;
 import com.clougence.clouddm.console.web.model.vo.governance.AvailableRevisionVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionVO;
+import com.clougence.clouddm.console.web.model.vo.governance.RevisionDetailVO;
 
 /**
  * Governance promotion service — Phase 6 (spec §4.2 path-A PROD segment, §4.4 gate-one, §6.1-③).
@@ -45,4 +46,10 @@ public interface GovPromotionService {
      * Resolve the logical DB id for a promotion (used by the controller for audit resId).
      */
     long resolveLogicalDbId(String puid, long promotionId);
+
+    /**
+     * Read-only revision detail (spec §6.3 upper section display).
+     * Visibility: same tenant + PROD resource auth — mirrors availableRevisions filter 4+5+6.
+     */
+    RevisionDetailVO revisionDetail(String puid, String uid, long revisionId);
 }

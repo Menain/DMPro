@@ -163,6 +163,24 @@ export default [
     meta: { requiredAuth: 'RDP_ROLE_READ' }
   },
   {
+    path: '/manager/permGroup',
+    name: 'Management_PermGroup',
+    component: () => import(/* webpackChunkName: "system-perm-group" */ '@/views/system/permGroup/index'),
+    meta: { requiredAuth: 'RDP_PERM_GROUP_MANAGE' }
+  },
+  {
+    path: '/manager/permGroup/:groupId',
+    name: 'Management_PermGroup_Detail',
+    component: () => import(/* webpackChunkName: "system-perm-group" */ '@/views/system/permGroup/detail'),
+    meta: { requiredAuth: 'RDP_PERM_GROUP_MANAGE' }
+  },
+  {
+    path: '/manager/logicalDb',
+    name: 'Management_LogicalDb',
+    component: () => import(/* webpackChunkName: "system-logical-db" */ '@/views/system/logicalDb/index'),
+    meta: { requiredAuth: 'RDP_LOGICAL_DB_MANAGE' }
+  },
+  {
     path: 'management/logs',
     redirect: '/manager/logs'
   },

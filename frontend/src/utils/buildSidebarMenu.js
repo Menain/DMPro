@@ -35,6 +35,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   if (myCatLog.includes('CAT_RDP_WORKER_ORDER') && !isDesktop) {
     primary.push(linkItem('ticket', '/#/ticket', 'gong-dan', 'icon-v2-TicketAuth'));
   }
+  if (myCatLog.includes('CAT_RDP_DB_CHANGE_GOVERN') && !isDesktop) {
+    primary.push(linkItem('dbChange/promotion', '/#/dbChange/promotion', 'sheng-chan-fa-bu', 'icon-v2-DataBase2'));
+  }
 
   const groups = [];
 
@@ -46,6 +49,10 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   }
   if (myCatLog.includes('CAT_RDP_ROLE')) {
     managementChildren.push(linkItem('/manager/role', '/#/manager/role', 'jiao-se', 'icon-v2-role'));
+  }
+  if (myCatLog.includes('CAT_RDP_DB_CHANGE_GOVERN')) {
+    managementChildren.push(linkItem('/manager/permGroup', '/#/manager/permGroup', 'quan-xian-zu', 'icon-v2-MyAuth'));
+    managementChildren.push(linkItem('/manager/logicalDb', '/#/manager/logicalDb', 'luo-ji-ku', 'icon-v2-DataBase2'));
   }
   if (hasLogSection) {
     managementChildren.push(linkItem('/manager/logs', '/#/manager/logs', 'nav-ri-zhi', 'icon-v2-audit'));

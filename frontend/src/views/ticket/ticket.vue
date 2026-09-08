@@ -1,6 +1,12 @@
 <template>
   <div class="ticket-create-container">
-    <div class="create-content-container">
+    <div class="ticket-mode-bar">
+      <RadioGroup v-model="isGovMode" size="small">
+        <Radio :label="false">{{ $t('gov-ticket-mode-standard') }}</Radio>
+        <Radio :label="true">{{ $t('gov-ticket-mode-governance') }}</Radio>
+      </RadioGroup>
+    </div>
+    <div class="create-content-container" v-if="!isGovMode">
       <div class="create-ticket-editor">
         <div class="create-ticket-editor-toolbar">
           <div class="create-ticket-editor-operator">
@@ -81,6 +87,7 @@
         </div>
       </div>
     </div>
+    <GovTicketCreate v-else />
     <CCModal
       v-model="showValidationResultModal"
       :width="800"
@@ -117,6 +124,7 @@
 </template>
 <script lang="js">
 import DsSelect from '@/views/ticket/components/DsSelect';
+import GovTicketCreate from '@/views/ticket/components/GovTicketCreate';
 import TicketEditor from '@/components/editor/TicketEditor';
 import SqlFileUploadModal from '@/components/function/SqlFileUploadModal.vue';
 import { RULE_WARN_LEVEL } from '@/utils';
@@ -127,6 +135,7 @@ export default {
   components: {
     TicketEditor,
     DsSelect,
+    GovTicketCreate,
     SqlFileUploadModal
   },
   computed: {
@@ -182,6 +191,7 @@ export default {
   },
   data() {
     return {
+      isGovMode: false,
       showForceBtn: false,
       RULE_WARN_LEVEL,
       noPassedRuleList: [],
@@ -625,6 +635,15 @@ export default {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+
+  .ticket-mode-bar {
+    flex-shrink: 0;
+    padding: 12px 24px;
+    border-bottom: 1px solid #eaeaea;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
 
   .create-content-container {
     flex: 1;

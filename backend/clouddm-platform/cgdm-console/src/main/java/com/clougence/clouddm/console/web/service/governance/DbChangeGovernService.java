@@ -15,9 +15,15 @@
  */
 package com.clougence.clouddm.console.web.service.governance;
 
+import java.util.List;
+
+import com.clougence.clouddm.console.web.model.fo.governance.GovEventTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovSplitPreviewFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
+import com.clougence.clouddm.console.web.model.vo.governance.SplitPreviewVO;
 import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
+import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 
 public interface DbChangeGovernService {
@@ -33,4 +39,18 @@ public interface DbChangeGovernService {
      * and correction events by stmt_index (spec §3.4, Phase 5 design D5).
      */
     StmtTimelineVO stmtTimeline(String puid, String uid, GovStmtTimelineFO fo);
+
+    /**
+     * Read-only split preview — resolves PRE binding, splits SQL via GovStmtSplitService,
+     * returns change type + per-statement rows with D15 execution-config summary.
+     * Does not persist anything or compute evidentiary hashes.
+     */
+    SplitPreviewVO splitPreview(String puid, String uid, GovSplitPreviewFO fo);
+
+    /**
+     * Read-only governance event timeline for a ticket.
+     * Non-governance tickets return an empty list (no error).
+     * Visibility follows the same RDP_WORKER_ORDER_READ label as ticketDetail/stmtTimeline.
+     */
+    List<PromotionDetailVO.EventHandlerVO> eventTimeline(String puid, String uid, GovEventTimelineFO fo);
 }

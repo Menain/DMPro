@@ -48,6 +48,7 @@ import com.clougence.clouddm.console.web.model.vo.envparam.DmEnvParamTicketDesVO
 import com.clougence.clouddm.console.web.model.vo.governance.AvailableRevisionVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionVO;
+import com.clougence.clouddm.console.web.model.vo.governance.RevisionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
@@ -630,6 +631,96 @@ public class GovPromotionServiceImpl implements GovPromotionService {
             throw new ErrorMessageException("Promotion not found: " + promotionId);
         }
         return promotion.getLogicalDbId();
+    }
+
+    // ======= revisionDetail =======
+
+    @Override
+    public RevisionDetailVO revisionDetail(String puid, String uid, long revisionId) {
+        DmDbChangeRevisionDO revision = dbChangeGovernDal.revisionMapper().selectById(revisionId);
+        if (revision == null) {
+            throw new ErrorMessageException("Revision not found: " + revisionId);
+        }
+
+        // Visibility: tenant ownership (logicalDb.creatorUid == puid) + PROD resource auth
+        // — mirrors availableRevisions filters 4+5+6.
+        DmLogicalDbDO logicalDb = logicalDbDal.logicalDbMapper().selectById(revision.getLogicalDbId());
+        if (logicalDb == null || !puid.equals(logicalDb.getCreatorUid())) {
+            throw new ErrorMessageException("Revision not found: " + revisionId);
+        }
+
+        LogicalDbTarget target;
+        try {
+            target = logicalDbService.getBinding(puid, revision.getLogicalDbId(), GovRole.PROD);
+        } catch (ErrorMessageException e) {
+            throw new ErrorMessageException("Revision not found: " + revisionId);
+        }
+        boolean hasAuth = dmAuthServiceForBiz.checkResAuthWithoutError(
+            puid, uid, target.getDsId(),
+            new DsResPathObj(target.getResPath()),
+            com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel.DM_DAUTH_TICKET,
+            com.clougence.clouddm.sdk.security.auth.AuthKind.DataSource);
+        if (!hasAuth) {
+            throw new ErrorMessageException("Revision not found: " + revisionId);
+        }
+
+        RevisionDetailVO vo = new RevisionDetailVO();
+        vo.setRevisionId(revision.getId());
+        vo.setRevisionCode(revision.getRevisionCode());
+        vo.setChangeType(revision.getChangeType());
+        vo.setGmtCreate(revision.getGmtCreate());
+        vo.setSourceTicketId(revision.getSourceTicketId());
+        vo.setSqlText(revision.getSqlText());
+        vo.setRollbackSqlText(revision.getRollbackSqlText());
+        vo.setSqlHash(revision.getSqlHash());
+        vo.setRollbackSqlHash(revision.getRollbackSqlHash());
+        vo.setStmtManifest(parseStmtManifest(revision.getStmtManifest()));
+        vo.setAuditSnapshot(parseAuditSnapshot(revision.getAuditSnapshot()));
+        return vo;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RevisionDetailVO.StmtManifestEntry> parseStmtManifest(String manifestJson) {
+        if (StringUtils.isBlank(manifestJson)) {
+            return List.of();
+        }
+        List<Map<String, Object>> raw = JsonUtils.toObj(manifestJson, List.class);
+        if (raw == null) {
+            return List.of();
+        }
+        List<RevisionDetailVO.StmtManifestEntry> result = new ArrayList<>();
+        for (Map<String, Object> item : raw) {
+            RevisionDetailVO.StmtManifestEntry entry = new RevisionDetailVO.StmtManifestEntry();
+            entry.setStmtIndex(item.get("idx") instanceof Number n ? n.intValue() : 0);
+            entry.setStmtHash(item.get("stmt_hash") != null ? String.valueOf(item.get("stmt_hash")) : null);
+            entry.setVersion(item.get("version") instanceof Number n ? n.intValue() : 0);
+            entry.setPreExec(item.get("pre_exec") != null ? String.valueOf(item.get("pre_exec")) : null);
+            result.add(entry);
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RevisionDetailVO.AuditSnapshotEntry> parseAuditSnapshot(String snapshotJson) {
+        if (StringUtils.isBlank(snapshotJson)) {
+            return List.of();
+        }
+        Map<String, Object> root = JsonUtils.toObj(snapshotJson, Map.class);
+        if (root == null) {
+            return List.of();
+        }
+        List<RevisionDetailVO.AuditSnapshotEntry> result = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : root.entrySet()) {
+            RevisionDetailVO.AuditSnapshotEntry ae = new RevisionDetailVO.AuditSnapshotEntry();
+            ae.setActivityId(entry.getKey());
+            if (entry.getValue() instanceof Map<?, ?> valMap) {
+                Object status = valMap.get("status");
+                ae.setStatus(status != null ? String.valueOf(status) : null);
+                ae.setContext(valMap.get("context"));
+            }
+            result.add(ae);
+        }
+        return result;
     }
 
     @Override

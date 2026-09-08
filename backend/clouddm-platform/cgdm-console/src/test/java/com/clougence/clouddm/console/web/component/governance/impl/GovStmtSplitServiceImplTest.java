@@ -57,6 +57,7 @@ public class GovStmtSplitServiceImplTest {
         assertEquals(1, result.getStmts().get(0).getStmtIndex());
         assertEquals("CREATE TABLE foo (id INT)", result.getStmts().get(0).getStmtText());
         assertEquals(GovSqlHashUtils.hash("CREATE TABLE foo (id INT)"), result.getStmts().get(0).getStmtHash());
+        assertEquals(ChangeType.DDL, result.getStmts().get(0).getChangeType());
     }
 
     @Test
@@ -64,10 +65,11 @@ public class GovStmtSplitServiceImplTest {
         mockSplit(createScript(0, Set.of(SplitQueryType.INSERT), "INSERT INTO foo VALUES (1)"));
         GovSplitResult result = service.split(mockDsConfig(), "INSERT INTO foo VALUES (1)");
         assertEquals(ChangeType.DML, result.getChangeType());
+        assertEquals(ChangeType.DML, result.getStmts().get(0).getChangeType());
     }
 
     @Test
-    public void mixedDdlDml_changeTypeMixed() {
+    public void mixedDdlDml_changeTypeMixed_perStmtTypes() {
         mockSplit(
             createScript(0, Set.of(SplitQueryType.CREATE_TABLE), "CREATE TABLE foo (id INT)"),
             createScript(1, Set.of(SplitQueryType.INSERT), "INSERT INTO foo VALUES (1)")
@@ -77,6 +79,9 @@ public class GovStmtSplitServiceImplTest {
         assertEquals(2, result.getStmts().size());
         assertEquals(1, result.getStmts().get(0).getStmtIndex());
         assertEquals(2, result.getStmts().get(1).getStmtIndex());
+        // Per-statement types: stmt 1 is DDL, stmt 2 is DML
+        assertEquals(ChangeType.DDL, result.getStmts().get(0).getChangeType());
+        assertEquals(ChangeType.DML, result.getStmts().get(1).getChangeType());
     }
 
     @Test

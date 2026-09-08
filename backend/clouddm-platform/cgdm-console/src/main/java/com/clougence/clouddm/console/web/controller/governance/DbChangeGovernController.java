@@ -33,9 +33,12 @@ import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.governance.GovCorrectStatementFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovDirectDmlSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovEventTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPromotionListFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPromoteFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovRevisionDetailFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovSplitPreviewFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbIdFO;
 import com.clougence.clouddm.console.web.model.vo.DmPageVO;
@@ -43,6 +46,8 @@ import com.clougence.clouddm.console.web.model.vo.governance.AvailableRevisionVO
 import com.clougence.clouddm.console.web.model.vo.governance.DirectDmlSubmitVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
 import com.clougence.clouddm.console.web.model.vo.governance.PromotionVO;
+import com.clougence.clouddm.console.web.model.vo.governance.RevisionDetailVO;
+import com.clougence.clouddm.console.web.model.vo.governance.SplitPreviewVO;
 import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
@@ -106,6 +111,27 @@ public class DbChangeGovernController {
         return ResWebDataUtils.buildSuccess(vo);
     }
 
+    // ======================== Phase 10: split preview + event timeline ========================
+
+    @RequestAuth(level = HIGH, value = RDP_WORKER_ORDER_REQUEST)
+    @RequestMapping(value = "/splitPreview", method = RequestMethod.POST)
+    public ResWebData<SplitPreviewVO> splitPreview(@Valid @RequestBody GovSplitPreviewFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        SplitPreviewVO vo = dbChangeGovernService.splitPreview(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess(vo);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_WORKER_ORDER_READ)
+    @RequestMapping(value = "/eventTimeline", method = RequestMethod.POST)
+    public ResWebData<java.util.List<PromotionDetailVO.EventHandlerVO>> eventTimeline(
+            @Valid @RequestBody GovEventTimelineFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        java.util.List<PromotionDetailVO.EventHandlerVO> list = dbChangeGovernService.eventTimeline(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess(list);
+    }
+
     // ======================== Phase 6: Promotion ========================
 
     @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_GOVERN_READ)
@@ -115,6 +141,15 @@ public class DbChangeGovernController {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         java.util.List<AvailableRevisionVO> list = govPromotionService.availableRevisions(puid, uid);
         return ResWebDataUtils.buildSuccess(list);
+    }
+
+    @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_GOVERN_READ)
+    @RequestMapping(value = "/revisionDetail", method = RequestMethod.POST)
+    public ResWebData<RevisionDetailVO> revisionDetail(@Valid @RequestBody GovRevisionDetailFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        RevisionDetailVO vo = govPromotionService.revisionDetail(puid, uid, fo.getRevisionId());
+        return ResWebDataUtils.buildSuccess(vo);
     }
 
     @RequestAuth(level = HIGH, value = RDP_DB_CHANGE_PROD_PROMOTE)

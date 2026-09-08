@@ -31,6 +31,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
+import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.BindingItemFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.BindingSetFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbCreateFO;
@@ -149,6 +150,12 @@ public class LogicalDbServiceImplTest {
         DmDsDO ds = new DmDsDO();
         ds.setId(dsId);
         ds.setInstanceId("instance-" + dsId);
+        return ds;
+    }
+
+    private DmDsDO dsWithType(long dsId, DataSourceType type) {
+        DmDsDO ds = ds(dsId);
+        ds.setDataSourceType(type);
         return ds;
     }
 
@@ -541,11 +548,13 @@ public class LogicalDbServiceImplTest {
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
 
         // uid == puid → short-circuit, no auth query
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, PUID);
         assertEquals(1, result.size());
         assertEquals("ORDER_DB", result.get(0).getResourceCode());
+        assertEquals("MySQL", result.get(0).getDsType());
         // verify listByKind was NOT called (short-circuit)
         verify(resMapper, never()).listByKind(any(), any());
     }
@@ -556,12 +565,14 @@ public class LogicalDbServiceImplTest {
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.PostgreSQL)));
         // direct grant auth row
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Collections.singletonList(authRow(DS_ID, "/mydb/", "direct grant")));
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(1, result.size());
+        assertEquals("PostgreSQL", result.get(0).getDsType());
     }
 
     @Test
@@ -569,6 +580,7 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
+        // GOV_ROLE=PROD only (no PRE binding) → dsType null, listByUser not called
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
         // PERM_GROUP expanded auth row
         when(resMapper.listByKind(UID, AuthKind.DataSource))
@@ -576,6 +588,9 @@ public class LogicalDbServiceImplTest {
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(1, result.size());
+        assertNull(result.get(0).getDsType());
+        // no PRE binding → dsType lazy load skipped
+        verify(dsMapper, never()).listByUser(any());
     }
 
     @Test
@@ -620,6 +635,7 @@ public class LogicalDbServiceImplTest {
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
         // auth row with empty labels list — still matches (label not filtered)
         DmAuthResDO row = authRow(DS_ID, "/mydb/", null);
         row.setAuthLabels(new ArrayList<>());
@@ -628,6 +644,7 @@ public class LogicalDbServiceImplTest {
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(1, result.size());
+        assertEquals("MySQL", result.get(0).getDsType());
     }
 
     @Test
@@ -637,12 +654,14 @@ public class LogicalDbServiceImplTest {
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/myschema/")));
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
         // auth row path is shorter → binding path starts with auth path → match
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Collections.singletonList(authRow(DS_ID, "/mydb/", "direct")));
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(1, result.size());
+        assertEquals("MySQL", result.get(0).getDsType());
     }
 
     @Test
@@ -660,6 +679,9 @@ public class LogicalDbServiceImplTest {
             .thenReturn(Collections.singletonList(binding(600L, ENV_ID_2, DS_ID_2, "/userdb/")));
         when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
         when(envParamService.queryParam(PUID, ENV_ID_2, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Arrays.asList(
+            dsWithType(DS_ID, DataSourceType.MySQL),
+            dsWithType(DS_ID_2, DataSourceType.PostgreSQL)));
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Arrays.asList(
                 authRow(DS_ID, "/mydb/", "direct"),
@@ -667,7 +689,28 @@ public class LogicalDbServiceImplTest {
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(2, result.size());
+        // db1 has PRE binding → dsType resolved; db2 has PROD only → dsType null
+        assertEquals("MySQL", result.get(0).getDsType());
+        assertNull(result.get(1).getDsType());
         // D1: single listByKind call regardless of N logical dbs
         verify(resMapper, times(1)).listByKind(UID, AuthKind.DataSource);
+        // single listByUser call regardless of N logical dbs (lazy dsType cache)
+        verify(dsMapper, times(1)).listByUser(PUID);
+    }
+
+    @Test
+    public void myLogicalDbs_preBindingButDsLookupMiss_dsTypeNullNoThrow() {
+        when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
+        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
+            .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        // PRE binding exists but ds is absent from listByUser result (e.g. deleted) → dsType null, no exception
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.emptyList());
+        when(resMapper.listByKind(UID, AuthKind.DataSource))
+            .thenReturn(Collections.singletonList(authRow(DS_ID, "/mydb/", "direct")));
+
+        List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
+        assertEquals(1, result.size());
+        assertNull(result.get(0).getDsType());
     }
 }

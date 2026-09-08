@@ -16,6 +16,7 @@
 package com.clougence.clouddm.console.web.service.governance.impl;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,9 +34,13 @@ import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.governance.GovSplitResult;
 import com.clougence.clouddm.console.web.component.governance.GovStmtRow;
 import com.clougence.clouddm.console.web.component.governance.GovStmtSplitService;
+import com.clougence.clouddm.console.web.model.fo.governance.GovEventTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovPreSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.governance.GovSplitPreviewFO;
 import com.clougence.clouddm.console.web.model.fo.governance.GovStmtTimelineFO;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAddTicketFO;
+import com.clougence.clouddm.console.web.model.vo.governance.PromotionDetailVO;
+import com.clougence.clouddm.console.web.model.vo.governance.SplitPreviewVO;
 import com.clougence.clouddm.console.web.model.vo.governance.StmtTimelineVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO;
@@ -301,5 +306,100 @@ public class DbChangeGovernServiceImpl implements DbChangeGovernService {
         StmtTimelineVO vo = new StmtTimelineVO();
         vo.setGroups(groups);
         return vo;
+    }
+
+    // ------- Phase 10: split preview + event timeline -------
+
+    private static final int SPLIT_PREVIEW_SQL_MAX = 500;
+
+    @Override
+    public SplitPreviewVO splitPreview(String puid, String uid, GovSplitPreviewFO fo) {
+        LogicalDbTarget target = logicalDbService.getBinding(puid, fo.getLogicalDbId(), GovRole.PRE);
+
+        dmAuthServiceForBiz.checkResAuth(
+            puid, uid, target.getDsId(),
+            new DsResPathObj(target.getResPath()),
+            SecDataAuthLabel.DM_DAUTH_TICKET, AuthKind.DataSource);
+
+        DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(target.getDsId());
+        GovSplitResult splitResult = govStmtSplitService.split(dsConfig, fo.getSql());
+
+        SplitPreviewVO vo = new SplitPreviewVO();
+        ChangeType changeType = splitResult.getChangeType();
+        vo.setChangeType(changeType.name());
+
+        List<SplitPreviewVO.StmtPreviewVO> stmts = new ArrayList<>();
+        for (GovStmtRow row : splitResult.getStmts()) {
+            SplitPreviewVO.StmtPreviewVO stmtVO = new SplitPreviewVO.StmtPreviewVO();
+            stmtVO.setStmtIndex(row.getStmtIndex());
+            stmtVO.setSql(truncateForPreview(row.getStmtText()));
+            stmtVO.setChangeType(row.getChangeType() != null ? row.getChangeType().name() : changeType.name());
+            stmtVO.setExecConfig(buildExecConfigSummary(changeType));
+            stmts.add(stmtVO);
+        }
+        vo.setStmts(stmts);
+        return vo;
+    }
+
+    @Override
+    public List<PromotionDetailVO.EventHandlerVO> eventTimeline(String puid, String uid, GovEventTimelineFO fo) {
+        long ticketId = fo.getTicketId();
+
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket == null || !isGovernanceTicket(ticket)) {
+            return List.of();
+        }
+
+        List<DmDbChangeEventDO> events = dbChangeGovernDal.eventMapper().queryByTicketId(ticketId);
+        List<PromotionDetailVO.EventHandlerVO> result = new ArrayList<>();
+        for (DmDbChangeEventDO event : events) {
+            PromotionDetailVO.EventHandlerVO evVO = new PromotionDetailVO.EventHandlerVO();
+            evVO.setId(event.getId());
+            evVO.setEventType(event.getEventType());
+            evVO.setFromStatus(event.getFromStatus());
+            evVO.setToStatus(event.getToStatus());
+            evVO.setOperatorUid(event.getOperatorUid());
+            evVO.setGmtCreate(event.getGmtCreate());
+            evVO.setEventData(event.getEventData());
+            result.add(evVO);
+        }
+        result.sort((a, b) -> {
+            Date da = a.getGmtCreate();
+            Date db = b.getGmtCreate();
+            if (da == null || db == null) {
+                return 0;
+            }
+            return da.compareTo(db);
+        });
+        return result;
+    }
+
+    private static boolean isGovernanceTicket(DmApprovalDO ticket) {
+        if (StringUtils.isEmpty(ticket.getTicketInfo())) {
+            return false;
+        }
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        return mo != null && StringUtils.isNotEmpty(mo.getGovRole());
+    }
+
+    private static String truncateForPreview(String text) {
+        if (text == null) {
+            return "";
+        }
+        if (text.length() <= SPLIT_PREVIEW_SQL_MAX) {
+            return text;
+        }
+        return text.substring(0, SPLIT_PREVIEW_SQL_MAX) + "...";
+    }
+
+    /**
+     * D15 execution-config summary (design D15):
+     * DML → enableTransactional=true; DDL/MIXED → false; errorStrategy=NONE always.
+     */
+    private static SplitPreviewVO.ExecConfigSummary buildExecConfigSummary(ChangeType changeType) {
+        SplitPreviewVO.ExecConfigSummary summary = new SplitPreviewVO.ExecConfigSummary();
+        summary.setEnableTransactional(changeType == ChangeType.DML);
+        summary.setErrorStrategy("NONE");
+        return summary;
     }
 }

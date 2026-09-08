@@ -320,6 +320,10 @@ public class LogicalDbServiceImpl implements LogicalDbService {
         // D1: single listByKind query for all auth_res rows of this uid (only when not primary)
         List<DmAuthResDO> authRows = isPrimary ? Collections.emptyList() : authDal.resMapper().listByKind(uid, AuthKind.DataSource);
 
+        // dsType cache: lazily loaded from a single listByUser query when a PRE binding first needs it
+        Map<Long, String> dsTypeMap = Collections.emptyMap();
+        boolean dsTypeMapLoaded = false;
+
         List<MyLogicalDbVO> result = new ArrayList<>();
         for (DmLogicalDbDO logicalDb : logicalDbs) {
             List<DmLogicalDbEnvBindingDO> bindings = logicalDbDal.bindingMapper().listByLogicalDbId(logicalDb.getId());
@@ -327,26 +331,40 @@ public class LogicalDbServiceImpl implements LogicalDbService {
                 continue;
             }
 
-            // filter bindings to those with GOV_ROLE ∈ {PRE, PROD}
+            // filter bindings to those with GOV_ROLE ∈ {PRE, PROD}; track PRE binding for dsType resolution
             List<DmLogicalDbEnvBindingDO> govBindings = new ArrayList<>();
+            DmLogicalDbEnvBindingDO preBinding = null;
             for (DmLogicalDbEnvBindingDO binding : bindings) {
                 String govRole = envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_ROLE);
                 if (GovRole.PRE.name().equals(govRole) || GovRole.PROD.name().equals(govRole)) {
                     govBindings.add(binding);
+                }
+                if (preBinding == null && GovRole.PRE.name().equals(govRole)) {
+                    preBinding = binding;
                 }
             }
             if (govBindings.isEmpty()) {
                 continue;
             }
 
+            // resolve dsType from PRE binding datasource (null-safe: no PRE binding or lookup miss → null, never throws)
+            String dsType = null;
+            if (preBinding != null) {
+                if (!dsTypeMapLoaded) {
+                    dsTypeMapLoaded = true;
+                    dsTypeMap = buildDsTypeMap(puid);
+                }
+                dsType = dsTypeMap.get(preBinding.getDsId());
+            }
+
             if (isPrimary) {
-                result.add(toMyLogicalDbVO(logicalDb));
+                result.add(toMyLogicalDbVO(logicalDb, dsType));
                 continue;
             }
 
             // check if user has any auth on any PRE/PROD binding (in-memory match against pre-fetched authRows)
             if (hasAnyBindingAuth(govBindings, authRows)) {
-                result.add(toMyLogicalDbVO(logicalDb));
+                result.add(toMyLogicalDbVO(logicalDb, dsType));
             }
         }
         return result;
@@ -412,11 +430,32 @@ public class LogicalDbServiceImpl implements LogicalDbService {
         return vo;
     }
 
-    private MyLogicalDbVO toMyLogicalDbVO(DmLogicalDbDO logicalDb) {
+    private MyLogicalDbVO toMyLogicalDbVO(DmLogicalDbDO logicalDb, String dsType) {
         MyLogicalDbVO vo = new MyLogicalDbVO();
         vo.setId(logicalDb.getId());
         vo.setResourceCode(logicalDb.getResourceCode());
         vo.setResourceName(logicalDb.getResourceName());
+        vo.setDsType(dsType);
         return vo;
+    }
+
+    /**
+     * Build a dsId → {@link com.clougence.clouddm.base.metadata.ds.DataSourceType#name()} map from a single
+     * {@code listByUser} query. Used by {@link #myLogicalDbs} to resolve PRE binding datasource types for Monaco
+     * dialect selection. Single query regardless of logical DB count (no N+1). Empty/missing entries yield null
+     * dsType downstream — consistent with the coarse visibility layer's tolerate style.
+     */
+    private Map<Long, String> buildDsTypeMap(String puid) {
+        List<DmDsDO> dsList = dsDal.dsMapper().listByUser(puid);
+        if (CollectionUtils.isEmpty(dsList)) {
+            return Collections.emptyMap();
+        }
+        Map<Long, String> map = new HashMap<>();
+        for (DmDsDO ds : dsList) {
+            if (ds.getDataSourceType() != null) {
+                map.put(ds.getId(), ds.getDataSourceType().name());
+            }
+        }
+        return map;
     }
 }
