@@ -436,7 +436,7 @@ export default {
         timePayload.endTime = dayjs(this.grantData.endTime).format('YYYY-MM-DD HH:mm:ss');
       }
       this.grantLoading = true;
-      let allSuccess = true;
+      let failCount = 0;
       try {
         for (const payload of payloads) {
           const res = await this.$services.permGroupResourceGrant({
@@ -444,17 +444,19 @@ export default {
             modal: false
           });
           if (!res.success) {
-            allSuccess = false;
+            failCount++;
           }
         }
       } finally {
         this.grantLoading = false;
       }
-      if (allSuccess) {
+      if (failCount === 0) {
         this.$Message.success(this.$t('shou-quan-cheng-gong'));
         this.checkedNodes = [];
         this.$refs.resourceTree?.setData(this.originTree);
         await this.getResourceList();
+      } else {
+        this.$Message.error(this.$t('bu-fen-shou-quan-shi-bai', [failCount]));
       }
     },
     async handleRevoke(row) {

@@ -3733,6 +3733,7 @@
   "dao-chu-ge-shi": "Export Format",
   "dao-chu-tiao-shu": "Export Rows",
   "bu-fen": "Partial",
+  "bu-fen-shou-quan-shi-bai": "{0} resource(s) failed to grant",
   "zui-da-dao-chu-ji-lu-shu": "Maximum Export Records",
   "liu-kong-biao-shi-quan-bu": "Leave blank for all",
   "qing-shu-ru-dao-chu-tiao-shu": "Enter export rows",

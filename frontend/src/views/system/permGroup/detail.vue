@@ -1,56 +1,57 @@
 <template>
-  <div class="perm-group-detail">
-    <div class="detail-header">
-      <div class="detail-header__back">
+  <div class="page-shell perm-group-detail">
+    <div class="page-shell__body">
+      <div class="perm-group-detail__header">
         <Button type="text" @click="handleBack">{{ $t('fan-hui') }}</Button>
-        <span class="detail-header__title">{{ groupDetail.groupName || '' }}</span>
-        <Tag v-if="groupDetail.status" :color="groupDetail.status === 'ACTIVE' ? 'success' : 'default'" class="detail-header__status">
+        <span class="perm-group-detail__title">{{ groupDetail.groupName || '' }}</span>
+        <Tag v-if="groupDetail.status" :color="groupDetail.status === 'ACTIVE' ? 'success' : 'default'">
           {{ groupDetail.status === 'ACTIVE' ? $t('qi-yong') : $t('ting-yong') }}
         </Tag>
       </div>
-    </div>
 
-    <AppPageTabs v-model="activeTab" :tabs="tabs" class="detail-tabs" />
+      <AppPageTabs v-model="activeTab" :tabs="tabs" />
 
-    <div class="detail-body">
-      <div v-show="activeTab === 'info'" class="tab-panel">
-        <div class="info-section">
-          <div class="info-row">
-            <span class="info-label">{{ $t('zu-bian-ma') }}</span>
-            <span class="info-value">{{ groupDetail.groupCode || '-' }}</span>
+      <div v-show="activeTab === 'info'" class="page-panel-body">
+        <section class="page-section">
+          <div class="page-section__title">{{ $t('ji-ben-xin-xi') }}</div>
+          <div class="perm-group-detail__info-grid">
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('zu-bian-ma') }}</span>
+              <span class="info-item__value">{{ groupDetail.groupCode || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('zu-ming-cheng') }}</span>
+              <span class="info-item__value">{{ groupDetail.groupName || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('miao-shu') }}</span>
+              <span class="info-item__value">{{ groupDetail.description || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('cheng-yuan-shu') }}</span>
+              <span class="info-item__value">{{ displayCount(groupDetail.memberCount) }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('zi-yuan-shu') }}</span>
+              <span class="info-item__value">{{ displayCount(groupDetail.resourceCount) }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('chuang-jian-ren') }}</span>
+              <span class="info-item__value">{{ groupDetail.creatorUid || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-item__label">{{ $t('chuang-jian-shi-jian') }}</span>
+              <span class="info-item__value">{{ groupDetail.gmtCreate || '-' }}</span>
+            </div>
           </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('zu-ming-cheng') }}</span>
-            <span class="info-value">{{ groupDetail.groupName || '-' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('miao-shu') }}</span>
-            <span class="info-value">{{ groupDetail.description || '-' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('cheng-yuan-shu') }}</span>
-            <span class="info-value">{{ displayCount(groupDetail.memberCount) }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('zi-yuan-shu') }}</span>
-            <span class="info-value">{{ displayCount(groupDetail.resourceCount) }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('chuang-jian-ren') }}</span>
-            <span class="info-value">{{ groupDetail.creatorUid || '-' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">{{ $t('chuang-jian-shi-jian') }}</span>
-            <span class="info-value">{{ groupDetail.gmtCreate || '-' }}</span>
-          </div>
-        </div>
-        <div v-if="myAuth.includes('RDP_PERM_GROUP_MANAGE')" class="info-actions">
+        </section>
+        <div v-if="myAuth.includes('RDP_PERM_GROUP_MANAGE')" class="perm-group-detail__actions">
           <Button type="primary" @click="handleOpenEdit">{{ $t('bian-ji') }}</Button>
         </div>
       </div>
 
-      <div v-show="activeTab === 'members'" class="tab-panel">
-        <div class="tab-toolbar">
+      <div v-show="activeTab === 'members'" class="page-panel-body">
+        <div class="perm-group-detail__toolbar">
           <Button v-if="myAuth.includes('RDP_PERM_GROUP_MANAGE')" type="primary" icon="md-add" @click="openAddMember">
             {{ $t('tian-jia-cheng-yuan') }}
           </Button>
@@ -74,7 +75,7 @@
         </div>
       </div>
 
-      <div v-show="activeTab === 'resources'" class="tab-panel">
+      <div v-show="activeTab === 'resources'" class="page-panel-body">
         <PermGroupResourceTab :group-id="groupId" />
       </div>
     </div>
@@ -276,21 +277,28 @@ export default {
 
 <style lang="less" scoped>
 .perm-group-detail {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
+  &.page-shell {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+  }
 
-.detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 12px;
+  .page-shell__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 24px;
+    display: flex;
+    flex-direction: column;
+  }
 
-  &__back {
+  &__header {
     display: flex;
     align-items: center;
     gap: 8px;
+    padding-bottom: 16px;
   }
 
   &__title {
@@ -298,59 +306,73 @@ export default {
     font-weight: 500;
   }
 
-  &__status {
-    margin-left: 4px;
+  &__info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px 24px;
+    background: var(--bg-secondary, #f8fafc);
+    padding: 16px 24px;
+    border-radius: 10px;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 8px;
+    padding-top: 16px;
+  }
+
+  &__toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 16px;
+  }
+
+  .page-panel-body {
+    padding-top: 16px;
+  }
+
+  .page-section {
+    margin-bottom: 0;
+  }
+
+  .page-section__title {
+    font-size: 16px;
+    font-weight: 500;
+    margin-bottom: 16px;
+    padding-left: 10px;
+    position: relative;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 16px;
+      background: var(--primary-color, #181d26);
+      border-radius: 2px;
+    }
   }
 }
 
-.detail-tabs {
-  margin-bottom: 16px;
-}
-
-.detail-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.tab-panel {
+.info-item {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.info-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.info-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-}
-
-.info-label {
-  flex: 0 0 120px;
-  color: var(--text-secondary, #41454d);
-  font-size: 14px;
-}
-
-.info-value {
-  flex: 1;
-  font-size: 14px;
-  word-break: break-all;
-}
-
-.info-actions {
-  display: flex;
+  align-items: center;
   gap: 8px;
-}
+  font-size: 14px;
+  min-height: 28px;
 
-.tab-toolbar {
-  display: flex;
-  justify-content: flex-end;
+  &__label {
+    color: var(--text-secondary, #41454d);
+    flex-shrink: 0;
+    min-width: 80px;
+  }
+
+  &__value {
+    flex: 1;
+    word-break: break-all;
+  }
 }
 
 .table-container {

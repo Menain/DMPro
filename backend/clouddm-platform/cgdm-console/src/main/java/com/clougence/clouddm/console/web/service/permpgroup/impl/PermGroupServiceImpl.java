@@ -269,24 +269,64 @@ public class PermGroupServiceImpl implements PermGroupService {
             validateLabels(fo.getAuthLabels());
         }
 
-        // build group resource record
-        DmPermGroupResourceDO resource = new DmPermGroupResourceDO();
-        resource.setGroupId(fo.getGroupId());
-        resource.setAuthKind(authKind);
-        resource.setResId(fo.getResId());
-        resource.setResPath(DmDsUtils.buildResourcePath(fo.getResPaths()));
-        resource.setAuthLabels(fo.getAuthLabels() != null ? fo.getAuthLabels() : new ArrayList<>());
-        if (StringUtils.isNotBlank(fo.getStartTime())) {
-            resource.setStartTime(parseDate(fo.getStartTime()));
-        }
-        if (StringUtils.isNotBlank(fo.getEndTime())) {
-            resource.setEndTime(parseDate(fo.getEndTime()));
-        }
-        permGroupDal.permGroupResourceMapper().insert(resource);
+        String resPath = DmDsUtils.buildResourcePath(fo.getResPaths());
+        List<String> labels = fo.getAuthLabels() != null ? fo.getAuthLabels() : new ArrayList<>();
+        Date startTime = StringUtils.isNotBlank(fo.getStartTime()) ? parseDate(fo.getStartTime()) : null;
+        Date endTime = StringUtils.isNotBlank(fo.getEndTime()) ? parseDate(fo.getEndTime()) : null;
 
-        // expand: for each member, create auth_res row + grant record (only if group is active)
-        if (PermGroupStatus.ACTIVE.name().equals(group.getStatus())) {
-            expandForResource(resource);
+        // upsert: check for existing group resource row by (groupId, authKind, resId, resPath)
+        DmPermGroupResourceDO existing = permGroupDal.permGroupResourceMapper()
+            .selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmPermGroupResourceDO>()
+                .eq(DmPermGroupResourceDO::getGroupId, fo.getGroupId())
+                .eq(DmPermGroupResourceDO::getAuthKind, authKind)
+                .eq(DmPermGroupResourceDO::getResId, fo.getResId())
+                .eq(DmPermGroupResourceDO::getResPath, resPath));
+
+        if (existing != null) {
+            // update existing group resource row — use update(entity, wrapper) so that
+            // startTime/endTime are force-set even when null (permanent), because the default
+            // NOT_NULL update strategy on updateById would skip null Date fields.
+            existing.setAuthLabels(labels);
+            existing.setStartTime(null);
+            existing.setEndTime(null);
+            permGroupDal.permGroupResourceMapper().update(existing,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DmPermGroupResourceDO>()
+                    .eq(DmPermGroupResourceDO::getId, existing.getId())
+                    .set(DmPermGroupResourceDO::getStartTime, startTime)
+                    .set(DmPermGroupResourceDO::getEndTime, endTime));
+
+            // sync materialized auth_res rows via grant ledger
+            List<DmPermGroupGrantRecordDO> records = permGroupDal.permGroupGrantRecordMapper()
+                .listByGroupResourceId(existing.getId());
+            List<String> expandedLabels = computeExpandedLabels(existing);
+            for (DmPermGroupGrantRecordDO record : records) {
+                DmAuthResDO authRes = authDal.resMapper().selectById(record.getAuthResId());
+                if (authRes != null) {
+                    authRes.setAuthLabels(expandedLabels);
+                    authRes.setStartTime(null);
+                    authRes.setEndTime(null);
+                    authDal.resMapper().update(authRes,
+                        new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<DmAuthResDO>()
+                            .eq(DmAuthResDO::getId, authRes.getId())
+                            .set(DmAuthResDO::getStartTime, startTime)
+                            .set(DmAuthResDO::getEndTime, endTime));
+                }
+            }
+        } else {
+            // insert new group resource + expand (only if group is active)
+            DmPermGroupResourceDO resource = new DmPermGroupResourceDO();
+            resource.setGroupId(fo.getGroupId());
+            resource.setAuthKind(authKind);
+            resource.setResId(fo.getResId());
+            resource.setResPath(resPath);
+            resource.setAuthLabels(labels);
+            resource.setStartTime(startTime);
+            resource.setEndTime(endTime);
+            permGroupDal.permGroupResourceMapper().insert(resource);
+
+            if (PermGroupStatus.ACTIVE.name().equals(group.getStatus())) {
+                expandForResource(resource);
+            }
         }
     }
 
@@ -355,21 +395,33 @@ public class PermGroupServiceImpl implements PermGroupService {
             authDO.setResInstId("ALL");
             authDO.setResPath(DmAuthServiceForManage.GLOBAL_RESOURCE_PATH);
             authDO.setLevelOne(DmAuthServiceForManage.GLOBAL_RESOURCE_PATH);
-            if (CollectionUtils.isEmpty(resource.getAuthLabels())) {
-                authDO.setAuthLabels(allDataAuthLabels());
-            } else {
-                authDO.setAuthLabels(cascadeLabels(resource.getAuthLabels()));
-            }
         } else {
             DmDsDO ds = dsDal.dsMapper().selectById(resource.getResId());
             if (ds != null) {
                 authDO.setResInstId(ds.getInstanceId());
             }
             fillResPathLevels(authDO, resource.getResPath());
-            authDO.setAuthLabels(cascadeLabels(resource.getAuthLabels()));
         }
+        authDO.setAuthLabels(computeExpandedLabels(resource));
 
         return authDO;
+    }
+
+    /**
+     * Compute the expanded auth labels for a group resource, using the same logic
+     * as the initial expansion in {@link #buildAuthResDO}.
+     * Global resource with empty labels → all data auth labels;
+     * otherwise → cascadeLabels (empty list when input is empty for specific-ds).
+     */
+    private List<String> computeExpandedLabels(DmPermGroupResourceDO resource) {
+        if (resource.getResId() == DmAuthServiceForManage.GLOBAL_RESOURCE_RES_ID
+            && StringUtils.equals(resource.getResPath(), DmAuthServiceForManage.GLOBAL_RESOURCE_PATH)) {
+            if (CollectionUtils.isEmpty(resource.getAuthLabels())) {
+                return allDataAuthLabels();
+            }
+            return cascadeLabels(resource.getAuthLabels());
+        }
+        return cascadeLabels(resource.getAuthLabels());
     }
 
     // ==================== Revocation engine ====================
