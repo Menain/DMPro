@@ -87,7 +87,7 @@ export default {
   methods: {
     normalizeElementType(objType) {
       const normalized = objType === 'EXTERNAL_SCHEMA' ? 'SCHEMA' : objType === 'EXTERNAL_CATALOG' ? 'CATALOG' : objType;
-      return ELEMENT_TYPE_MAP[normalized] || normalized;
+      return ELEMENT_TYPE_MAP[normalized] || '';
     },
     getNodeDataSourceType(node) {
       let current = node;
@@ -138,7 +138,11 @@ export default {
         return;
       }
       const dsType = this.getNodeDataSourceType(node);
-      const elementType = ELEMENT_REVERSE_TYPE_MAP[normalizedElementType] || normalizedElementType;
+      if (!dsType) {
+        this.hasDefinition = false;
+        return;
+      }
+      const elementType = ELEMENT_REVERSE_TYPE_MAP[normalizedElementType];
       const cacheKey = this.getCacheKey(dsType, elementType);
 
       const cached = this.availabilityCache[cacheKey];
