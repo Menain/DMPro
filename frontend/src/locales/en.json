@@ -4551,5 +4551,10 @@
   "gov-audit-snapshot": "Audit Snapshot",
   "gov-audit-activity": "Activity",
   "gov-audit-status": "Status",
-  "gov-audit-context": "Context"
+  "gov-audit-context": "Context",
+  "cao-zuo-quan-xian": "Operation Permissions",
+  "quan-bu-shu-ju-quan-xian": "All Data Permissions",
+  "wei-xuan-cao-zuo-quan-xian-de-jie-dian-bu-ti-jiao": "Nodes without selected operation permissions will not be submitted",
+  "qing-dian-ji-zi-yuan-jie-dian-pei-zhi-cao-zuo-quan-xian": "Click a resource node on the left to configure operation permissions",
+  "zan-wu-cao-zuo-quan-xian-ding-yi": "No operation permission definitions"
 }

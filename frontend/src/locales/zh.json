@@ -4530,5 +4530,10 @@
   "gov-audit-snapshot": "审计快照",
   "gov-audit-activity": "检查项",
   "gov-audit-status": "状态",
-  "gov-audit-context": "上下文"
+  "gov-audit-context": "上下文",
+  "cao-zuo-quan-xian": "操作权限",
+  "quan-bu-shu-ju-quan-xian": "全部数据权限",
+  "wei-xuan-cao-zuo-quan-xian-de-jie-dian-bu-ti-jiao": "未选操作权限的节点不会提交",
+  "qing-dian-ji-zi-yuan-jie-dian-pei-zhi-cao-zuo-quan-xian": "请点击左侧资源节点配置操作权限",
+  "zan-wu-cao-zuo-quan-xian-ding-yi": "暂无操作权限定义"
 }

@@ -21,13 +21,15 @@
           :expandedKeys="expandedKeys"
           @expand="handleNodeExpand"
           @checked-change="handleCheckedChange"
+          @click="handleNodeFocus"
         />
+      </div>
+      <div class="grant-section__labels">
+        <div class="grant-section__panel-title">{{ $t('cao-zuo-quan-xian') }}</div>
+        <AuthLabelTreePanel :node="focusNode" v-model="currentLabelSelection" />
       </div>
       <div class="grant-section__settings">
         <Form :label-width="100">
-          <FormItem :label="$t('quan-xian-biao-qian')">
-            <Select v-model="grantData.authLabels" multiple filterable allow-create transfer :placeholder="$t('qing-shu-ru')"></Select>
-          </FormItem>
           <FormItem :label="$t('shou-quan-shi-jian')">
             <div class="time-range-presets">
               <button
@@ -62,9 +64,10 @@
         <template #authKind="{ row }">{{ row.authKind }}</template>
         <template #resId="{ row }">{{ dsNameMap[row.resId] || row.resId }}</template>
         <template #authLabels="{ row }">
-          <div class="auth-labels">
-            <Tag v-for="label in row.authLabels || []" :key="label" size="small">{{ label }}</Tag>
+          <div v-if="row.authLabels && row.authLabels.length" class="auth-labels">
+            <Tag v-for="label in row.authLabels" :key="label" size="small">{{ label }}</Tag>
           </div>
+          <span v-else class="auth-labels__all">{{ $t('quan-bu-shu-ju-quan-xian') }}</span>
         </template>
         <template #timeRange="{ row }">
           <span v-if="!row.startTime && !row.endTime">{{ $t('yong-jiu') }}</span>
@@ -93,6 +96,7 @@ import { h } from 'vue';
 import { mapState } from 'vuex';
 import VTree from '@wsfe/vue-tree';
 import dayjs from 'dayjs';
+import AuthLabelTreePanel from './AuthLabelTreePanel.vue';
 
 const START_RECORD_NAMES_CONUT = 2;
 
@@ -118,12 +122,25 @@ const ELEMENT_REVERSE_TYPE_MAP = {
 
 export default {
   name: 'PermGroupResourceTab',
-  components: { VTree },
+  components: { VTree, AuthLabelTreePanel },
   props: {
     groupId: { type: Number, required: true }
   },
   computed: {
     ...mapState(['myAuth']),
+    currentLabelSelection: {
+      get() {
+        if (!this.focusNode) {
+          return [];
+        }
+        return this.labelSelectionMap[this.focusNode.key] || [];
+      },
+      set(val) {
+        if (this.focusNode) {
+          this.labelSelectionMap[this.focusNode.key] = val;
+        }
+      }
+    },
     resourceColumns() {
       return [
         { title: this.$t('shou-quan-lei-xing'), slot: 'authKind', width: 120 },
@@ -159,10 +176,11 @@ export default {
       originTree: [],
       expandedKeys: [],
       checkedNodes: [],
+      focusNode: null,
+      labelSelectionMap: {},
       grantLoading: false,
       curRangeKey: 'permanent',
       grantData: {
-        authLabels: [],
         startTime: null,
         endTime: null
       }
@@ -349,6 +367,15 @@ export default {
     handleCheckedChange(checkedNodes) {
       this.checkedNodes = checkedNodes || [];
     },
+    handleNodeFocus(node) {
+      if (!node) {
+        return;
+      }
+      this.focusNode = node;
+      if (!(node.key in this.labelSelectionMap)) {
+        this.labelSelectionMap[node.key] = [];
+      }
+    },
     handleRangeChange(key) {
       this.curRangeKey = key;
       if (key === 'permanent') {
@@ -366,10 +393,25 @@ export default {
         this.$Message.warning(this.$t('qing-gou-xuan-zi-yuan'));
         return;
       }
+      // 方案a：未选操作权限的勾选节点不会提交，warning 提示后剔除。
+      const noLabelNodes = this.checkedNodes.filter((node) => {
+        const labels = this.labelSelectionMap[node.key] || [];
+        return labels.length === 0;
+      });
+      const grantableNodes = this.checkedNodes.filter((node) => {
+        const labels = this.labelSelectionMap[node.key] || [];
+        return labels.length > 0;
+      });
+      if (noLabelNodes.length > 0) {
+        this.$Message.warning(this.$t('wei-xuan-cao-zuo-quan-xian-de-jie-dian-bu-ti-jiao'));
+      }
+      if (grantableNodes.length === 0) {
+        return;
+      }
       // 后端契约：resPaths 为单条路径的段列表，buildResourcePath 会将其 join 成单一路径。
       // 因此每个勾选节点必须独立提交一次，禁止把多节点路径塞进同一次请求的 resPaths。
       const payloads = [];
-      this.checkedNodes.forEach((node) => {
+      grantableNodes.forEach((node) => {
         const instance = this.findInstanceAncestor(node);
         if (!instance) {
           return;
@@ -379,7 +421,7 @@ export default {
           authKind: 'DataSource',
           resId: Number(instance.objId),
           resPaths: [this.buildResPathString(node)],
-          authLabels: this.grantData.authLabels || []
+          authLabels: this.labelSelectionMap[node.key] || []
         });
       });
       if (payloads.length === 0) {
@@ -473,8 +515,27 @@ export default {
     padding: 8px;
   }
 
+  &__labels {
+    flex: 1;
+    min-width: 0;
+    max-height: 400px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 8px;
+  }
+
+  &__panel-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: #181d26;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+  }
+
   &__settings {
-    flex: 0 0 320px;
+    flex: 0 0 280px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
@@ -490,6 +551,7 @@ export default {
   @media (max-width: 1024px) {
     flex-direction: column;
 
+    &__labels,
     &__settings {
       flex: 1;
       width: 100%;
@@ -510,6 +572,11 @@ export default {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+
+  &__all {
+    font-size: 13px;
+    color: #41454d;
+  }
 }
 
 .time-range-presets {
