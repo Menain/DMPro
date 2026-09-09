@@ -31,10 +31,7 @@
                 </Tag>
               </template>
               <template #action="{ row }">
-                <Button type="text" size="small" @click="handleViewDetail(row)">{{ $t('cha-kan') }}</Button>
-                <Button v-if="myAuth.includes('RDP_PERM_GROUP_MANAGE')" type="text" size="small" @click="handleOpenEdit(row)">
-                  {{ $t('bian-ji') }}
-                </Button>
+                <Button type="text" size="small" @click="handleViewDetail(row)">{{ $t('pei-zhi') }}</Button>
                 <Poptip
                   v-if="myAuth.includes('RDP_PERM_GROUP_MANAGE')"
                   confirm
@@ -78,9 +75,9 @@
       </div>
     </div>
 
-    <CCModal v-model="formVisible" :mask-closable="false" :width="520" :title="formTitle" @on-cancel="handleCloseForm">
+    <CCModal v-model="formVisible" :mask-closable="false" :width="520" :title="$t('chuang-jian-quan-xian-zu')" @on-cancel="handleCloseForm">
       <Form ref="groupForm" :model="formData" :rules="formRules" :label-width="100">
-        <FormItem v-if="formMode === 'create'" :label="$t('zu-bian-ma')" prop="groupCode">
+        <FormItem :label="$t('zu-bian-ma')" prop="groupCode">
           <Input v-model.trim="formData.groupCode" :placeholder="$t('qing-shu-ru-zu-bian-ma')" />
         </FormItem>
         <FormItem :label="$t('zu-ming-cheng')" prop="groupName">
@@ -116,9 +113,6 @@ export default {
         { title: this.$t('chuang-jian-shi-jian'), key: 'gmtCreate', width: 170, sortable: true },
         { title: this.$t('cao-zuo'), slot: 'action', width: 280, fixed: 'right' }
       ];
-    },
-    formTitle() {
-      return this.formMode === 'create' ? this.$t('chuang-jian-quan-xian-zu') : this.$t('bian-ji-quan-xian-zu');
     }
   },
   data() {
@@ -131,7 +125,6 @@ export default {
       pageNum: 1,
       pageSize: 20,
       formVisible: false,
-      formMode: 'create',
       submitLoading: false,
       formData: {
         groupCode: '',
@@ -179,22 +172,11 @@ export default {
       this.$router.push(`/manager/permGroup/${row.id}`);
     },
     handleOpenCreate() {
-      this.formMode = 'create';
       this.formData = { groupCode: '', groupName: '', description: '' };
       this.formVisible = true;
       this.$nextTick(() => {
         this.$refs.groupForm.resetFields();
       });
-    },
-    handleOpenEdit(row) {
-      this.formMode = 'edit';
-      this.formData = {
-        groupId: row.id,
-        groupCode: row.groupCode,
-        groupName: row.groupName,
-        description: row.description
-      };
-      this.formVisible = true;
     },
     handleCloseForm() {
       this.formVisible = false;
@@ -205,34 +187,18 @@ export default {
         return;
       }
       this.submitLoading = true;
-      if (this.formMode === 'create') {
-        const res = await this.$services.permGroupCreate({
-          data: {
-            groupCode: this.formData.groupCode,
-            groupName: this.formData.groupName,
-            description: this.formData.description
-          },
-          msg: this.$t('cao-zuo-cheng-gong')
-        });
-        this.submitLoading = false;
-        if (res.success) {
-          this.formVisible = false;
-          await this.getGroupList();
-        }
-      } else {
-        const res = await this.$services.permGroupUpdate({
-          data: {
-            groupId: this.formData.groupId,
-            groupName: this.formData.groupName,
-            description: this.formData.description
-          },
-          msg: this.$t('bao-cun-cheng-gong')
-        });
-        this.submitLoading = false;
-        if (res.success) {
-          this.formVisible = false;
-          await this.getGroupList();
-        }
+      const res = await this.$services.permGroupCreate({
+        data: {
+          groupCode: this.formData.groupCode,
+          groupName: this.formData.groupName,
+          description: this.formData.description
+        },
+        msg: this.$t('cao-zuo-cheng-gong')
+      });
+      this.submitLoading = false;
+      if (res.success) {
+        this.formVisible = false;
+        await this.getGroupList();
       }
     },
     async handleToggleStatus(row) {

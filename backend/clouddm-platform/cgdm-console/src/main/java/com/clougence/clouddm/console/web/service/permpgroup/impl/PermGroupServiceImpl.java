@@ -146,7 +146,20 @@ public class PermGroupServiceImpl implements PermGroupService {
             .selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmPermGroupDO>()
                 .eq(DmPermGroupDO::getCreatorUid, puid)
                 .orderByDesc(DmPermGroupDO::getGmtCreate));
-        return groups.stream().map(this::toGroupVO).collect(Collectors.toList());
+        List<PermGroupVO> vos = new ArrayList<>();
+        for (DmPermGroupDO group : groups) {
+            PermGroupVO vo = toGroupVO(group);
+            vo.setMemberCount(permGroupDal.permGroupMemberMapper()
+                .selectCount(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmPermGroupMemberDO>()
+                    .eq(DmPermGroupMemberDO::getGroupId, group.getId()))
+                .intValue());
+            vo.setResourceCount(permGroupDal.permGroupResourceMapper()
+                .selectCount(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmPermGroupResourceDO>()
+                    .eq(DmPermGroupResourceDO::getGroupId, group.getId()))
+                .intValue());
+            vos.add(vo);
+        }
+        return vos;
     }
 
     @Override
