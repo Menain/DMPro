@@ -389,8 +389,23 @@ export default {
     },
     handleCheckedChange(checkedNodes) {
       const newNodes = checkedNodes || [];
+      const newKeys = new Set(newNodes.map((n) => n.key));
       const oldKeys = new Set(this.checkedNodes.map((n) => n.key));
       const addedNodes = newNodes.filter((n) => !oldKeys.has(n.key));
+      const removedKeys = this.checkedNodes.filter((n) => !newKeys.has(n.key)).map((n) => n.key);
+      // 取消勾选 = 节点退出本次提交集合：丢弃其待提交标签选择（再次勾选时由 initLabelSelection 从服务端回显）
+      removedKeys.forEach((key) => {
+        delete this.labelSelectionMap[key];
+      });
+      // 焦点在被取消节点中时转移到最后一个仍勾选的节点；无剩余勾选则回空态占位
+      if (this.focusNode && removedKeys.includes(this.focusNode.key)) {
+        if (newNodes.length > 0) {
+          this.focusNode = newNodes[newNodes.length - 1];
+        } else {
+          this.focusNode = null;
+        }
+      }
+      // 新增勾选：回显既有授权并将焦点设为最后新增节点（既有行为不变）
       addedNodes.forEach((node) => this.initLabelSelection(node));
       if (addedNodes.length > 0) {
         this.focusNode = addedNodes[addedNodes.length - 1];
