@@ -366,21 +366,23 @@ export default {
         this.$Message.warning(this.$t('qing-gou-xuan-zi-yuan'));
         return;
       }
-      const groups = {};
+      // 后端契约：resPaths 为单条路径的段列表，buildResourcePath 会将其 join 成单一路径。
+      // 因此每个勾选节点必须独立提交一次，禁止把多节点路径塞进同一次请求的 resPaths。
+      const payloads = [];
       this.checkedNodes.forEach((node) => {
         const instance = this.findInstanceAncestor(node);
         if (!instance) {
           return;
         }
-        const resId = instance.objId;
-        if (!groups[resId]) {
-          groups[resId] = [];
-        }
-        const path = this.buildResPathString(node);
-        groups[resId].push(path);
+        payloads.push({
+          groupId: this.groupId,
+          authKind: 'DataSource',
+          resId: Number(instance.objId),
+          resPaths: [this.buildResPathString(node)],
+          authLabels: this.grantData.authLabels || []
+        });
       });
-      const resIds = Object.keys(groups);
-      if (resIds.length === 0) {
+      if (payloads.length === 0) {
         this.$Message.warning(this.$t('qing-gou-xuan-zi-yuan'));
         return;
       }
@@ -393,24 +395,19 @@ export default {
       }
       this.grantLoading = true;
       let allSuccess = true;
-      for (const resId of resIds) {
-        const payload = {
-          groupId: this.groupId,
-          authKind: 'DataSource',
-          resId: Number(resId),
-          resPaths: groups[resId],
-          authLabels: this.grantData.authLabels || [],
-          ...timePayload
-        };
-        const res = await this.$services.permGroupResourceGrant({
-          data: payload,
-          modal: false
-        });
-        if (!res.success) {
-          allSuccess = false;
+      try {
+        for (const payload of payloads) {
+          const res = await this.$services.permGroupResourceGrant({
+            data: { ...payload, ...timePayload },
+            modal: false
+          });
+          if (!res.success) {
+            allSuccess = false;
+          }
         }
+      } finally {
+        this.grantLoading = false;
       }
-      this.grantLoading = false;
       if (allSuccess) {
         this.$Message.success(this.$t('shou-quan-cheng-gong'));
         this.checkedNodes = [];
