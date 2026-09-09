@@ -253,7 +253,14 @@ export default {
       return names.join('/');
     },
     handleNodeExpand(node) {
-      if (!node || node.loaded || this.isResourceLeaf(node)) {
+      if (!node) {
+        return;
+      }
+      const idx = this.expandedKeys.indexOf(node.key);
+      if (idx === -1) {
+        this.expandedKeys.push(node.key);
+      }
+      if (node.loaded || this.isResourceLeaf(node)) {
         return;
       }
       this.loadChildren(node);
