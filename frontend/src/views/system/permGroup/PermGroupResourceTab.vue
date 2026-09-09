@@ -252,6 +252,18 @@ export default {
       }
       return names.join('/');
     },
+    findRawNodeByKey(nodes, key) {
+      for (const item of nodes || []) {
+        if (item.key === key) {
+          return item;
+        }
+        const found = this.findRawNodeByKey(item.children, key);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    },
     handleNodeExpand(node) {
       if (!node) {
         return;
@@ -260,10 +272,11 @@ export default {
       if (idx === -1) {
         this.expandedKeys.push(node.key);
       }
-      if (node.loaded || this.isResourceLeaf(node)) {
+      const raw = this.findRawNodeByKey(this.originTree, node.key) || node;
+      if (raw.loaded || this.isResourceLeaf(raw)) {
         return;
       }
-      this.loadChildren(node);
+      this.loadChildren(raw);
     },
     isResourceLeaf(node) {
       return !!node?.isLeaf || ELEMENT_TYPE_MAP[node?.objType] === 'TABLE';
