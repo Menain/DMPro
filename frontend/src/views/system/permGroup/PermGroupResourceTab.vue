@@ -364,17 +364,45 @@ export default {
     refreshTree() {
       this.$refs.resourceTree?.setData(this.originTree);
     },
+    initLabelSelection(node) {
+      if (!node || node.key in this.labelSelectionMap) {
+        return;
+      }
+      const instance = this.findInstanceAncestor(node);
+      if (!instance) {
+        this.labelSelectionMap[node.key] = [];
+        return;
+      }
+      const path = this.buildResPathString(node);
+      let expectedResPath;
+      if (path) {
+        expectedResPath = `/${path}/`;
+      } else {
+        expectedResPath = '/';
+      }
+      const row = this.resourceList.find((r) => Number(r.resId) === Number(instance.objId) && r.resPath === expectedResPath);
+      if (row && row.authLabels) {
+        this.labelSelectionMap[node.key] = [...row.authLabels];
+      } else {
+        this.labelSelectionMap[node.key] = [];
+      }
+    },
     handleCheckedChange(checkedNodes) {
-      this.checkedNodes = checkedNodes || [];
+      const newNodes = checkedNodes || [];
+      const oldKeys = new Set(this.checkedNodes.map((n) => n.key));
+      const addedNodes = newNodes.filter((n) => !oldKeys.has(n.key));
+      addedNodes.forEach((node) => this.initLabelSelection(node));
+      if (addedNodes.length > 0) {
+        this.focusNode = addedNodes[addedNodes.length - 1];
+      }
+      this.checkedNodes = newNodes;
     },
     handleNodeFocus(node) {
       if (!node) {
         return;
       }
       this.focusNode = node;
-      if (!(node.key in this.labelSelectionMap)) {
-        this.labelSelectionMap[node.key] = [];
-      }
+      this.initLabelSelection(node);
     },
     handleRangeChange(key) {
       this.curRangeKey = key;
