@@ -89,6 +89,7 @@
 </template>
 
 <script>
+import { h } from 'vue';
 import { mapState } from 'vuex';
 import VTree from '@wsfe/vue-tree';
 import dayjs from 'dayjs';
@@ -222,7 +223,7 @@ export default {
       }
       return '';
     },
-    renderNode(h, node) {
+    renderNode(node) {
       return h('span', { class: 'tree-node-label' }, node.objName || '');
     },
     findInstanceAncestor(node) {
