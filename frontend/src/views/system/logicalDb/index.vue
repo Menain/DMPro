@@ -97,7 +97,10 @@
             </template>
             <template #dsId="{ row, index }">
               <Select v-model="bindingRows[index].dsId" filterable transfer :placeholder="$t('qing-xuan-ze-shu-ju-yuan')" :disabled="row._existing">
-                <Option v-for="ds in dsList" :key="ds.objId" :value="ds.objId">{{ ds.objName }}</Option>
+                <Option v-for="ds in dsList" :key="ds.id" :value="ds.id">
+                  {{ ds.instanceDesc || ds.instanceId }}
+                  <span v-if="ds.dsEnvName">（{{ ds.dsEnvName }}）</span>
+                </Option>
               </Select>
             </template>
             <template #resPath="{ row, index }">
