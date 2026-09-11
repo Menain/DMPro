@@ -60,8 +60,6 @@ export default {
     if (state.mySystemMenuItems.length) {
       url = state.mySystemMenuItems[0].key;
     }
-    state.contactUsUrl = 'https://www.cdmgr.com/';
-    state.dmDocUrlPrefix = 'https://www.clougence.com/dm-doc';
     if (state.myCatLog.includes('CAT_DM_CONSOLE')) {
       url = '/sql';
     } else if (state.myCatLog.includes('CAT_RDP_WORKER_ORDER')) {

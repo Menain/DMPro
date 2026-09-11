@@ -39,7 +39,6 @@ const bundledIcons = {
 
 /**
  * IconFont-v2, Customicon Component
- * https://clougence.yuque.com/ig5uby/pt7mq6/ql8cf0ii9lvkoe6t
  */
 export default {
   emits: ['click'],

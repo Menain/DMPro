@@ -1,11 +1,11 @@
 <template>
   <div class="app-brand-logo" :class="{ 'app-brand-logo--compact': compact }">
-    <img :src="logoClouddm" class="app-brand-logo__img" alt="CloudDM" />
+    <img :src="logoBrand" class="app-brand-logo__img" alt="DBMS" />
   </div>
 </template>
 
 <script>
-import logoClouddm from '@/assets/logo-clouddm.svg';
+import logoBrand from '@/assets/logo.svg';
 
 export default {
   name: 'AppBrandLogo',
@@ -17,7 +17,7 @@ export default {
   },
   data() {
     return {
-      logoClouddm
+      logoBrand
     };
   }
 };

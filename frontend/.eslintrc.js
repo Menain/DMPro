@@ -58,7 +58,7 @@ module.exports = {
           'Two', 'Host', 'Three', 'Host', 'Three', 'Host', 'One', 'Five', '...', 'name', '@', '【', '】', '20', '50', '100', '200',
           'int', 'integer', 'float', 'decimal', 'bool', 'string', 'date', 'time', 'datetime',
           '500', '1000', '2000', '5000', '10000',
-          'of', '0', 'host: ', 'ID: ', 'FAQ', 0, 'Copyright © 2025 ClouGence,Inc.', 'AgentId', 'AppKey', 'AppSecret', 'Clougence RDP', 'ClouGence RDP', 'CloudDM', 'AutoMQ',
+          'of', '0', 'host: ', 'ID: ', 'FAQ', 0, 'Copyright © 2025 ClouGence,Inc.', 'AgentId', 'AppKey', 'AppSecret', 'Clougence RDP', 'ClouGence RDP', 'CloudDM', 'DBMS', 'AutoMQ',
           'WHERE', 'ORDER BY', 'PORT', 'FOLLOWS', 'PRECEDES', 'follows', 'precedes', 'DEFERRABLE', 'row', 'statement', 'NOT DEFERRABLE',
           'INITIALLY IMMEDIATE', 'INITIALLY DEFERRED', 'DEFERRABLE INITIALLY DEFERRED', 'DEFERRABLE INITIALLY IMMEDIATE', '$',
           'NOT DEFERRABLE INITIALLY IMMEDIATE', 'delete', 'insert', 'DETERMINISTIC', 'IN', 'OUT', 'INOUT', 'CONTAINS SQL', 'NO SQL',

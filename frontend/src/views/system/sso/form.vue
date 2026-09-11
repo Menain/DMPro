@@ -46,10 +46,6 @@
 
       <div v-else-if="!loading" class="sso-form-empty">{{ $t('zan-wu-shu-ju') }}</div>
 
-      <div v-if="selectedProvider && selectedProvider.helpUrl" class="sso-form-help">
-        <a @click="jumpToHelp">{{ $t('ru-he-dui-jie-x', [$t(selectedProvider.labelKey)]) }}</a>
-      </div>
-
       <div v-if="selectedProvider" class="sso-form-footer">
         <div class="sso-form-footer__right">
           <Button @click="goBack">{{ $t('qu-xiao') }}</Button>
@@ -262,12 +258,6 @@ export default {
     },
     goBack() {
       this.$router.push('/integrations/sso');
-    },
-    jumpToHelp() {
-      const url = this.selectedProvider?.helpUrl || '';
-      if (url) {
-        window.open(url, 'blank');
-      }
     }
   }
 };
@@ -366,11 +356,6 @@ export default {
 .sso-form-empty {
   color: #667085;
   font-size: 14px;
-}
-
-.sso-form-help {
-  max-width: 720px;
-  margin-top: 18px;
 }
 
 .sso-form-footer {

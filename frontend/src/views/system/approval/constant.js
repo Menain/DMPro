@@ -13,7 +13,6 @@ export const APPROVAL_PROVIDERS = [
     primaryField: 'dingApprovalConfigAk',
     primaryLabelKey: 'approval-field-dingtalk-ak',
     enableField: 'dingEnableApprovalService',
-    helpUrl: 'https://www.cdmgr.com/docs/integrations/approval/dingtalk_approval',
     fields: [
       { key: 'dingEnableApprovalService', labelKey: 'approval-enable-service', widget: 'switch' },
       { key: 'dingApprovalConfigAk', labelKey: 'approval-field-dingtalk-ak', required: true },
@@ -27,7 +26,6 @@ export const APPROVAL_PROVIDERS = [
     primaryField: 'feishuApprovalAppID',
     primaryLabelKey: 'approval-field-feishu-app-id',
     enableField: 'feishuEnableApprovalService',
-    helpUrl: 'https://www.cdmgr.com/docs/integrations/approval/feishu_approval',
     fields: [
       { key: 'feishuEnableApprovalService', labelKey: 'approval-enable-service', widget: 'switch' },
       { key: 'feishuApprovalAppID', labelKey: 'approval-field-feishu-app-id', required: true },
@@ -42,7 +40,6 @@ export const APPROVAL_PROVIDERS = [
     primaryField: 'wechatApprovalCorpId',
     primaryLabelKey: 'approval-field-wechat-corp-id',
     enableField: 'wechatEnableApprovalService',
-    helpUrl: 'https://www.cdmgr.com/docs/integrations/approval/wechat_approval',
     fields: [
       { key: 'wechatEnableApprovalService', labelKey: 'approval-enable-service', widget: 'switch' },
       { key: 'wechatApprovalCorpId', labelKey: 'approval-field-wechat-corp-id', required: true },

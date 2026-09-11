@@ -77,9 +77,6 @@
         </div>
       </div>
       <div class="footer">
-        <a-button style="margin-right: 10px" type="primary" @click="handleDownload">
-          {{ $t('xia-zai-zui-xin-ban-ben') }}
-        </a-button>
         <a-button style="margin-right: 10px" @click="handleCloseVersionDetailModal">
           {{ $t('guan-bi') }}
         </a-button>
@@ -224,10 +221,6 @@ export default {
       appLogger.debug(msg);
       this.showInactiveModal = true;
       this.inactiveMsg = msg;
-    },
-    handleDownload() {
-      window.open('https://www.clougence.com/clouddm-personal', 'blank');
-      this.handleCloseVersionDetailModal();
     },
     async handleCloseVersionDetailModal() {
       this.showVersionDetailModal = false;

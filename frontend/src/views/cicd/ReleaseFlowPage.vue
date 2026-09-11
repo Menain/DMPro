@@ -1192,9 +1192,7 @@ export default {
     openHelp() {
       if (this.webhook.webHookHelpUrl) {
         window.open(this.webhook.webHookHelpUrl, '_blank');
-        return;
       }
-      window.open('https://www.clougence.com/dm-doc/devops/devops_guild', '_blank');
     },
     jumpToWebhookDoc() {
       this.openHelp();

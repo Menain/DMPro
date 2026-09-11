@@ -16,9 +16,6 @@
           <LoginHero />
         </div>
       </div>
-      <footer class="login-bottombar">
-        <dm-footer />
-      </footer>
     </div>
 
     <div class="login-panel">
@@ -157,15 +154,11 @@
           </button>
         </div>
       </div>
-      <footer class="panel-footer">
-        <dm-footer />
-      </footer>
     </div>
   </div>
 </template>
 
 <script>
-import DmFooter from '@/components/DmFooter';
 import DmLogoHeader from '@/components/DmLogoHeader';
 import LoginHero from '@/views/login/LoginHero';
 import { ACCOUNT_TYPE, LOGIN_TYPE } from '@/const';
@@ -182,7 +175,6 @@ export default {
   name: 'Login',
   components: {
     DmLogoHeader,
-    DmFooter,
     LoginHero
   },
   mixins: [encryptMixin],
@@ -663,19 +655,6 @@ export default {
     }
   }
 
-  .login-bottombar {
-    flex: 0 0 auto;
-    position: relative;
-    padding: 0 32px 24px;
-    padding-right: calc(480px + 32px);
-
-    :deep(.footer) {
-      height: auto;
-      line-height: 1.5;
-      text-align: center;
-    }
-  }
-
   .login-panel {
     position: absolute;
     top: 0;
@@ -709,15 +688,6 @@ export default {
       font-weight: 400;
       line-height: 1.5;
       margin: 8px 0 0;
-    }
-
-    .panel-footer {
-      display: none;
-
-      :deep(.footer) {
-        height: auto;
-        line-height: 1.5;
-      }
     }
 
     .panel-body {
@@ -1106,10 +1076,6 @@ export default {
       display: none;
     }
 
-    .login-bottombar {
-      display: none;
-    }
-
     .login-panel {
       position: relative;
       top: auto;
@@ -1118,12 +1084,6 @@ export default {
       width: 100%;
       flex: 1;
       padding: 48px 32px;
-
-      .panel-footer {
-        display: block;
-        margin-top: 48px;
-        text-align: center;
-      }
     }
   }
 }

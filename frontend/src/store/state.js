@@ -25,8 +25,6 @@ export default {
   },
   dmGlobalSetting: {},
   globalDsSetting: {},
-  contactUsUrl: 'https://www.cdmgr.com/',
-  dmDocUrlPrefix: 'https://www.clougence.com/dm-doc',
   myCatLog: [],
   mySystemMenuItems: [],
   sidebarMenu: {

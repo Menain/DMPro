@@ -12,10 +12,6 @@
           <LoginHero />
         </section>
       </main>
-
-      <footer class="login-bottombar">
-        <dm-footer />
-      </footer>
     </div>
 
     <section class="init-workspace">
@@ -143,7 +139,6 @@ import StepSecurity from './StepSecurity.vue';
 import StepConnectivity from './StepConnectivity.vue';
 import StepConfirm from './StepConfirm.vue';
 import StepExecution from './StepExecution.vue';
-import DmFooter from '@/components/DmFooter';
 import DmLogoHeader from '@/components/DmLogoHeader';
 import LoginHero from '@/views/login/LoginHero.vue';
 import loginBgPattern from '@/assets/login/login-bg-pattern.svg';
@@ -351,7 +346,7 @@ function redirectToHomePage() {
 
 export default {
   name: 'Initialization',
-  components: { DmFooter, DmLogoHeader, LoginHero, StepDb, StepSecurity, StepConnectivity, StepConfirm, StepExecution },
+  components: { DmLogoHeader, LoginHero, StepDb, StepSecurity, StepConnectivity, StepConfirm, StepExecution },
   data() {
     return {
       mode: 'loading', // 'loading' | 'full' | 'upgrade' | 'dbError'
@@ -1077,20 +1072,6 @@ export default {
   box-sizing: border-box;
 }
 
-.login-bottombar {
-  position: relative;
-  flex: 0 0 auto;
-  padding: 0 32px 24px;
-  padding-right: calc(var(--init-panel-width) + 32px);
-  box-sizing: border-box;
-}
-
-.login-bottombar :deep(.footer) {
-  height: auto;
-  line-height: 1.5;
-  text-align: center;
-}
-
 .init-hero {
   width: 100%;
   min-width: 0;
@@ -1474,11 +1455,6 @@ export default {
     overflow: visible;
   }
 
-  .login-bottombar {
-    order: 3;
-    padding-right: 32px;
-  }
-
   .init-wizard,
   .init-error-page,
   .init-loading-page {
@@ -1499,10 +1475,6 @@ export default {
     align-items: flex-start;
     min-height: calc(100vh - 72px);
     padding: 32px 24px 24px;
-  }
-
-  .login-bottombar {
-    padding: 0 16px 20px;
   }
 
   .init-wizard {

@@ -557,9 +557,6 @@
       <template #footer>
         <div class="config-modal-footer">
           <Button @click="showTriggerModal = false">{{ $t('qu-xiao') }}</Button>
-          <Button @click="handleJumpUrl(triggerTab === 'WebHook' ? trigger.hookHelpUrl : 'https://www.clougence.com/dm-doc/devops/devops_trigger')">
-            {{ $t('cha-kan-wen-dang') }}
-          </Button>
           <Button type="primary" @click="handleSaveTrigger">{{ $t('bao-cun') }}</Button>
         </div>
       </template>
@@ -607,9 +604,6 @@
       <template #footer>
         <div class="config-modal-footer">
           <Button @click="showCallbackModal = false">{{ $t('qu-xiao') }}</Button>
-          <Button @click="handleJumpUrl('https://clougence.com/dm-doc/devops/devops_callback')">
-            {{ $t('cha-kan-wen-dang') }}
-          </Button>
           <Button type="primary" @click="handleSaveCallBack">{{ $t('bao-cun') }}</Button>
         </div>
       </template>

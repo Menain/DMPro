@@ -85,10 +85,6 @@ const setApprovalProcessMixin = {
                     {this.$t(
                       'dui-jieali-yun-ding-ding-shen-pi-liu-xu-chuang-jian-ding-ding-qi-ye-nei-bu-ying-yong-clouddm-hui-shi-yong-gai-ying-yong-de-appkey-he-appsecret-yong-yu-fa-qi-openapi-tiao-yong-lai-chuang-jian-shen-pi-shi-li-cha-xun-shen-pi-zhuang-tai-deng-gai-qi-ye-nei-bu-ying-yong-ju-you-te-ding-fang-wen-quan-xian-yong-yu-fa-qi-shen-pi-shi-li-fa-song-tong-zhi-deng-quan-xian-ju-ti-nei-rong-qing-cha-kan'
                     )}
-                    <a href='https://doc.clouddm.clougence.com/docs/en/dingtalk_setting' target='_blank'>
-                      {this.$t('dui-jie-ding-ding-shen-pi')}
-                    </a>
-                    .
                   </p>
                 )
               }}></a-alert>

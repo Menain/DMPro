@@ -44,10 +44,6 @@
 
       <div v-else-if="!loading" class="approval-form-empty">{{ $t('zan-wu-shu-ju') }}</div>
 
-      <div v-if="selectedProvider && selectedProvider.helpUrl" class="approval-form-help">
-        <a @click="jumpToHelp">{{ $t('ru-he-dui-jie-x', [$t(selectedProvider.labelKey)]) }}</a>
-      </div>
-
       <div v-if="selectedProvider" class="approval-form-footer">
         <div class="approval-form-footer__right">
           <Button @click="goBack">{{ $t('qu-xiao') }}</Button>
@@ -255,12 +251,6 @@ export default {
     },
     goBack() {
       this.$router.push('/integrations/approval');
-    },
-    jumpToHelp() {
-      const url = this.selectedProvider?.helpUrl || '';
-      if (url) {
-        window.open(url, 'blank');
-      }
     }
   }
 };
@@ -363,11 +353,6 @@ export default {
 .approval-form-empty {
   color: #667085;
   font-size: 14px;
-}
-
-.approval-form-help {
-  max-width: 720px;
-  margin-top: 18px;
 }
 
 .approval-form-footer {

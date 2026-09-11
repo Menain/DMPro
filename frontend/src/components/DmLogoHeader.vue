@@ -3,7 +3,7 @@
     <div class="logo-header-container">
       <div class="left">
         <span class="product-title-frame">
-          <img class="product-title" :src="headerTitleUrl" alt="CloudDM" />
+          <img class="product-title" :src="headerTitleUrl" alt="DBMS" />
         </span>
         <div class="login-type">
           {{ headerTypeText }}
@@ -22,7 +22,7 @@
 
 <script>
 import LangSwitcher from '@/components/LangSwitcher';
-import logoClouddm from '@/assets/logo-clouddm.svg';
+import logoBrand from '@/assets/logo.svg';
 
 export default {
   name: 'DmLogoHeader',
@@ -41,7 +41,7 @@ export default {
       return this.$store.state.theme || 'light';
     },
     headerTitleUrl() {
-      return logoClouddm;
+      return logoBrand;
     },
     headerTypeText() {
       return this.title || this.TYPES[this.type] || '';

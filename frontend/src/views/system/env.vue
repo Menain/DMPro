@@ -293,7 +293,6 @@
           <Button style="margin-left: 16px" v-if="isFeishuWechat" @click="handleAddTemplateDialog" type="primary">
             {{ $t('tian-jia-mo-ban') }}
           </Button>
-          <CustomIcon type="icon-v2-help" @click="jumpToImDoc" v-if="isFeishuWechat" leftMargin="10px" hoverStyle />
         </div>
         <div style="display: flex; width: 400px" v-if="addTemplateTemplateDialog">
           <Input v-model="ticketDataSelected.templateUrl" style="width: 300px" />
@@ -741,22 +740,6 @@ export default {
           }
         }
       });
-    },
-    jumpToImDoc() {
-      const type = this.ticketDataSelected.approvalType;
-      let url = '';
-
-      switch (type) {
-        case 'Feishu':
-          url = 'https://www.clougence.com/dm-doc/approval/engine/feishu_approval#use';
-          break;
-        case 'Wechat':
-          url = 'https://www.clougence.com/dm-doc/approval/engine/wechat_approval#use';
-          break;
-        default:
-          return;
-      }
-      window.open(url, '_blank');
     },
     removeTemplate(index) {
       this.$Modal.confirm({

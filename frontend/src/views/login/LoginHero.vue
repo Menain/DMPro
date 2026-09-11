@@ -28,15 +28,6 @@
         </div>
       </div>
     </div>
-
-    <div class="hero-capabilities" aria-hidden="true">
-      <p class="capability-text">
-        <template v-for="(item, idx) in capabilityLinks" :key="item.key">
-          <a :href="item.url" target="_blank" rel="noopener" class="capability-link">{{ $t(item.key) }}</a>
-          <span v-if="idx < capabilityLinks.length - 1" class="cap-divider" aria-hidden="true"></span>
-        </template>
-      </p>
-    </div>
   </div>
 </template>
 
@@ -146,14 +137,7 @@ export default {
       fountainCards: cards,
       globalRotate: 0,
       rafId: null,
-      lastTime: 0,
-      capabilityLinks: [
-        { key: 'shu-ju-yuan-guan-li', url: 'https://www.cdmgr.com/docs/operation/dsmanager' },
-        { key: 'an-quan-gui-ze', url: 'https://www.cdmgr.com/docs/datamask/datamask_about' },
-        { key: 'gong-dan-shen-pi-liu-cheng', url: 'https://www.cdmgr.com/docs/approval/approval_about' },
-        { key: 'sql-cha-xun', url: 'https://www.cdmgr.com/docs/console/console_editor' },
-        { key: 'ci-cd-bian-geng-fa-bu', url: 'https://www.cdmgr.com/docs/devops/devops_about' }
-      ]
+      lastTime: 0
     };
   },
   mounted() {
@@ -283,46 +267,11 @@ export default {
   }
 }
 
-.hero-capabilities {
-  margin-top: 32px;
-  text-align: center;
-
-  .capability-text {
-    color: #707070;
-    font-size: 14px;
-    font-weight: 400;
-    line-height: 1.5;
-    letter-spacing: 0.02em;
-    margin: 0;
-
-    .capability-link {
-      color: inherit;
-      text-decoration: none;
-      white-space: nowrap;
-      transition: color 0.2s ease;
-
-      &:hover {
-        color: var(--login-emerald-deep, #24b47e);
-      }
-    }
-
-    .cap-divider::after {
-      content: '\00B7';
-      margin: 0 6px;
-      color: #d4d4d4;
-    }
-  }
-}
-
 .login-hero-panel.is-dark {
   .fountain-card {
     background: #1c1c1c;
     border-color: #333;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-  }
-
-  .hero-capabilities .capability-text {
-    color: #707070;
   }
 }
 

@@ -1,16 +1,6 @@
 <template>
   <div class="app-user-actions" :class="[`app-user-actions--${placement}`, { 'app-user-actions--compact': compact }]">
     <template v-if="!isDesktop">
-      <Tooltip v-if="placement === 'header'" :content="$t('wen-dang')" transfer placement="bottom">
-        <button type="button" class="header-action-icon" @click="handleGoHelp('document')">
-          <CustomIcon type="icon-v2-ic_document" hoverStyle size="18px" />
-        </button>
-      </Tooltip>
-      <Tooltip v-if="placement === 'header'" :content="$t('lian-xi-wo-men')" transfer placement="bottom">
-        <button type="button" class="header-action-icon" @click="handleGoHelp('contact')">
-          <CustomIcon type="icon-v2-icon_contact" hoverStyle size="18px" />
-        </button>
-      </Tooltip>
       <LangSwitcher>
         <template #trigger>
           <CustomIcon hover-style type="icon-v2-yuyanqiehuan" size="20px" />
@@ -51,16 +41,6 @@
     </template>
     <template v-else>
       <div class="desktop-actions">
-        <Tooltip :content="$t('wen-dang')" transfer placement="bottom">
-          <button type="button" class="header-action-icon" @click="handleGoHelp('document')">
-            <CustomIcon type="icon-v2-ic_document" hoverStyle size="18px" />
-          </button>
-        </Tooltip>
-        <Tooltip :content="$t('lian-xi-wo-men')" transfer placement="bottom">
-          <button type="button" class="header-action-icon" @click="handleGoHelp('contact')">
-            <CustomIcon type="icon-v2-icon_contact" hoverStyle size="18px" />
-          </button>
-        </Tooltip>
         <a-tooltip trigger="hover">
           <cc-iconfont :size="18" name="help" />
           <template #title>
@@ -125,17 +105,6 @@ export default {
         this.closeWebSocket();
         await this.$store.commit(UPDATE_USERINFO);
         await this.$router.push({ name: 'Login' });
-      }
-    },
-    handleGoHelp(data) {
-      if (data === 'document') {
-        let url = `${this.$store.state.dmDocUrlPrefix}/intro/product_intro`;
-        if (this.isDesktop) {
-          url = `${this.$store.state.dmDocUrlPrefix}/dmp-doc/releaseinfo/desktop_latest`;
-        }
-        window.open(url);
-      } else if (data === 'contact') {
-        window.open(this.$store.state.contactUsUrl);
       }
     },
     handleCopyApplyCode(data) {
