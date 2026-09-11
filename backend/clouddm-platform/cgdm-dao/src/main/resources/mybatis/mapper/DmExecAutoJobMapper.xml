@@ -9,6 +9,7 @@
         <result column="data_source_id" property="dataSourceId"/>
         <result column="uid" property="uid"/>
         <result column="depend_on_biz_id" property="dependOnBizId"/>
+        <result column="depend_on_group_id" property="dependOnGroupId"/>
         <result column="query_id" property="queryId"/>
         <result column="status" property="status"/>
         <result column="biz_id" property="bizId"/>
@@ -35,6 +36,7 @@
         query_id,
         biz_id,
         depend_on_biz_id,
+        depend_on_group_id,
         status,
         end_time,
         last_report_time,
@@ -284,6 +286,15 @@
             dm_exec_auto_job
         WHERE
             depend_on_biz_id = #{bizId}
+    </select>
+
+    <select id="queryByDependOnGroupId" resultMap="autoExecJobDO">
+        SELECT
+            <include refid="sqlJob"/>
+        FROM
+            dm_exec_auto_job
+        WHERE
+            depend_on_group_id = #{groupId}
     </select>
 
     <select id="queryErrorJob" resultMap="autoExecJobDO">

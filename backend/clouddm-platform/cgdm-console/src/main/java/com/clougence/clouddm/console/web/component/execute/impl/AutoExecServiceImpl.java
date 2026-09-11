@@ -54,6 +54,7 @@ import com.clougence.clouddm.console.web.component.analysis.QueryAnalysisFeature
 import com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
+import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.execute.model.AutoExecCreateMO;
 import com.clougence.clouddm.console.web.component.file.LocalFileService;
@@ -75,6 +76,7 @@ import com.clougence.clouddm.platform.dal.access.entry.DsCacheEntry;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.*;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.system.DmSysWorkerDO;
 import com.clougence.clouddm.platform.dal.model.system.SysAttachmentType;
 import com.clougence.clouddm.platform.dal.util.PageObj;
@@ -131,6 +133,8 @@ public class AutoExecServiceImpl implements AutoExecService {
     private com.clougence.clouddm.console.web.service.approval.ApprovalControlService approvalControlService;
     @Resource
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
+    @Resource
+    private com.clougence.clouddm.platform.dal.access.TicketDbStmtDal ticketDbStmtDal;
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
@@ -226,6 +230,142 @@ public class AutoExecServiceImpl implements AutoExecService {
         }
     }
 
+    // ==================== V2 group job creation ====================
+
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional,
+                               ErrorStrategy errorStrategy, String languageTag, String uid) {
+        // Idempotency: if a previous job exists for this group (e.g. from a failed attempt),
+        // delete it first to free the uk_exec_auto_job_group unique constraint slot.
+        DmExecAutoJobDO oldJob = this.execDal.autoJobMapper().queryByDependOnGroupId(group.getId());
+        if (oldJob != null) {
+            this.doDeleteJob(oldJob.getId());
+        }
+
+        // Mark group as EXECUTING
+        this.ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), "EXECUTING", null);
+
+        // Fetch DS config
+        DmDsDO dsDO = this.dsDal.dsMapper().queryDsIdentityById(group.getDsId());
+        DataSourceConfig dsConfig = this.configService.fetchDsConfigFromExists(dsDO.getId());
+
+        // Build levels: [envId, dsId, dbName]
+        List<String> levels = new ArrayList<>();
+        levels.add(dsDO.getDsEnvId().toString());
+        levels.add(dsDO.getId().toString());
+        levels.add(group.getDbName());
+        DsLevels dsLevels = this.configService.parseLevels(levels);
+
+        // Create job
+        DmExecAutoJobDO job = new DmExecAutoJobDO();
+        job.setLevels(dsLevels.dbLevels());
+        job.setDataSourceId(dsDO.getId());
+        job.setDependOnBizId(null);          // v2: no ticket bizId link on job
+        job.setDependOnGroupId(group.getId()); // v2: link to statement group
+        job.setBizId(jobBizId);
+        job.setUid(uid);
+        job.setExecType(AutoExecType.IMMEDIATE);
+        job.setStatus(AutoExecJobStatus.PREPARING);
+
+        RsExecAutoJobConfigObj jobConfig = new RsExecAutoJobConfigObj();
+        jobConfig.setEnableTransactional(transactional);
+        jobConfig.setErrorStrategy(errorStrategy);
+        jobConfig.setLanguageTag(languageTag);
+        job.setConfig(jobConfig);
+        job.setScheduleTime(new Date());
+
+        this.execDal.autoJobMapper().insert(job);
+
+        // Split SQL and create tasks
+        try (StringReader reader = new StringReader(group.getSqlContent());
+             Stream<SplitScript> scripts = this.analysisService.analysisSplitStream(
+                 dsConfig, reader, Collections.emptyList(), 1, 0)) {
+
+            int order = 1;
+            List<DmExecAutoTaskDO> taskBatch = new ArrayList<>(AUTO_EXEC_TASK_INSERT_BATCH_SIZE);
+            Iterator<SplitScript> iterator = scripts.iterator();
+            while (iterator.hasNext()) {
+                SplitScript script = iterator.next();
+                DmExecAutoTaskDO execTask = new DmExecAutoTaskDO();
+                execTask.setExecSql(script.getScript());
+                execTask.setExecOrder(order++);
+                execTask.setStatus(AutoExecTaskStatus.WAIT_EXEC);
+                execTask.setAutoExecJobId(job.getId());
+                execTask.setBizId(DmTeamUtils.nextExecTaskBizId());
+                execTask.setQueryId(UUID.randomUUID().toString());
+                taskBatch.add(execTask);
+                if (taskBatch.size() == AUTO_EXEC_TASK_INSERT_BATCH_SIZE) {
+                    if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                        throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                    }
+                    taskBatch.clear();
+                }
+            }
+
+            if (order == 1) {
+                throw new IllegalStateException("Auto execution job must contain at least one SQL statement.");
+            }
+
+            if (!taskBatch.isEmpty()) {
+                if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                    throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                }
+            }
+        } catch (RuntimeException e) {
+            try {
+                TransactionTemplate cleanup = new TransactionTemplate(this.txManager);
+                cleanup.executeWithoutResult(status -> this.doDeleteJob(job.getId()));
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+                log.error("Cleanup partially created v2 group job failed, jobId={}", job.getId(), cleanupError);
+            }
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // ==================== V2 job completion aggregation ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void handleV2JobCompletion(long jobId, boolean success, String errorDetail) {
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryById(jobId);
+        if (job == null || job.getDependOnGroupId() == null) {
+            return; // not a v2 job
+        }
+
+        // Update group exec_status
+        String groupStatus = success ? "SUCCESS" : "FAILED";
+        this.ticketDbStmtDal.stmtMapper().updateExecStatus(job.getDependOnGroupId(), groupStatus, errorDetail);
+
+        // Find the ticket through the group
+        DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(job.getDependOnGroupId());
+        if (group == null) {
+            return;
+        }
+        DmApprovalDO ticket = this.approvalDal.approvalMapper().queryById(group.getTicketId());
+        if (ticket == null) {
+            return;
+        }
+
+        // Check all groups for this ticket
+        List<DmTicketDbStmtDO> allGroups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(group.getTicketId());
+        boolean allTerminal = allGroups.stream().allMatch(g ->
+            "SUCCESS".equals(g.getExecStatus()) || "FAILED".equals(g.getExecStatus()));
+
+        if (allTerminal) {
+            boolean anyFailed = allGroups.stream().anyMatch(g -> "FAILED".equals(g.getExecStatus()));
+            if (anyFailed) {
+                this.approvalStateService.failExecution(ticket.getBizId(),
+                    "One or more database groups failed execution");
+            } else {
+                this.approvalStateService.completeExecution(ticket.getBizId());
+            }
+        }
+    }
+
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
     public void startJob(String jobBizId, String operatorUid) {
@@ -268,17 +408,36 @@ public class AutoExecServiceImpl implements AutoExecService {
         // Phase 7 touchpoint #3: gate-two guard (covers retry/reschedule paths — §4.6)
         DmExecAutoJobDO guardJob = this.execDal.autoJobMapper().queryById(jobId);
         if (guardJob != null) {
-            DmApprovalDO guardTicket = this.approvalDal.approvalMapper().queryByBizId(guardJob.getDependOnBizId());
-            if (guardTicket != null) {
-                com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
-                    = this.govExecutionGuardService.checkByJob(guardTicket.getPrimaryUid(), jobId);
-                if (guardConclusion.isDeny()) {
-                    // Delete job+tasks (not markJobFailed) to free the depend_on_biz_id
-                    // UNIQUE constraint (uk_exec_auto_job_depend_biz) for re-confirmation —
-                    // matches prepareExecJobAsync catch pattern (deleteJob + restore).
-                    this.doDeleteJob(jobId);
-                    this.approvalControlService.restoreExecutionConfirmationByGuard(guardTicket.getId(), guardConclusion.getSummary());
-                    return;
+            // V2 branch: dependOnGroupId != null → group → ticket
+            if (guardJob.getDependOnGroupId() != null) {
+                DmTicketDbStmtDO guardGroup = this.ticketDbStmtDal.stmtMapper().queryById(guardJob.getDependOnGroupId());
+                if (guardGroup != null) {
+                    DmApprovalDO guardTicket = this.approvalDal.approvalMapper().queryById(guardGroup.getTicketId());
+                    if (guardTicket != null) {
+                        com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
+                            = this.govExecutionGuardService.checkByJob(guardTicket.getPrimaryUid(), jobId);
+                        if (guardConclusion.isDeny()) {
+                            this.doDeleteJob(jobId);
+                            // restore group to PENDING for retry
+                            this.ticketDbStmtDal.stmtMapper().updateExecStatus(guardGroup.getId(), "PENDING", guardConclusion.getSummary());
+                            return;
+                        }
+                    }
+                }
+            } else {
+                // Existing path: dependOnBizId → ticket
+                DmApprovalDO guardTicket = this.approvalDal.approvalMapper().queryByBizId(guardJob.getDependOnBizId());
+                if (guardTicket != null) {
+                    com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
+                        = this.govExecutionGuardService.checkByJob(guardTicket.getPrimaryUid(), jobId);
+                    if (guardConclusion.isDeny()) {
+                        // Delete job+tasks (not markJobFailed) to free the depend_on_biz_id
+                        // UNIQUE constraint (uk_exec_auto_job_depend_biz) for re-confirmation —
+                        // matches prepareExecJobAsync catch pattern (deleteJob + restore).
+                        this.doDeleteJob(jobId);
+                        this.approvalControlService.restoreExecutionConfirmationByGuard(guardTicket.getId(), guardConclusion.getSummary());
+                        return;
+                    }
                 }
             }
         }
@@ -288,7 +447,11 @@ public class AutoExecServiceImpl implements AutoExecService {
         } catch (RuntimeException e) {
             DmExecAutoJobDO failedJob = this.execDal.autoJobMapper().queryById(jobId);
             if (failedJob != null && this.execDal.autoJobMapper().markJobFailedIfActive(jobId) == 1) {
-                this.approvalStateService.failExecution(failedJob.getDependOnBizId(), null);
+                if (failedJob.getDependOnGroupId() != null) {
+                    this.handleV2JobCompletion(jobId, false, null);
+                } else {
+                    this.approvalStateService.failExecution(failedJob.getDependOnBizId(), null);
+                }
             }
             throw e;
         }

@@ -25,6 +25,7 @@ import com.clougence.clouddm.console.web.model.fo.dbpair.DbServiceListFO;
 import com.clougence.clouddm.console.web.model.fo.dbpair.DbServiceUpdateFO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbServiceVO;
+import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 
 public interface DbPairService {
 
@@ -47,4 +48,27 @@ public interface DbPairService {
     void serviceUpdate(String puid, String uid, DbServiceUpdateFO fo);
 
     void serviceDelete(String puid, String uid, long serviceId);
+
+    // ==================== V2 ticket read-only queries ====================
+
+    /**
+     * Finds an ENABLED pair by pre-production datasource ID and database name.
+     * Used by the console DDL intercept to check whether the current connection targets a governed pre-prod DB.
+     *
+     * @return the matching pair, or {@code null} if not found / disabled
+     */
+    DmDbPairDO findEnabledByPreDs(long preDsId, String preDbName);
+
+    /**
+     * Lists all ENABLED pairs for ticket creation, optionally filtered by side.
+     * Returns a simplified VO (no remark/admin fields exposed to ordinary users).
+     *
+     * @param side {@code "PRE"} for pre-prod side, {@code "PROD"} for production side, {@code null}/empty for all
+     */
+    List<DbPairVO> availablePairs(String puid, String side);
+
+    /**
+     * Lists all services for the ticket creation dropdown (any logged-in user).
+     */
+    List<DbServiceVO> availableServices(String puid);
 }

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper">
+
+    <resultMap id="ticketDbStmtDO" type="com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="ticket_id" property="ticketId"/>
+        <result column="pair_id" property="pairId"/>
+        <result column="ds_id" property="dsId"/>
+        <result column="db_name" property="dbName"/>
+        <result column="sql_content" property="sqlContent"/>
+        <result column="precheck_result" property="precheckResult"/>
+        <result column="exec_status" property="execStatus"/>
+        <result column="exec_detail" property="execDetail"/>
+    </resultMap>
+
+    <sql id="sqlColumns">
+        id, gmt_create, gmt_modified, ticket_id, pair_id, ds_id, db_name,
+        sql_content, precheck_result, exec_status, exec_detail
+    </sql>
+
+    <select id="queryByTicketId" resultMap="ticketDbStmtDO">
+        SELECT
+            <include refid="sqlColumns"/>
+        FROM
+            dm_ticket_db_stmt
+        WHERE
+            ticket_id = #{ticketId}
+        ORDER BY
+            id ASC
+    </select>
+
+    <select id="queryById" resultMap="ticketDbStmtDO">
+        SELECT
+            <include refid="sqlColumns"/>
+        FROM
+            dm_ticket_db_stmt
+        WHERE
+            id = #{id}
+    </select>
+
+    <update id="updateExecStatus">
+        UPDATE
+            dm_ticket_db_stmt
+        SET
+            exec_status = #{execStatus},
+            exec_detail = #{execDetail}
+        WHERE
+            id = #{id}
+    </update>
+
+</mapper>

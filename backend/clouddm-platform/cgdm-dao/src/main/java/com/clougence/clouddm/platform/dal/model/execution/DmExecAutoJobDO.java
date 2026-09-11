@@ -39,6 +39,7 @@ public class DmExecAutoJobDO {
     private String                 uid;
     private String                 bizId;
     private String                 dependOnBizId;
+    private Long                   dependOnGroupId;
     private AutoExecJobStatus      status;
     private Date                   lastReportTime;
     private String                 workerSeqNumber;

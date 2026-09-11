@@ -123,6 +123,8 @@ public class ConsoleQueryService implements UnifiedPostConstruct, ConsoleQueryAp
     private AuditService         auditService;
     @Resource
     private DmEnvParamService    dmEnvParamService;
+    @Resource
+    private com.clougence.clouddm.console.web.service.dbpair.DbPairService dbPairService;
     private QueryTaskExecutor    queryExecutor;
 
     @Override
@@ -544,6 +546,62 @@ public class ConsoleQueryService implements UnifiedPostConstruct, ConsoleQueryAp
                                  SqlParserParameters parameters, List<QueryRequest> requestScripts) {
         // 6.2 at team all statements must be clear
         String curOwnerUid = queryDTO.getPrimaryUserId();
+
+        // V2 governance intercept: check if current DB is a governed pre-prod DB (dm_db_pair pre-side, ENABLED).
+        // If hit: DDL → reject (with ticket-link), DML → pass (and exempt env-read-only).
+        // If not hit: existing 4 checks unchanged.
+        long currentDsId = ctx.getLevels().dsDO().getId();
+        Map<UmiTypes, Object> levelsParam = ctx.getLevels().levelsParam();
+        String currentDbName = levelsParam != null
+            ? StringUtils.toString(levelsParam.get(UmiTypes.Schema) != null
+                ? levelsParam.get(UmiTypes.Schema) : levelsParam.get(UmiTypes.Catalog))
+            : null;
+        if (StringUtils.isBlank(currentDbName) && ctx.getCtxDTO() != null) {
+            currentDbName = StringUtils.toString(ctx.getCtxDTO().getRdbSchema());
+            if (StringUtils.isBlank(currentDbName)) {
+                currentDbName = StringUtils.toString(ctx.getCtxDTO().getRdbCatalog());
+            }
+        }
+
+        com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO govPair = null;
+        if (StringUtils.isNotBlank(currentDbName)) {
+            govPair = this.dbPairService.findEnabledByPreDs(currentDsId, currentDbName);
+        }
+        boolean govPairHit = govPair != null;
+
+        if (govPairHit) {
+            // Check for DDL in any request
+            boolean hasDdl = false;
+            for (QueryRequest request : requestScripts) {
+                Set<SplitQueryType> queryTypes = request.getQueryTypes();
+                if (CollectionUtils.isEmpty(queryTypes) || queryTypes.contains(SplitQueryType.UNKNOWN)) {
+                    String hasSwitchMsg = DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_NONSUPPORT_QUERY_ERROR.name(), request.getQueryBody());
+                    consumer.accept(BuildResMsgUtils.buildHintMsg(queryDTO, hasSwitchMsg, MessageLevel.Error));
+                    consumer.accept(BuildResMsgUtils.buildCost(queryDTO, ctx, true));
+                    consumer.accept(BuildResMsgUtils.buildDone(queryDTO));
+                    return false;
+                }
+                for (SplitQueryType type : queryTypes) {
+                    if (com.clougence.clouddm.console.web.component.governance.impl.GovStmtSplitServiceImpl.isDdlType(type)) {
+                        hasDdl = true;
+                        break;
+                    }
+                }
+                if (hasDdl) {
+                    break;
+                }
+            }
+            if (hasDdl) {
+                String govMsg = DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.CONSOLE_QUERY_GOV_DDL_REJECT.name(), currentDbName, govPair.getId());
+                consumer.accept(BuildResMsgUtils.buildHintMsg(queryDTO, govMsg, MessageLevel.Error));
+                consumer.accept(BuildResMsgUtils.buildCost(queryDTO, ctx, true));
+                consumer.accept(BuildResMsgUtils.buildDone(queryDTO));
+                return false;
+            }
+            // Pure DML on governed pre-prod DB → pass through, skip env-read-only check
+        }
+
         for (QueryRequest request : requestScripts) {
             Set<SplitQueryType> queryTypes = request.getQueryTypes();
             if (CollectionUtils.isEmpty(queryTypes) || queryTypes.contains(SplitQueryType.UNKNOWN)) {
@@ -554,20 +612,23 @@ public class ConsoleQueryService implements UnifiedPostConstruct, ConsoleQueryAp
                 return false;
             }
 
-            String enable = this.dmEnvParamService.queryParam(curOwnerUid, ctx.getLevels().dsDO().getDsEnvId(), EnvParamKeys.DM_ALLOW_ALL_STATEMENTS);
-            if (StringUtils.equalsIgnoreCase("true", enable)) {
-                SqlEngineSpi sqlEngine = this.dmDsConfigService.fetchSqlEngineSpi(ctx.getLevels().dsDO().getId());
-                SysObjectRegistrySpi registry = PluginManager.findSpi(SysObjectRegistrySpi.class, sqlEngine.name());
-                boolean hasNonReadBehavior = BehaviorRelations.flattenResource(registry, parameters.version(), request.getRelations())
-                    .stream()
-                    .filter(behavior -> behavior.authKind() != null)
-                    .anyMatch(behavior -> behavior.authKind() != SecDataAuthKind.READ);
-                if (hasNonReadBehavior) {
-                    String authFailedMsg = DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_ONLY_QUERY_MESSAGE.name());
-                    consumer.accept(BuildResMsgUtils.buildHintMsg(queryDTO, authFailedMsg, MessageLevel.Error));
-                    consumer.accept(BuildResMsgUtils.buildCost(queryDTO, ctx, true));
-                    consumer.accept(BuildResMsgUtils.buildDone(queryDTO));
-                    return false;
+            // Env read-only check — skipped when govPairHit (DML already passed v2 check)
+            if (!govPairHit) {
+                String enable = this.dmEnvParamService.queryParam(curOwnerUid, ctx.getLevels().dsDO().getDsEnvId(), EnvParamKeys.DM_ALLOW_ALL_STATEMENTS);
+                if (StringUtils.equalsIgnoreCase("true", enable)) {
+                    SqlEngineSpi sqlEngine = this.dmDsConfigService.fetchSqlEngineSpi(ctx.getLevels().dsDO().getId());
+                    SysObjectRegistrySpi registry = PluginManager.findSpi(SysObjectRegistrySpi.class, sqlEngine.name());
+                    boolean hasNonReadBehavior = BehaviorRelations.flattenResource(registry, parameters.version(), request.getRelations())
+                        .stream()
+                        .filter(behavior -> behavior.authKind() != null)
+                        .anyMatch(behavior -> behavior.authKind() != SecDataAuthKind.READ);
+                    if (hasNonReadBehavior) {
+                        String authFailedMsg = DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_ONLY_QUERY_MESSAGE.name());
+                        consumer.accept(BuildResMsgUtils.buildHintMsg(queryDTO, authFailedMsg, MessageLevel.Error));
+                        consumer.accept(BuildResMsgUtils.buildCost(queryDTO, ctx, true));
+                        consumer.accept(BuildResMsgUtils.buildDone(queryDTO));
+                        return false;
+                    }
                 }
             }
         }

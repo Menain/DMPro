@@ -13,32 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
-
-import java.util.List;
-
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+package com.clougence.clouddm.console.web.model.vo.govticket;
 
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * VO returned by /dbChangeV2/groupList — one row per statement group in a ticket.
+ */
 @Getter
 @Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+public class GovTicketV2GroupVO {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
-
-    // v2 governance ticket fields
-    private String  ticketType;     // PRE_DDL | PROD_DML
-    private Long    serviceId;
-    private List<Long> pairIds;
+    private Long   groupId;
+    private Long   pairId;
+    private Long   dsId;
+    private String dbName;
+    private String sqlContent;
+    private String precheckResult;   // JSON string (design §4 contract)
+    private String execStatus;       // PENDING | EXECUTING | SUCCESS | FAILED
+    private String execDetail;
 }

@@ -30,6 +30,8 @@ public interface DmExecAutoJobMapper extends BaseMapper<DmExecAutoJobDO> {
 
     DmExecAutoJobDO queryByDependOnBizId(@Param("bizId") String bizId);
 
+    DmExecAutoJobDO queryByDependOnGroupId(@Param("groupId") Long groupId);
+
     DmExecAutoJobDO queryByBizId(@Param("bizId") String bizId);
 
     DmExecAutoJobDO queryByBizIdForUpdate(@Param("bizId") String bizId);

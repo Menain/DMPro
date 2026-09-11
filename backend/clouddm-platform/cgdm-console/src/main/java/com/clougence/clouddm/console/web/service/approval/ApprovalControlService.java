@@ -50,6 +50,14 @@ public interface ApprovalControlService {
     void confirmTicketBySystem(long ticketId, DmAutoExecConfigFO autoExecConfig);
 
     /**
+     * V2 SYSTEM-directed confirm: performs the same state-machine transition as
+     * {@link #confirmTicketBySystem} (WAIT_CONFIRM → WAIT_EXEC) but does NOT create
+     * the old-style single exec job. The caller is responsible for creating per-group
+     * jobs via {@link com.clougence.clouddm.console.web.component.execute.AutoExecService#createGroupJob}.
+     */
+    void confirmTicketBySystemForV2(long ticketId, DmAutoExecConfigFO autoExecConfig);
+
+    /**
      * Guard-directed restore entry (Phase 7 touchpoint #3): delegates to the existing
      * private restoreExecutionConfirmation, exposing it for AutoExecServiceImpl's dispatchJob
      * guard DENY path. W3 read-modify-write preserves all ticketInfo governance fields.

@@ -381,4 +381,55 @@ public class DbPairServiceImpl implements DbPairService {
         }
         return result;
     }
+
+    // ==================== V2 ticket read-only queries ====================
+
+    @Override
+    public DmDbPairDO findEnabledByPreDs(long preDsId, String preDbName) {
+        if (preDsId <= 0 || StringUtils.isBlank(preDbName)) {
+            return null;
+        }
+        return dbPairDal.pairMapper().selectOne(
+            new LambdaQueryWrapper<DmDbPairDO>()
+                .eq(DmDbPairDO::getPreDsId, preDsId)
+                .eq(DmDbPairDO::getPreDbName, preDbName)
+                .eq(DmDbPairDO::getStatus, STATUS_ENABLED));
+    }
+
+    @Override
+    public List<DbPairVO> availablePairs(String puid, String side) {
+        DmDbPairMapper pairMapper = dbPairDal.pairMapper();
+        List<DmDbPairDO> pairs = pairMapper.selectList(
+            new LambdaQueryWrapper<DmDbPairDO>()
+                .eq(DmDbPairDO::getStatus, STATUS_ENABLED)
+                .orderByDesc(DmDbPairDO::getGmtCreate));
+
+        // PRE side requires both preDsId and preDbName; PROD side is always present
+        if ("PRE".equalsIgnoreCase(side)) {
+            pairs = pairs.stream()
+                .filter(p -> p.getPreDsId() != null && StringUtils.isNotBlank(p.getPreDbName()))
+                .collect(Collectors.toList());
+        }
+
+        if (CollectionUtils.isEmpty(pairs)) {
+            return Collections.emptyList();
+        }
+
+        return pairs.stream().map(this::toDbPairVO).collect(Collectors.toList());
+    }
+
+    @Override
+    public List<DbServiceVO> availableServices(String puid) {
+        DmDbServiceMapper serviceMapper = dbPairDal.serviceMapper();
+        List<DmDbServiceDO> services = serviceMapper.selectList(
+            new LambdaQueryWrapper<DmDbServiceDO>().orderByDesc(DmDbServiceDO::getGmtCreate));
+
+        if (CollectionUtils.isEmpty(services)) {
+            return Collections.emptyList();
+        }
+
+        return services.stream()
+            .map(svc -> toDbServiceVO(svc, 0))
+            .collect(Collectors.toList());
+    }
 }

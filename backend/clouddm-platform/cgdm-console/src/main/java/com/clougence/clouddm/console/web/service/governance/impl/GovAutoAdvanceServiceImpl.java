@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
@@ -30,6 +31,8 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalStateService
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalStageMO;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
+import com.clougence.clouddm.console.web.component.execute.AutoExecService;
+import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
 import com.clougence.clouddm.console.web.model.vo.envparam.DmEnvParamTicketDesVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
@@ -37,8 +40,10 @@ import com.clougence.clouddm.console.web.service.approval.ApprovalControlService
 import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
 import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
+import com.clougence.clouddm.console.web.util.DmTeamUtils;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus;
@@ -50,6 +55,7 @@ import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecType;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
@@ -77,6 +83,10 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     private ApprovalControlService    approvalControlService;
     @Resource
     private ImSenderService           imSenderService;
+    @Resource
+    private TicketDbStmtDal           ticketDbStmtDal;
+    @Resource
+    private AutoExecService           autoExecService;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -106,17 +116,17 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
             return;
         }
 
-        // Filter 1: approBiz == DM_CHANGE (non-governance exits here, zero governance-table queries)
+        // Filter 1: approBiz == DM_CHANGE
         if (ticket.getApproBiz() != ApprovalBiz.DM_CHANGE) {
             return;
         }
 
-        // Filter 2: ticketInfo.govRole == "PRE"
+        // Filter 2: ticketInfo.ticketType == "PRE_DDL" (v2 only — old tickets without ticketType are skipped)
         ApprovalMO mo = parseTicketInfo(ticket.getTicketInfo());
-        if (mo == null || mo.getGovRole() == null) {
+        if (mo == null || mo.getTicketType() == null) {
             return;
         }
-        if (!GovRole.PRE.name().equals(mo.getGovRole())) {
+        if (!"PRE_DDL".equals(mo.getTicketType())) {
             return;
         }
 
@@ -125,17 +135,10 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
             return;
         }
 
-        // Filter 4: PRE env has Internal (no external template)
-        LogicalDbTarget target = this.logicalDbService.getBinding(ticket.getPrimaryUid(), mo.getLogicalDbId(), GovRole.PRE);
-        DmEnvParamTicketDesVO ticketConfig = this.dmEnvParamService.querySqlTicketInfoParam(ticket.getPrimaryUid(), target.getEnvId());
-        if (!ticketConfig.isOpenTicket() || !ApprovalType.Internal.name().equals(ticketConfig.getType())) {
-            return;
-        }
-
-        // All conditions met — do SYSTEM auto-approve + auto-confirm
+        // All conditions met — do SYSTEM auto-approve + auto-confirm + per-group createGroupJob
         ChangeType changeType = this.resolveChangeType(ticketId);
         this.systemAutoApprove(ticket, changeType);
-        this.systemAutoConfirm(ticket, changeType);
+        this.systemAutoConfirmForV2(ticket, changeType);
     }
 
     // ------- SYSTEM auto-approve (WAIT_APPROVAL → WAIT_CONFIRM) -------
@@ -170,6 +173,42 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
         this.approvalControlService.confirmTicketBySystem(ticketId, config);
         this.appendEvent(ticketId, GovEventType.SYSTEM_CONFIRM,
             ApprovalStatus.WAIT_CONFIRM.name(), ApprovalStatus.WAIT_EXEC.name(), changeType);
+    }
+
+    // ------- V2 SYSTEM auto-confirm (WAIT_CONFIRM → WAIT_EXEC, no old-style job, then per-group createGroupJob) -------
+
+    private void systemAutoConfirmForV2(DmApprovalDO ticket, ChangeType changeType) {
+        long ticketId = ticket.getId();
+        DmAutoExecConfigFO config = buildAutoExecConfig(changeType);
+
+        // State transition only (no old-style single job creation)
+        this.approvalControlService.confirmTicketBySystemForV2(ticketId, config);
+        this.appendEvent(ticketId, GovEventType.SYSTEM_CONFIRM,
+            ApprovalStatus.WAIT_CONFIRM.name(), ApprovalStatus.WAIT_EXEC.name(), changeType);
+
+        // Per-group createGroupJob
+        List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+        Locale locale = DmI18nUtils.getLocale();
+        String languageTag = locale.toLanguageTag();
+
+        for (DmTicketDbStmtDO group : groups) {
+            String execStatus = group.getExecStatus();
+            if (!"PENDING".equals(execStatus) && !"FAILED".equals(execStatus)) {
+                continue; // skip non-eligible groups
+            }
+            try {
+                String jobBizId = DmTeamUtils.nextExecJobBizId();
+                this.autoExecService.createGroupJob(
+                    group, jobBizId,
+                    config.isEnableTransactional(),
+                    config.getErrorStrategy(),
+                    languageTag,
+                    SYSTEM_OPERATOR);
+                this.autoExecService.startJob(jobBizId, SYSTEM_OPERATOR);
+            } catch (Exception e) {
+                log.error("[GovAutoAdvance] Failed to create group job for ticket {}, group {}", ticketId, group.getId(), e);
+            }
+        }
     }
 
     // ------- D15 execution config routing (design D8 / B4) -------

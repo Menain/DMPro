@@ -13,32 +13,38 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
+package com.clougence.clouddm.console.web.model.fo.govticket;
 
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * FO for the v2 precheck (read-only) endpoint /dbChangeV2/check.
+ * Each group targets one mapped database with its SQL content.
+ */
 @Getter
 @Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+@JsonIgnoreProperties(ignoreUnknown = false)
+public class GovTicketV2CheckFO {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
+    @NotBlank
+    private String              ticketType;   // PRE_DDL | PROD_DML
 
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
+    @NotEmpty
+    private List<GroupInput>    groups;
 
-    // v2 governance ticket fields
-    private String  ticketType;     // PRE_DDL | PROD_DML
-    private Long    serviceId;
-    private List<Long> pairIds;
+    @Getter
+    @Setter
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public static class GroupInput {
+        private Long   pairId;
+        @NotBlank
+        private String sqlContent;
+    }
 }

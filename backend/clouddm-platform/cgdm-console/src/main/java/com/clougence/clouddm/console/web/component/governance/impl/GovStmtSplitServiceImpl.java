@@ -117,14 +117,14 @@ public class GovStmtSplitServiceImpl implements GovStmtSplitService {
         return result;
     }
 
-    private static boolean isDmlType(SplitQueryType type) {
+    public static boolean isDmlType(SplitQueryType type) {
         return switch (type) {
             case INSERT, UPDATE, DELETE, MERGE -> true;
             default -> false;
         };
     }
 
-    private static boolean isDdlType(SplitQueryType type) {
+    public static boolean isDdlType(SplitQueryType type) {
         if (isDmlType(type)) {
             return false;
         }

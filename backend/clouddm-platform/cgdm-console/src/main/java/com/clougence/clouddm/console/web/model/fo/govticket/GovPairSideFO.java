@@ -13,32 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.component.approval.model;
-
-import java.util.List;
+package com.clougence.clouddm.console.web.model.fo.govticket;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * FO for /dbChangeV2/availablePairs — filters by side (PRE / PROD).
+ */
 @Getter
 @Setter
-@JsonIgnoreProperties(ignoreUnknown = true)
-public class ApprovalMO {
+@JsonIgnoreProperties(ignoreUnknown = false)
+public class GovPairSideFO {
 
-    private String  message;
-    private boolean autoExec;
-    private String  changeOwnerUid;
-    private Long    changeId;
-
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
-
-    // v2 governance ticket fields
-    private String  ticketType;     // PRE_DDL | PROD_DML
-    private Long    serviceId;
-    private List<Long> pairIds;
+    private String side;   // PRE | PROD | null (=all)
 }

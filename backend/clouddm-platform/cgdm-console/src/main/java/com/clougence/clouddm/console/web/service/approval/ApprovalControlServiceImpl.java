@@ -1046,6 +1046,19 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         this.confirmTicketBySystemInNewTransaction(ticketId, fo, actionStatus);
     }
 
+    @Override
+    public void confirmTicketBySystemForV2(long ticketId, DmAutoExecConfigFO autoExecConfig) {
+        DmConfirmTicketFO fo = new DmConfirmTicketFO();
+        fo.setTicketId(ticketId);
+        fo.setConfirmActionType(DmConfirmActionType.CONFIRM);
+        fo.setConfirmUid(SYSTEM_OPERATOR);
+        fo.setAutoExecConfig(autoExecConfig);
+
+        ApprovalStatus actionStatus = statusFromConfirmAction(fo.getConfirmActionType(), fo.getAutoExecConfig().getAutoExecType());
+        // State transition only — no old-style job creation. Caller creates per-group jobs.
+        this.confirmTicketBySystemInNewTransaction(ticketId, fo, actionStatus);
+    }
+
     private void confirmTicketBySystemInNewTransaction(long ticketId, DmConfirmTicketFO fo, ApprovalStatus actionStatus) {
         TransactionTemplate transaction = new TransactionTemplate(this.txManager);
         transaction.executeWithoutResult(status -> this.confirmTicketBySystemInTransaction(ticketId, fo, actionStatus));

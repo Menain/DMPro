@@ -18,17 +18,46 @@ package com.clougence.clouddm.console.web.component.execute;
 import java.util.stream.Stream;
 
 import com.clougence.clouddm.api.console.autoexec.AutoExecTaskPackageInfo;
+import com.clougence.clouddm.api.console.autoexec.ErrorStrategy;
 import com.clougence.clouddm.console.web.component.execute.model.AutoExecCreateMO;
 import com.clougence.clouddm.console.web.model.vo.DmPageVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmAutoExecJobVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.DmAutoExecTaskVO;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecTaskStatus;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.util.PageObj;
 import com.clougence.clouddm.sdk.sql.parser.SplitScript;
 
 public interface AutoExecService {
 
     void createJob(AutoExecCreateMO request, Stream<SplitScript> scripts);
+
+    /**
+     * V2 governance: creates a per-DB execution job for a statement group.
+     * <p>
+     * Mirrors {@link #createJob} but sets {@code depend_on_group_id} (not {@code depend_on_biz_id})
+     * and splits the SQL from the group's {@code sql_content}. The job is created with PREPARING
+     * status; the caller must call {@link #startJob} to transition to INIT for scheduler pickup.
+     *
+     * @param group           the statement group row (dsId, dbName, sqlContent, id)
+     * @param jobBizId        generated job bizId (unique within dm_exec_auto_job)
+     * @param transactional   whether to wrap tasks in a transaction
+     * @param errorStrategy   error strategy for the job
+     * @param languageTag     locale language tag for worker messages
+     * @param uid             operator uid (typically "SYSTEM")
+     */
+    void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional, ErrorStrategy errorStrategy, String languageTag, String uid);
+
+    /**
+     * V2 job completion handler: updates the group's exec_status and, when all groups for the
+     * ticket are terminal, aggregates to the ticket level (completeExecution / failExecution).
+     * Called by ExecJobRServiceProvider and AutoExecServiceImpl when a v2 job reaches a terminal state.
+     *
+     * @param jobId      the dm_exec_auto_job id
+     * @param success    {@code true} for job success, {@code false} for failure
+     * @param errorDetail optional error message for failed groups
+     */
+    void handleV2JobCompletion(long jobId, boolean success, String errorDetail);
 
     void startJob(String jobBizId, String operatorUid);
 

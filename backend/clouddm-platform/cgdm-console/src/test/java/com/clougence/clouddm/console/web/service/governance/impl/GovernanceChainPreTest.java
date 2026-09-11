@@ -32,6 +32,7 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalStageM
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
+import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
 import com.clougence.clouddm.console.web.component.governance.GovSplitResult;
 import com.clougence.clouddm.console.web.component.governance.GovStmtRow;
@@ -48,6 +49,7 @@ import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
+import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalProcessActivityMapper;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalProcessMapper;
@@ -56,6 +58,7 @@ import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeRevisionMapp
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeStmtVersionMapper;
 import com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoJobMapper;
 import com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoTaskMapper;
+import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStage;
@@ -119,6 +122,9 @@ public class GovernanceChainPreTest {
     private DmDbChangeEventMapper       eventMapper;
     private DmExecAutoJobMapper         autoJobMapper;
     private DmExecAutoTaskMapper        autoTaskMapper;
+    private TicketDbStmtDal             ticketDbStmtDal;
+    private DmTicketDbStmtMapper         stmtMapper;
+    private AutoExecService             autoExecService;
 
     private List<DmDbChangeEventDO>      eventStore;
     private List<DmDbChangeStmtVersionDO> stmtVersionStore;
@@ -158,6 +164,9 @@ public class GovernanceChainPreTest {
         eventMapper = mock(DmDbChangeEventMapper.class);
         autoJobMapper = mock(DmExecAutoJobMapper.class);
         autoTaskMapper = mock(DmExecAutoTaskMapper.class);
+        ticketDbStmtDal = mock(TicketDbStmtDal.class);
+        stmtMapper = mock(DmTicketDbStmtMapper.class);
+        autoExecService = mock(AutoExecService.class);
 
         when(approvalDal.approvalMapper()).thenReturn(approvalMapper);
         when(approvalDal.processMapper()).thenReturn(processMapper);
@@ -193,6 +202,11 @@ public class GovernanceChainPreTest {
         ReflectionTestUtils.setField(autoAdvanceService, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(autoAdvanceService, "approvalControlService", approvalControlService);
         ReflectionTestUtils.setField(autoAdvanceService, "imSenderService", imSenderService);
+        ReflectionTestUtils.setField(autoAdvanceService, "ticketDbStmtDal", ticketDbStmtDal);
+        ReflectionTestUtils.setField(autoAdvanceService, "autoExecService", autoExecService);
+
+        when(ticketDbStmtDal.stmtMapper()).thenReturn(stmtMapper);
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(Collections.emptyList());
 
         // Wire freeze service
         freezeService = new RevisionFreezeServiceImpl();
@@ -288,7 +302,7 @@ public class GovernanceChainPreTest {
 
         // Verify D15 config: DDL → enableTransactional=false, errorStrategy=NONE
         ArgumentCaptor<DmAutoExecConfigFO> configCaptor = ArgumentCaptor.forClass(DmAutoExecConfigFO.class);
-        verify(approvalControlService).confirmTicketBySystem(eq(TICKET_ID), configCaptor.capture());
+        verify(approvalControlService).confirmTicketBySystemForV2(eq(TICKET_ID), configCaptor.capture());
         assertFalse("DDL should not be transactional", configCaptor.getValue().isEnableTransactional());
         assertEquals(ErrorStrategy.NONE, configCaptor.getValue().getErrorStrategy());
 
@@ -423,6 +437,7 @@ public class GovernanceChainPreTest {
         ApprovalMO mo = new ApprovalMO();
         mo.setLogicalDbId(LOGICAL_DB_ID);
         mo.setGovRole(GovRole.PRE.name());
+        mo.setTicketType("PRE_DDL");
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;
     }
