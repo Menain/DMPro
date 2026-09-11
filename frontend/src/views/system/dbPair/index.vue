@@ -300,7 +300,7 @@ export default {
         remark: ''
       },
       pairFormRules: {
-        prodDsId: [{ required: true, message: this.$t('qing-xuan-ze-sheng-chan-shu-ju-yuan'), trigger: 'change' }],
+        prodDsId: [{ required: true, type: 'number', message: this.$t('qing-xuan-ze-sheng-chan-shu-ju-yuan'), trigger: 'change' }],
         prodDbName: [{ required: true, message: this.$t('qing-shu-ru-yu-xuan-ze-sheng-chan-ku-ming'), trigger: 'blur' }]
       },
       serviceFormVisible: false,
