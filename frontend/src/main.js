@@ -2,6 +2,7 @@ import '@/utils/dayjsSetup';
 import { createApp } from 'vue';
 import {
   Alert,
+  AutoComplete,
   Breadcrumb,
   BreadcrumbItem,
   Button,
@@ -104,6 +105,7 @@ app.use(i18n);
 // Register view-ui-plus components globally
 const iviewComponents = {
   Alert,
+  AutoComplete,
   Breadcrumb,
   BreadcrumbItem,
   Button,

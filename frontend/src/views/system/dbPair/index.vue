@@ -190,7 +190,7 @@
           </Select>
         </FormItem>
         <FormItem :label="$t('bei-zhu')" prop="remark">
-          <Input v-model.trim="pairFormData.remark" type="textarea" :rows="3" maxlength="512" />
+          <Input v-model.trim="pairFormData.remark" type="textarea" :rows="3" :maxlength="512" />
         </FormItem>
       </Form>
       <template #footer>
@@ -219,7 +219,7 @@
           <Input v-model.trim="serviceFormData.serviceName" :placeholder="$t('qing-shu-ru-fu-wu-ming-cheng')" />
         </FormItem>
         <FormItem :label="$t('bei-zhu')" prop="remark">
-          <Input v-model.trim="serviceFormData.remark" type="textarea" :rows="3" maxlength="512" />
+          <Input v-model.trim="serviceFormData.remark" type="textarea" :rows="3" :maxlength="512" />
         </FormItem>
       </Form>
       <template #footer>
@@ -612,9 +612,11 @@ export default {
           } else {
             this.prodDbCandidates = names;
           }
+        } else {
+          this.$Message.warning(this.$t('ku-ming-hou-xuan-jia-zai-shi-bai-ke-shou-dong-shu-ru'));
         }
       } catch (e) {
-        // browse interface may fail due to permissions; allow manual input
+        this.$Message.warning(this.$t('ku-ming-hou-xuan-jia-zai-shi-bai-ke-shou-dong-shu-ru'));
       }
     }
   },
