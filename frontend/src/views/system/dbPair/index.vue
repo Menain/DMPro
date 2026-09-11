@@ -326,7 +326,7 @@ export default {
       if (tab === 'pair') {
         this.setPairTableData();
       } else {
-        this.setServiceTableData();
+        this.loadServiceList();
       }
     },
     handleEnterSearch(event) {
@@ -399,9 +399,6 @@ export default {
       this.preDbCandidates = [];
       this.prodDbCandidates = [];
       this.pairFormVisible = true;
-      this.$nextTick(() => {
-        this.$refs.pairForm.resetFields();
-      });
     },
     handleOpenPairEdit(row) {
       this.pairFormMode = 'edit';
@@ -486,9 +483,6 @@ export default {
       this.serviceFormMode = 'create';
       this.serviceFormData = { id: null, serviceCode: '', serviceName: '', remark: '' };
       this.serviceFormVisible = true;
-      this.$nextTick(() => {
-        this.$refs.serviceForm.resetFields();
-      });
     },
     handleOpenServiceEdit(row) {
       this.serviceFormMode = 'edit';
