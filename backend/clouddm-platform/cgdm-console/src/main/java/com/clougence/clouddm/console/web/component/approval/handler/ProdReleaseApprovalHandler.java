@@ -28,6 +28,7 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
+import com.clougence.clouddm.console.web.component.governance.ProdReleaseFormAssembler;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -37,6 +38,7 @@ import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalStage;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
@@ -45,6 +47,12 @@ import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
 import com.clougence.clouddm.platform.dal.model.auth.RsAuthPersonObj;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus;
+import com.clougence.clouddm.platform.plugin.PluginManager;
+import com.clougence.clouddm.sdk.approval.ApprovalActivityInfo;
+import com.clougence.clouddm.sdk.approval.ApprovalCreateInstanceResult;
+import com.clougence.clouddm.sdk.approval.ApprovalProviderSpi;
+import com.clougence.clouddm.sdk.approval.form.ChangeForm;
+import com.clougence.clouddm.sdk.model.exception.ThirdPartyApiException;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
 
@@ -78,6 +86,8 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
     private ProdReleaseDal           prodReleaseDal;
     @Resource
     private ProdReleaseStateMachine  releaseStateMachine;
+    @Resource
+    private ProdReleaseFormAssembler  prodReleaseFormAssembler;
     // @Lazy breaks the bean cycle: provider -> this handler -> ProdReleaseService
     //   -> ApprovalControlService -> ApprovalFlowService -> provider (callbacks only
     //   resolve the service at runtime, never during wiring).
@@ -97,9 +107,38 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
         if (ticketDO.getApproType() == ApprovalType.Internal) {
             return; // only external approval need to create approval instance.
         }
-        // External approval: create third-party instance (P4 will configure DingTalk etc.)
-        // For now, Internal is the default and no external instance is created.
-        // TODO: Phase 4 — external approval template for release tickets.
+
+        // Build form from release + stmt snapshot data
+        // (match ChangeApprovalHandler.convertToChangeForm: parse failure → null → degraded form, not exception)
+        ApprovalMO info;
+        try {
+            info = StringUtils.isBlank(ticketDO.getTicketInfo())
+                ? null : JsonUtils.toObj(ticketDO.getTicketInfo(), ApprovalMO.class);
+        } catch (Exception e) {
+            info = null;
+        }
+        ChangeForm form = prodReleaseFormAssembler.build(ticketDO, info, ticketDO.getApproTemplateIdentity());
+
+        ApprovalCreateInstanceResult createInstance;
+        try {
+            ApprovalProviderSpi approvalSdkService = PluginManager.findSpi(ApprovalProviderSpi.class, ticketDO.getApproType().name());
+            createInstance = approvalSdkService.createApprovalInstance(ticketDO.getPrimaryUid(), form);
+        } catch (ThirdPartyApiException e) {
+            this.approvalStateService.updateApprovalStatus(approvalId, ApprovalStatus.FAILED, e.getMessage());
+            this.approvalFailed(approvalId, ticketDO.getApproBiz(), sender);
+            return;
+        }
+
+        for (ApprovalActivityInfo activity : createInstance.getActivityList()) {
+            this.approvalStateService.initializeActivity(ticketDO.getId(), ApprovalStage.APPROVAL,
+                activity.getActivityId(), activity.getActivityName(), activity.getOrder(), null, null);
+        }
+
+        String url = null;
+        if (createInstance.getApprovalUrl() != null) {
+            url = JsonUtils.toJson(createInstance.getApprovalUrl());
+        }
+        approvalDal.approvalMapper().updateThirdApprovalInfo(ticketDO.getId(), createInstance.getApprovalIdentity(), url);
     }
 
     @Override

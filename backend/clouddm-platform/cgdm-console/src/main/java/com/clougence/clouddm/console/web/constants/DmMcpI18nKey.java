@@ -27,6 +27,9 @@ public interface DmMcpI18nKey {
     String M_LIST_LEVELS             = "MCP_M_LIST_LEVELS";
     String M_LIST_LEAF               = "MCP_M_LIST_LEAF";
     String M_EXECUTE_QUERY           = "MCP_M_EXECUTE_QUERY";
+    String M_DBCHANGE_TICKETS        = "MCP_M_DBCHANGE_TICKETS";
+    String M_DBCHANGE_STATEMENTS     = "MCP_M_DBCHANGE_STATEMENTS";
+    String M_DBCHANGE_RELEASE        = "MCP_M_DBCHANGE_RELEASE";
 
     //
     String F_DATA_SOURCE_ID_DESC     = "MCP_F_DATA_SOURCE_ID_DESC";
@@ -42,5 +45,12 @@ public interface DmMcpI18nKey {
     String F_QUERY_TYPE_DESC         = "MCP_F_QUERY_TYPE_DESC";
     String F_QUERY_STRING_DESC       = "MCP_F_QUERY_STRING_DESC";
     String F_QUERY_FORCE_DESC        = "MCP_F_QUERY_FORCE_DESC";
+    String F_DB_NAME_DESC             = "MCP_F_DB_NAME_DESC";
+    String F_TICKET_TYPE_DESC         = "MCP_F_TICKET_TYPE_DESC";
+    String F_EXECUTED_ONLY_DESC       = "MCP_F_EXECUTED_ONLY_DESC";
+    String F_PAGE_DESC               = "MCP_F_PAGE_DESC";
+    String F_SIZE_DESC                = "MCP_F_SIZE_DESC";
+    String F_TICKET_ID_DESC           = "MCP_F_TICKET_ID_DESC";
+    String F_RELEASE_ID_DESC          = "MCP_F_RELEASE_ID_DESC";
 
 }
