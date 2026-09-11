@@ -175,12 +175,6 @@ export default [
     meta: { requiredAuth: 'RDP_PERM_GROUP_MANAGE' }
   },
   {
-    path: '/manager/logicalDb',
-    name: 'Management_LogicalDb',
-    component: () => import(/* webpackChunkName: "system-logical-db" */ '@/views/system/logicalDb/index'),
-    meta: { requiredAuth: 'RDP_LOGICAL_DB_MANAGE' }
-  },
-  {
     path: '/manager/dbPair',
     name: 'Management_DbPair',
     component: () => import(/* webpackChunkName: "system-db-pair" */ '@/views/system/dbPair/index'),

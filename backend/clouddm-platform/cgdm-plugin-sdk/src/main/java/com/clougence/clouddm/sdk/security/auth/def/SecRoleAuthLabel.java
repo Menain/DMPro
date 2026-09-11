@@ -211,9 +211,6 @@ public interface SecRoleAuthLabel {
                                                                                                                  SecSysRole.ADMIN_ROLE_NAME })
     String RDP_PERM_GROUP_MANAGE            = "RDP_PERM_GROUP_MANAGE";
 
-    @AuthLabel(order = 2, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_LOGICAL_DB_MANAGE, tag = SecSysRole.DBA_ROLE_NAME)
-    String RDP_LOGICAL_DB_MANAGE            = "RDP_LOGICAL_DB_MANAGE";
-
     @AuthLabel(order = 3, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_DB_CHANGE_PROD_PROMOTE, tag = SecSysRole.DBA_ROLE_NAME)
     String RDP_DB_CHANGE_PROD_PROMOTE       = "RDP_DB_CHANGE_PROD_PROMOTE";
 

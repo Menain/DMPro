@@ -30,7 +30,7 @@ WHERE version IN ('202609070001','202609110001','202609110002','202609110003') A
 ORDER BY installed_rank;
 ```
 
-- `V202609070001`：历史迁移，创建治理域 10 张表（权限组 4、逻辑库 2、变更治理 4）。
+- `V202609070001`：历史迁移，创建治理域 10 张表（权限组 4、逻辑库 2、变更治理 4）。逻辑库功能已在 P5 后续中下线，`dm_logical_db` / `dm_logical_db_env_binding` 两表留表停写（见「死表与残留配置说明」）。
 - `V202609110001`（P1）：`dm_db_pair` / `dm_db_pair_service` / `dm_db_service`（库级映射模型）。
 - `V202609110002`（P2）：`dm_ticket_db_stmt` + `dm_exec_auto_job` 加列（v2 工单与组任务）。
 - `V202609110003`（P3）：`dm_prod_release` / `dm_prod_release_stmt` + `dm_exec_auto_job` 加列（生产发布单）。
@@ -44,11 +44,11 @@ ORDER BY installed_rank;
 治理 v2 复用既有权限标签，无需新增治理专用标签：
 
 - 工单域：`RDP_WORKER_ORDER_READ` / `RDP_WORKER_ORDER_REQUEST` / `RDP_WORKER_ORDER_APPROVE` / `RDP_WORKER_ORDER_EXECUTE`。
-- 库映射与台账：`RDP_LOGICAL_DB_MANAGE` / `RDP_DB_PAIR_MANAGE` / `RDP_WORKER_ORDER_READ`。
+- 库映射与台账：`RDP_DB_PAIR_MANAGE` / `RDP_WORKER_ORDER_READ`。
 - 发布单：`RDP_DB_CHANGE_PROD_PROMOTE`（创建/操作发布单）。
 - OpenAPI：主账号 AK/SK（见 §openapi）。
 
-> 旧标签 `RDP_DB_CHANGE_GOVERN_READ`（promotion 页）与 `RDP_DB_CHANGE_PROD_DML_DIRECT`（路径 B 直发）随旧链路下线，前端菜单与路由已移除；标签枚举值保留以兼容历史授权数据，运维可按需清理。
+> 旧标签 `RDP_DB_CHANGE_GOVERN_READ`（promotion 页）、`RDP_DB_CHANGE_PROD_DML_DIRECT`（路径 B 直发）与 `RDP_LOGICAL_DB_MANAGE`（逻辑库管理）随旧链路与逻辑库功能下线，前端菜单与路由已移除；标签枚举值保留以兼容历史授权数据，运维可按需清理。
 
 ### 0.3 库映射与服务维护
 
@@ -56,7 +56,6 @@ ORDER BY installed_rank;
 
 1. 新建服务（`dm_db_service`：服务编码 + 名称）。
 2. 新建库映射（`dm_db_pair`）：选预发数据源 + 预发库名、生产数据源 + 生产库名，关联服务（`dm_db_pair_service`，可多对多）。
-3. 逻辑库与绑定（`/manager/logicalDb`）：逻辑库本体与绑定维护保留，仅去除了治理角色语义——绑定下拉与 CRUD 不变。
 
 ---
 
@@ -75,7 +74,7 @@ ORDER BY installed_rank;
 
 ## 阶段 2 · 台账（Ledger）
 
-台账页（`/dbChange/ledger`）按逻辑库聚合展示已完成的 PRE_DDL 工单及其语句组状态，并支持「创建生产发布单」入口（`govLedger*` 端点）。台账详情（`/dbChange/ledger/detail`）按组展示语句执行结果与预检状态。
+台账页（`/dbChange/ledger`）按库映射聚合展示已完成的 PRE_DDL 工单及其语句组状态，并支持「创建生产发布单」入口（`govLedger*` 端点）。台账详情（`/dbChange/ledger/detail`）按组展示语句执行结果与预检状态。
 
 ---
 
@@ -102,18 +101,20 @@ ORDER BY installed_rank;
 
 ## 死表与残留配置说明（P5 下线产物）
 
-### 留表停写的三张旧表
+### 留表停写的五张旧表
 
-旧治理链路（promotion/revision/stmt_version）代码已物理删除，但其三张表**留表停写**（用户决策 D1：保留对照能力、零迁移风险）：
+旧治理链路（promotion/revision/stmt_version）与逻辑库功能代码已物理删除，但其五张表**留表停写**（用户决策 D1：保留对照能力、零迁移风险）：
 
 | 表 | 处置 | 说明 |
 |---|---|---|
 | `dm_db_change_stmt_version` | 留表停写 | 代码（DO/Mapper/Service）已删，表结构与历史数据保留。仅可直连 DB 查阅。 |
 | `dm_db_change_revision` | 留表停写 | 同上。P3 发布单改用 `dm_prod_release_stmt`（含 hash 列）。 |
 | `dm_db_change_promotion` | 留表停写 | 同上。P3 发布单改用 `dm_prod_release`。 |
+| `dm_logical_db` | 留表停写 | 逻辑库功能已下线，代码（Controller/Service/DO/Mapper）已删。表结构与历史数据保留。 |
+| `dm_logical_db_env_binding` | 留表停写 | 同上。 |
 | `dm_db_change_event` | **保留复用** | P3 发布单事件留痕在用（`release_id` 列）。不可删。 |
 
-三张死表无代码引用，不影响运行。**未来可单独出迁移脚本清理**（`DROP TABLE IF EXISTS ...`），非本次范围。
+五张死表无代码引用，不影响运行。**未来可单独出迁移脚本清理**（`DROP TABLE IF EXISTS ...`），非本次范围。
 
 ### `dm_sys_env_param` 中 GOV_ROLE 残留行
 

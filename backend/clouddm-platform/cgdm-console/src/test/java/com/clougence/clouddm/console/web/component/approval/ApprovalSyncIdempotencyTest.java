@@ -133,7 +133,7 @@ public class ApprovalSyncIdempotencyTest {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(TICKET_ID);
         ticket.setOwnerUid("uid-001");
-        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200,\"logicalDbId\":10}");
+        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200}");
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
         ImSenderService sender = mock(ImSenderService.class);
@@ -150,7 +150,7 @@ public class ApprovalSyncIdempotencyTest {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(TICKET_ID);
         ticket.setOwnerUid("uid-001");
-        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200,\"logicalDbId\":10}");
+        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200}");
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
         ImSenderService sender = mock(ImSenderService.class);
@@ -165,7 +165,7 @@ public class ApprovalSyncIdempotencyTest {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(TICKET_ID);
         ticket.setOwnerUid("uid-001");
-        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200,\"logicalDbId\":10}");
+        ticket.setTicketInfo("{\"govRole\":\"PROD\",\"promotionId\":300,\"revisionId\":200}");
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
         ImSenderService sender = mock(ImSenderService.class);

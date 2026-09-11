@@ -24,7 +24,6 @@ import { initApi } from '@/services/http/api/init';
 import { mfaApi } from '@/services/http/api/mfa';
 import { sshConfigApi } from '@/services/http/api/sshConfig';
 import { permGroupApi } from '@/services/http/api/permGroup';
-import { logicalDbApi } from '@/services/http/api/logicalDb';
 import { dbChangeApi } from '@/services/http/api/dbChange';
 import { dbPairApi } from '@/services/http/api/dbPair';
 import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
@@ -56,7 +55,6 @@ export const api = {
   ...mfaApi,
   ...sshConfigApi,
   ...permGroupApi,
-  ...logicalDbApi,
   ...dbChangeApi,
   ...dbPairApi,
   ...dbChangeV2Api

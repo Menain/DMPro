@@ -31,7 +31,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.clougence.clouddm.console.web.service.auth.RdpRoleService;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthRoleDO;
 import com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel;
-import com.clougence.rdp.controller.LogicalDbController;
 import com.clougence.rdp.controller.PermissionGroupController;
 
 /**
@@ -168,17 +167,12 @@ public class SecurityAuthTest {
         "DM_GIT_OPS_READ", "DM_GIT_OPS_MANAGE",
         "DM_SQL_AUDIT",
         "RDP_DB_CHANGE_GOVERN_READ", "RDP_PERM_GROUP_MANAGE",
-        "RDP_LOGICAL_DB_MANAGE", "RDP_DB_CHANGE_PROD_PROMOTE", "RDP_DB_CHANGE_PROD_DML_DIRECT"
+        "RDP_DB_CHANGE_PROD_PROMOTE", "RDP_DB_CHANGE_PROD_DML_DIRECT"
     ));
 
     @Test
     public void permissionGroupController_allMappingsHaveRequestAuth_registeredLabels() {
         assertControllerAnnotations(PermissionGroupController.class, SecurityLevel.NORMAL);
-    }
-
-    @Test
-    public void logicalDbController_allMappingsHaveRequestAuth_registeredLabels() {
-        assertControllerAnnotations(LogicalDbController.class, SecurityLevel.NORMAL);
     }
 
     private void assertControllerAnnotations(Class<?> controllerClass, SecurityLevel expectedLevel) {

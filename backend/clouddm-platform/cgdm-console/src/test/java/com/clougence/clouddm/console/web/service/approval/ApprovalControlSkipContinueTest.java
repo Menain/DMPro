@@ -167,7 +167,7 @@ public class ApprovalControlSkipContinueTest {
         ticket.setOwnerUid(UID);
         ticket.setPrimaryUid(PUID);
         ApprovalMO mo = new ApprovalMO();
-        // P5: legacy PROD governance (govRole/promotionId/revisionId/logicalDbId) fields removed.
+        // P5: legacy PROD governance fields removed from ApprovalMO.
         // The guard is mocked to throw here, so the ticket content is irrelevant — this pins the wiring
         // (assertNotGovernanceProd called before engine delegation) for both skipTask and canceledSkipTask.
         ticket.setTicketInfo(JsonUtils.toJson(mo));

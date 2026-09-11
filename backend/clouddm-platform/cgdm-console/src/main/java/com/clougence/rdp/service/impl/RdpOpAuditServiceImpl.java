@@ -82,8 +82,6 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
     @Resource
     private AuthDal                  authDal;
     @Resource
-    private com.clougence.clouddm.platform.dal.access.LogicalDbDal logicalDbDal;
-    @Resource
     private com.clougence.clouddm.platform.dal.access.PermGroupDal permGroupDal;
 
     @PostConstruct
@@ -93,8 +91,7 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 ResourceType.ACCOUNT, //
                 ResourceType.ROLE, //
                 ResourceType.DS_ENV, //
-                ResourceType.PERM_GROUP, //
-                ResourceType.LOGICAL_DB));
+                ResourceType.PERM_GROUP));
 
         auditTypes.addAll(Arrays.asList(AuditType.ADD_DATA_SOURCE, //
                 AuditType.DELETE_DATA_SOURCE, //
@@ -140,10 +137,6 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.REMOVE_PERM_GROUP_MEMBER, //
                 AuditType.GRANT_PERM_GROUP_RESOURCE, //
                 AuditType.REVOKE_PERM_GROUP_RESOURCE, //
-                AuditType.CREATE_LOGICAL_DB, //
-                AuditType.UPDATE_LOGICAL_DB, //
-                AuditType.DELETE_LOGICAL_DB, //
-                AuditType.SET_LOGICAL_DB_BINDING, //
                 AuditType.SUBMIT_DB_CHANGE_PRE, //
                 AuditType.CORRECT_DB_CHANGE_STMT, //
                 AuditType.PROMOTE_DB_CHANGE, //
@@ -292,11 +285,6 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
             case DS_ENV -> {
                 DmSysEnvDO rdpDsEnvDO = systemDal.envMapper().selectById(Long.valueOf(resourceIdStr));
                 yield rdpDsEnvDO.getEnvName();
-            }
-            case LOGICAL_DB -> {
-                com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbDO logicalDbDO = logicalDbDal.logicalDbMapper()
-                    .selectById(Long.valueOf(resourceIdStr));
-                yield logicalDbDO.getResourceName();
             }
             case PERM_GROUP -> {
                 com.clougence.clouddm.platform.dal.model.permpgroup.DmPermGroupDO permGroupDO = permGroupDal.permGroupMapper()
