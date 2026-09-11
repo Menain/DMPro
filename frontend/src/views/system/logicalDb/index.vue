@@ -106,16 +106,6 @@
             <template #resPath="{ row, index }">
               <Input v-model="bindingRows[index].resPath" :placeholder="$t('qing-shu-ru-zi-yuan-lu-jing')" :disabled="row._existing" />
             </template>
-            <template #govRole="{ row }">
-              <Tag v-if="row.govRole" :color="govRoleColor(row.govRole)">{{ govRoleLabel(row.govRole) }}</Tag>
-              <span v-else class="text-muted">{{ $t('wei-she-zhi') }}</span>
-            </template>
-            <template #govDmlDirect="{ row }">
-              <span v-if="row.govDmlDirect" :class="row.govDmlDirect === 'on' ? 'text-success' : 'text-muted'">
-                {{ row.govDmlDirect === 'on' ? $t('kai-qi') : $t('guan-bi') }}
-              </span>
-              <span v-else class="text-muted">{{ $t('wei-she-zhi') }}</span>
-            </template>
             <template #bindingAction="{ row, index }">
               <Button type="text" size="small" @click="handleRemoveBindingRow(index)">{{ $t('yi-chu') }}</Button>
             </template>
@@ -152,8 +142,6 @@ export default {
         { title: this.$t('huan-jing'), slot: 'envId', width: 180 },
         { title: this.$t('shu-ju-yuan'), slot: 'dsId', width: 200 },
         { title: this.$t('zi-yuan-lu-jing'), slot: 'resPath', minWidth: 200 },
-        { title: this.$t('zhi-li-jiao-se'), slot: 'govRole', width: 100 },
-        { title: this.$t('zhi-fa-kai-guan'), slot: 'govDmlDirect', width: 110 },
         { title: this.$t('cao-zuo'), slot: 'bindingAction', width: 90, fixed: 'right' }
       ];
     },
@@ -308,11 +296,7 @@ export default {
           envName: binding.envName,
           dsId: binding.dsId,
           dsName: binding.dsName,
-          resPath: binding.resPath,
-          govRole: binding.govRole,
-          govDmlDirect: binding.govDmlDirect,
-          govDmlRowLimit: binding.govDmlRowLimit,
-          govAutoConfirm: binding.govAutoConfirm
+          resPath: binding.resPath
         }));
       }
     },
@@ -371,24 +355,6 @@ export default {
       if (res.success && Array.isArray(res.data)) {
         this.dsList = res.data;
       }
-    },
-    govRoleLabel(role) {
-      if (role === 'PRE') {
-        return this.$t('yu-sheng-chan');
-      }
-      if (role === 'PROD') {
-        return this.$t('sheng-chan');
-      }
-      return role;
-    },
-    govRoleColor(role) {
-      if (role === 'PROD') {
-        return 'error';
-      }
-      if (role === 'PRE') {
-        return 'warning';
-      }
-      return 'default';
     },
     async getDbList() {
       this.loading = true;

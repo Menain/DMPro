@@ -18,7 +18,6 @@ package com.clougence.clouddm.console.web.service.logicaldb.impl;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -38,10 +37,8 @@ import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbCreateFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbListFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbUpdateFO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbBindingVO;
-import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.MyLogicalDbVO;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.LogicalDbDal;
@@ -55,12 +52,15 @@ import com.clougence.clouddm.platform.dal.model.auth.DmAuthResDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbEnvBindingDO;
-import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 import com.clougence.clouddm.platform.dal.model.logicaldb.LogicalDbStatus;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
-import com.clougence.clouddm.sdk.model.env.EnvParamKeys;
 import com.clougence.clouddm.sdk.security.auth.AuthKind;
 
+/**
+ * P5 trim: governance (GOV_ROLE) semantics were removed from the logical-DB service — bindings no longer
+ * carry gov* display fields, getBinding(role) was deleted, and myLogicalDbs shows every logical DB that has
+ * any binding. These tests pin the retained behavior (CRUD / list / bindingSet / bindingList / myLogicalDbs).
+ */
 public class LogicalDbServiceImplTest {
 
     private LogicalDbServiceImpl       service;
@@ -77,8 +77,6 @@ public class LogicalDbServiceImplTest {
 
     private AuthDal                    authDal;
     private DmAuthResMapper            resMapper;
-
-    private DmEnvParamService          envParamService;
 
     private static final String PUID          = "0000000000000001";
     private static final String UID           = "0000000000000002";
@@ -111,13 +109,10 @@ public class LogicalDbServiceImplTest {
         resMapper = mock(DmAuthResMapper.class);
         when(authDal.resMapper()).thenReturn(resMapper);
 
-        envParamService = mock(DmEnvParamService.class);
-
         ReflectionTestUtils.setField(service, "logicalDbDal", logicalDbDal);
         ReflectionTestUtils.setField(service, "systemDal", systemDal);
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
         ReflectionTestUtils.setField(service, "authDal", authDal);
-        ReflectionTestUtils.setField(service, "envParamService", envParamService);
     }
 
     // ==================== Helper data builders ====================
@@ -129,12 +124,6 @@ public class LogicalDbServiceImplTest {
         db.setResourceName("Order Database");
         db.setStatus(LogicalDbStatus.ENABLED.name());
         db.setCreatorUid(PUID);
-        return db;
-    }
-
-    private DmLogicalDbDO disabledLogicalDb() {
-        DmLogicalDbDO db = enabledLogicalDb();
-        db.setStatus(LogicalDbStatus.DISABLED.name());
         return db;
     }
 
@@ -321,7 +310,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(ds(DS_ID)));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
 
         BindingSetFO fo = new BindingSetFO();
         fo.setLogicalDbId(LOGICAL_DB_ID);
@@ -342,7 +330,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(ds(DS_ID)));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
 
         BindingSetFO fo = new BindingSetFO();
         fo.setLogicalDbId(LOGICAL_DB_ID);
@@ -386,7 +373,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(ds(DS_ID)));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
 
         BindingSetFO fo = new BindingSetFO();
         fo.setLogicalDbId(LOGICAL_DB_ID);
@@ -400,7 +386,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(ds(DS_ID)));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
 
         BindingSetFO fo = new BindingSetFO();
         fo.setLogicalDbId(LOGICAL_DB_ID);
@@ -415,7 +400,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Arrays.asList(ds(DS_ID), ds(DS_ID_2)));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
 
         BindingSetFO fo = new BindingSetFO();
         fo.setLogicalDbId(LOGICAL_DB_ID);
@@ -423,25 +407,6 @@ public class LogicalDbServiceImplTest {
         fo.setBindings(Arrays.asList(
             bindingItem(ENV_ID, DS_ID, "/mydb/"),
             bindingItem(ENV_ID, DS_ID_2, "/otherdb/")));
-
-        service.bindingSet(PUID, UID, fo);
-    }
-
-    @Test(expected = ErrorMessageException.class)
-    public void bindingSet_govRoleConflictRejects() {
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
-        when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
-        when(envMapper.queryByEnvID(PUID, ENV_ID_2)).thenReturn(env(ENV_ID_2));
-        when(dsMapper.listByUser(PUID)).thenReturn(Arrays.asList(ds(DS_ID), ds(DS_ID_2)));
-        // both envs have GOV_ROLE=PRE → conflict
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
-        when(envParamService.queryParam(PUID, ENV_ID_2, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
-
-        BindingSetFO fo = new BindingSetFO();
-        fo.setLogicalDbId(LOGICAL_DB_ID);
-        fo.setBindings(Arrays.asList(
-            bindingItem(ENV_ID, DS_ID, "/mydb/"),
-            bindingItem(ENV_ID_2, DS_ID_2, "/otherdb/")));
 
         service.bindingSet(PUID, UID, fo);
     }
@@ -463,81 +428,19 @@ public class LogicalDbServiceImplTest {
     // ==================== bindingList ====================
 
     @Test
-    public void bindingList_nullParamsShowDefaults() {
+    public void bindingList_resolvesEnvAndDsNames() {
         when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
         when(envMapper.queryByEnvID(PUID, ENV_ID)).thenReturn(env(ENV_ID));
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(ds(DS_ID)));
-        // all params null = not configured
-        when(envParamService.queryParam(eq(PUID), eq(ENV_ID), any(String.class))).thenReturn(null);
 
         List<LogicalDbBindingVO> result = service.bindingList(PUID, LOGICAL_DB_ID);
         assertEquals(1, result.size());
         LogicalDbBindingVO vo = result.get(0);
-        assertNull(vo.getGovRole());
-        assertNull(vo.getGovDmlDirect());
-        assertNull(vo.getGovDmlRowLimit());
-        assertNull(vo.getGovAutoConfirm());
         assertEquals("env-" + ENV_ID, vo.getEnvName());
         assertEquals("instance-" + DS_ID, vo.getDsName());
-    }
-
-    // ==================== getBinding ====================
-
-    @Test
-    public void getBinding_oneMatch_returnsTarget() {
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
-        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
-            .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
-
-        LogicalDbTarget target = service.getBinding(PUID, LOGICAL_DB_ID, GovRole.PRE);
-
-        assertEquals(Long.valueOf(BINDING_ID), target.getBindingId());
-        assertEquals(Long.valueOf(LOGICAL_DB_ID), target.getLogicalDbId());
-        assertEquals(Long.valueOf(ENV_ID), target.getEnvId());
-        assertEquals(Long.valueOf(DS_ID), target.getDsId());
-        assertEquals("/mydb/", target.getResPath());
-        assertEquals(GovRole.PRE, target.getGovRole());
-    }
-
-    @Test(expected = ErrorMessageException.class)
-    public void getBinding_zeroMatch_throws() {
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
-        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
-            .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
-
-        service.getBinding(PUID, LOGICAL_DB_ID, GovRole.PROD);
-    }
-
-    @Test(expected = ErrorMessageException.class)
-    public void getBinding_multipleMatches_throws() {
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(enabledLogicalDb());
-        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID)).thenReturn(Arrays.asList(
-            binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/"),
-            binding(BINDING_ID + 1, ENV_ID_2, DS_ID_2, "/otherdb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
-        when(envParamService.queryParam(PUID, ENV_ID_2, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
-
-        service.getBinding(PUID, LOGICAL_DB_ID, GovRole.PROD);
-    }
-
-    @Test(expected = ErrorMessageException.class)
-    public void getBinding_disabledDb_throws() {
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(disabledLogicalDb());
-
-        service.getBinding(PUID, LOGICAL_DB_ID, GovRole.PRE);
-    }
-
-    @Test(expected = ErrorMessageException.class)
-    public void getBinding_notOwned_throws() {
-        DmLogicalDbDO db = enabledLogicalDb();
-        db.setCreatorUid("other-puid");
-        when(logicalDbMapper.selectById(LOGICAL_DB_ID)).thenReturn(db);
-
-        service.getBinding(PUID, LOGICAL_DB_ID, GovRole.PRE);
+        assertEquals("/mydb/", vo.getResPath());
     }
 
     // ==================== myLogicalDbs ====================
@@ -547,7 +450,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
 
         // uid == puid → short-circuit, no auth query
@@ -564,7 +466,6 @@ public class LogicalDbServiceImplTest {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.PostgreSQL)));
         // direct grant auth row
         when(resMapper.listByKind(UID, AuthKind.DataSource))
@@ -576,29 +477,11 @@ public class LogicalDbServiceImplTest {
     }
 
     @Test
-    public void myLogicalDbs_permGroupAuthMatch_visible() {
-        when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
-        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
-            .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        // GOV_ROLE=PROD only (no PRE binding) → dsType null, listByUser not called
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
-        // PERM_GROUP expanded auth row
-        when(resMapper.listByKind(UID, AuthKind.DataSource))
-            .thenReturn(Collections.singletonList(authRow(DS_ID, "/mydb/", "PERM_GROUP:1:5")));
-
-        List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
-        assertEquals(1, result.size());
-        assertNull(result.get(0).getDsType());
-        // no PRE binding → dsType lazy load skipped
-        verify(dsMapper, never()).listByUser(any());
-    }
-
-    @Test
     public void myLogicalDbs_expiredAuthNoMatch_notVisible() {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
+        when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
         // expired auth row → isEffective() = false
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Collections.singletonList(expiredAuthRow(DS_ID, "/mydb/")));
@@ -618,27 +501,14 @@ public class LogicalDbServiceImplTest {
     }
 
     @Test
-    public void myLogicalDbs_emptyGovRole_notParticipating() {
-        when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
-        when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
-            .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        // GOV_ROLE = null → binding doesn't participate
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(null);
-
-        List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
     public void myLogicalDbs_hasAnyAuthRowVisible_labelNotFiltered() {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
         // auth row with empty labels list — still matches (label not filtered)
         DmAuthResDO row = authRow(DS_ID, "/mydb/", null);
-        row.setAuthLabels(new ArrayList<>());
+        row.setAuthLabels(new java.util.ArrayList<>());
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Collections.singletonList(row));
 
@@ -653,7 +523,6 @@ public class LogicalDbServiceImplTest {
         // binding path is deeper than auth row path
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/myschema/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.singletonList(dsWithType(DS_ID, DataSourceType.MySQL)));
         // auth row path is shorter → binding path starts with auth path → match
         when(resMapper.listByKind(UID, AuthKind.DataSource))
@@ -677,8 +546,6 @@ public class LogicalDbServiceImplTest {
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
         when(bindingMapper.listByLogicalDbId(2L))
             .thenReturn(Collections.singletonList(binding(600L, ENV_ID_2, DS_ID_2, "/userdb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
-        when(envParamService.queryParam(PUID, ENV_ID_2, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PROD.name());
         when(dsMapper.listByUser(PUID)).thenReturn(Arrays.asList(
             dsWithType(DS_ID, DataSourceType.MySQL),
             dsWithType(DS_ID_2, DataSourceType.PostgreSQL)));
@@ -689,9 +556,9 @@ public class LogicalDbServiceImplTest {
 
         List<MyLogicalDbVO> result = service.myLogicalDbs(PUID, UID);
         assertEquals(2, result.size());
-        // db1 has PRE binding → dsType resolved; db2 has PROD only → dsType null
+        // both visible, dsType resolved from first binding of each
         assertEquals("MySQL", result.get(0).getDsType());
-        assertNull(result.get(1).getDsType());
+        assertEquals("PostgreSQL", result.get(1).getDsType());
         // D1: single listByKind call regardless of N logical dbs
         verify(resMapper, times(1)).listByKind(UID, AuthKind.DataSource);
         // single listByUser call regardless of N logical dbs (lazy dsType cache)
@@ -699,12 +566,11 @@ public class LogicalDbServiceImplTest {
     }
 
     @Test
-    public void myLogicalDbs_preBindingButDsLookupMiss_dsTypeNullNoThrow() {
+    public void myLogicalDbs_dsLookupMiss_dsTypeNullNoThrow() {
         when(logicalDbMapper.selectList(any())).thenReturn(Collections.singletonList(enabledLogicalDb()));
         when(bindingMapper.listByLogicalDbId(LOGICAL_DB_ID))
             .thenReturn(Collections.singletonList(binding(BINDING_ID, ENV_ID, DS_ID, "/mydb/")));
-        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.GOV_ROLE)).thenReturn(GovRole.PRE.name());
-        // PRE binding exists but ds is absent from listByUser result (e.g. deleted) → dsType null, no exception
+        // binding ds is absent from listByUser result (e.g. deleted) → dsType null, no exception
         when(dsMapper.listByUser(PUID)).thenReturn(Collections.emptyList());
         when(resMapper.listByKind(UID, AuthKind.DataSource))
             .thenReturn(Collections.singletonList(authRow(DS_ID, "/mydb/", "direct")));

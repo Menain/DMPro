@@ -50,7 +50,7 @@ import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
 import com.clougence.clouddm.console.web.util.DsResPathObj;
 import com.clougence.clouddm.console.web.util.DmTeamUtils;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.DbPairDal;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
@@ -89,7 +89,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     @Resource
     private ProdReleaseDal          prodReleaseDal;
     @Resource
-    private DbChangeGovernDal      dbChangeGovernDal;
+    private DbChangeEventDal      dbChangeEventDal;
     @Resource
     private TicketDbStmtDal        ticketDbStmtDal;
     @Resource
@@ -589,7 +589,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         vo.setStmtGroups(new ArrayList<>(groupMap.values()));
 
         // Events
-        List<DmDbChangeEventDO> events = dbChangeGovernDal.eventMapper().queryByReleaseId(releaseId);
+        List<DmDbChangeEventDO> events = dbChangeEventDal.eventMapper().queryByReleaseId(releaseId);
         List<ProdReleaseDetailVO.EventEntry> eventEntries = new ArrayList<>();
         for (DmDbChangeEventDO e : events) {
             ProdReleaseDetailVO.EventEntry ee = new ProdReleaseDetailVO.EventEntry();
@@ -622,7 +622,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         event.setToStatus(toStatus);
         event.setOperatorUid(operatorUid);
         event.setEventData(eventData);
-        dbChangeGovernDal.eventMapper().insert(event);
+        dbChangeEventDal.eventMapper().insert(event);
     }
 
     @Resource

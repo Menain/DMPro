@@ -20,16 +20,18 @@ import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.execution.RsExecAutoJobConfigObj;
 
 /**
- * Gate-two guard service (Phase 7, design D1).
+ * Gate-two guard service — retained as the v2 dispatch / confirm touchpoint (design §2 red line).
  * <p>
- * The guard returns a conclusion without throwing — the touchpoint method decides disposal.
- * The conclusion is persisted (preflight_result + event) before returning (design D8).
+ * P5: the legacy six-gate evaluation (built around the retired PROD promotion chain) was removed;
+ * the guard now passes through for every live ticket (v2 PRE_DDL / PROD_DML and CI/CD), which is
+ * exactly the short-circuit those tickets always took. The touchpoint contracts below are
+ * preserved verbatim so the existing call sites in {@code AutoExecServiceImpl} and
+ * {@code ApprovalControlServiceImpl} stay unchanged.
  */
 public interface GovExecutionGuardService {
 
     /**
      * Touchpoint #2: ticket DO is already at the call site, config comes from the confirm FO.
-     * Returns PASS immediately for non-governance (govRole==null) and PRE tickets — zero governance-table queries.
      */
     GuardConclusion checkByTicket(String puid, DmApprovalDO ticket, RsExecAutoJobConfigObj jobConfig);
 
@@ -39,8 +41,8 @@ public interface GovExecutionGuardService {
     GuardConclusion checkByJob(String puid, long jobId);
 
     /**
-     * Touchpoint #5: PROD governance tickets reject skip/continue (production exec set = approval set).
-     * Throws ErrorMessageException directly — the disposal IS the throw.
+     * Touchpoint #5: legacy PROD tickets rejected skip/continue (production exec set = approval set).
+     * No legacy PROD tickets remain, so this is now a no-op; the wiring is kept for the call sites.
      */
     void assertNotGovernanceProd(DmApprovalDO ticket);
 }

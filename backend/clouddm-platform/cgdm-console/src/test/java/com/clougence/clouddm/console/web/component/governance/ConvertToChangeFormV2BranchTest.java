@@ -33,21 +33,18 @@ import com.clougence.clouddm.sdk.approval.form.ChangeForm;
 import com.clougence.utils.JsonUtils;
 
 /**
- * Tests for the v2 branch added to {@link ChangeApprovalHandler#convertToChangeForm} (P4).
+ * Tests for the v2 branch of {@link ChangeApprovalHandler#convertToChangeForm} (P4).
  * <p>
- * Verifies the three-branch mutual exclusion:
+ * P5 trim: the legacy governance (govRole) branch was removed together with
+ * {@code GovChangeFormAssembler}, leaving a two-branch dispatch:
  * <ol>
- * <li>v2 ticket (ticketType != null) → GovTicketV2FormAssembler — new branch</li>
- * <li>old governance (govRole != null) → GovChangeFormAssembler — unchanged</li>
- * <li>CI/CD (neither) → original logic — unchanged</li>
+ * <li>v2 ticket (ticketType != null) → GovTicketV2FormAssembler</li>
+ * <li>CI/CD (ticketType null) → original CI/CD logic</li>
  * </ol>
- * Branches are mutually exclusive because v2 tickets set ticketType but not govRole,
- * old governance tickets set govRole but not ticketType, and CI/CD tickets have neither.
  */
 public class ConvertToChangeFormV2BranchTest {
 
     private ChangeApprovalHandler      handler;
-    private GovChangeFormAssembler     govChangeFormAssembler;
     private GovTicketV2FormAssembler   govTicketV2FormAssembler;
     private ChangeFlowDal              changeFlowDal;
     private AuthDal                    authDal;
@@ -57,7 +54,6 @@ public class ConvertToChangeFormV2BranchTest {
     @Before
     public void setUp() {
         handler = new ChangeApprovalHandler();
-        govChangeFormAssembler = mock(GovChangeFormAssembler.class);
         govTicketV2FormAssembler = mock(GovTicketV2FormAssembler.class);
         changeFlowDal = mock(ChangeFlowDal.class);
         authDal = mock(AuthDal.class);
@@ -74,7 +70,6 @@ public class ConvertToChangeFormV2BranchTest {
         ReflectionTestUtils.setField(handler, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(handler, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(handler, "changeCascadeService", cascadeService);
-        ReflectionTestUtils.setField(handler, "govChangeFormAssembler", govChangeFormAssembler);
         ReflectionTestUtils.setField(handler, "govTicketV2FormAssembler", govTicketV2FormAssembler);
     }
 
@@ -100,8 +95,6 @@ public class ConvertToChangeFormV2BranchTest {
         ChangeForm result = invokeConvertToChangeForm(ticket, "PROC-001");
 
         assertSame(expectedForm, result);
-        // Old governance assembler must NOT be called
-        verifyNoInteractions(govChangeFormAssembler);
     }
 
     @Test
@@ -122,34 +115,9 @@ public class ConvertToChangeFormV2BranchTest {
         ChangeForm result = invokeConvertToChangeForm(ticket, "PROC-002");
 
         assertSame(expectedForm, result);
-        verifyNoInteractions(govChangeFormAssembler);
     }
 
-    // ======= Branch 2: old governance (govRole != null, ticketType null) → GovChangeFormAssembler =======
-
-    @Test
-    public void oldGovBranch_govRoleSet_delegatesToGovChangeFormAssembler() throws Exception {
-        DmApprovalDO ticket = new DmApprovalDO();
-        ticket.setId(TICKET_ID);
-        ticket.setOwnerUid("uid-001");
-
-        ApprovalMO info = new ApprovalMO();
-        info.setGovRole("PROD"); // old governance — ticketType is null
-        info.setLogicalDbId(10L);
-        ticket.setTicketInfo(JsonUtils.toJson(info));
-
-        ChangeForm expectedForm = new ChangeForm();
-        when(govChangeFormAssembler.build(eq(ticket), any(ApprovalMO.class), eq("PROC-003")))
-            .thenReturn(expectedForm);
-
-        ChangeForm result = invokeConvertToChangeForm(ticket, "PROC-003");
-
-        assertSame(expectedForm, result);
-        // V2 assembler must NOT be called
-        verifyNoInteractions(govTicketV2FormAssembler);
-    }
-
-    // ======= Branch 3: CI/CD (neither govRole nor ticketType) → original logic =======
+    // ======= Branch 2: CI/CD (ticketType null) → original logic =======
 
     @Test
     public void cicdBranch_neitherSet_fallsToCicdPath() throws Exception {
@@ -197,35 +165,8 @@ public class ConvertToChangeFormV2BranchTest {
         assertEquals("release-1.0", result.getChangeName());
         assertEquals("main", result.getBranch());
 
-        // Neither assembler called
+        // v2 assembler not consulted for CI/CD tickets
         verifyNoInteractions(govTicketV2FormAssembler);
-        verifyNoInteractions(govChangeFormAssembler);
-    }
-
-    // ======= Mutual exclusion: v2 ticket with govRole also set → v2 branch takes precedence =======
-
-    @Test
-    public void mutualExclusion_bothTicketTypeAndGovRole_v2TakesPrecedence() throws Exception {
-        // Edge case: a ticket with both ticketType and govRole set
-        // (shouldn't happen in practice, but v2 branch is checked first)
-        DmApprovalDO ticket = new DmApprovalDO();
-        ticket.setId(TICKET_ID);
-        ticket.setOwnerUid("uid-001");
-
-        ApprovalMO info = new ApprovalMO();
-        info.setTicketType("PRE_DDL");
-        info.setGovRole("PROD"); // both set — v2 branch should win
-        ticket.setTicketInfo(JsonUtils.toJson(info));
-
-        ChangeForm v2Form = new ChangeForm();
-        v2Form.setTicketTitle("v2 form");
-        when(govTicketV2FormAssembler.build(eq(ticket), any(ApprovalMO.class), eq("PROC-004")))
-            .thenReturn(v2Form);
-
-        ChangeForm result = invokeConvertToChangeForm(ticket, "PROC-004");
-
-        assertSame(v2Form, result);
-        verifyNoInteractions(govChangeFormAssembler);
     }
 
     // ======= Helper: invoke private convertToChangeForm via reflection =======

@@ -442,7 +442,7 @@
                   <div class="analysis-result-collapse__content">
                     <div class="analysis-result-details ticket-execution-body">
                       <div class="ticket-execution-table">
-                        <Table :columns="autoExecTaskColumns" :data="autoExecTaskList" border size="small" :row-class-name="taskRowClassName">
+                        <Table :columns="autoExecTaskColumns" :data="autoExecTaskList" border size="small">
                           <template #status="{ row }">
                             <span :class="['ticket-task-status', `is-${row.status}`]">
                               {{ autoExecTaskStatusText(row.status) }}
@@ -461,45 +461,11 @@
                             <Button v-if="row.canCancelSkip" type="text" size="small" @click="handleShowContinueAutoExecTaskModal(row)">
                               {{ $t('qu-xiao-tiao-guo') }}
                             </Button>
-                            <template v-if="isGovTicket">
-                              <span class="gov-task-version-tag">v{{ govStmtVersion(row.executeOrder) }}</span>
-                              <Button v-if="row.status === 'FAILED' && isGovSubmitter" type="text" size="small" @click="openCorrectStmtModal(row)">
-                                {{ $t('gov-correct-stmt') }}
-                              </Button>
-                            </template>
                           </template>
                         </Table>
                       </div>
                       <div class="ticket-execution-pagination">
                         <Page v-model="page" :page-size="pageSize" :total="total" @on-change="handleTaskPageChange" size="small" />
-                      </div>
-                      <div v-if="isGovTicket && govStmtTimelineRows.length" class="gov-stmt-timeline-section">
-                        <div class="page-section__title">{{ $t('gov-stmt-timeline') }}</div>
-                        <Table :columns="govStmtTimelineColumns" :data="govStmtTimelineRows" border size="small" max-height="300">
-                          <template #version="{ row }">
-                            <span>v{{ row.currentVersion }}</span>
-                            <span v-if="row.correctionCount > 0" class="gov-stmt-correction-badge">
-                              {{ $t('gov-stmt-correction-count', { count: row.correctionCount }) }}
-                            </span>
-                          </template>
-                          <template #status="{ row }">
-                            <span :class="['ticket-task-status', `is-${row.currentStatus}`]">
-                              {{ autoExecTaskStatusText(row.currentStatus) }}
-                            </span>
-                          </template>
-                          <template #history="{ row }">
-                            <div v-if="row.versions.length > 1" class="gov-stmt-version-history">
-                              <div v-for="ver in row.versions" :key="ver.version" class="gov-stmt-version-entry">
-                                <span class="gov-stmt-version-num">v{{ ver.version }}</span>
-                                <Tag size="small" :color="ver.source === 'INITIAL' ? 'default' : 'warning'">
-                                  {{ $t(`gov-stmt-source-${ver.source}`) }}
-                                </Tag>
-                                <span v-if="ver.failReason" class="gov-stmt-fail-reason">{{ ver.failReason }}</span>
-                              </div>
-                            </div>
-                            <span v-else class="gov-stmt-single-version">{{ $t('gov-stmt-source-INITIAL') }}</span>
-                          </template>
-                        </Table>
                       </div>
                     </div>
                   </div>
@@ -611,28 +577,6 @@
                   {{ $t('gov-v2-retry') }}
                 </Button>
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section v-if="isGovTicket && eventTimelineData.length" class="page-section gov-event-timeline-section">
-        <div class="page-section__title">{{ $t('gov-event-timeline') }}</div>
-        <div class="gov-event-timeline-list">
-          <div v-for="evt in eventTimelineData" :key="evt.id" class="gov-event-timeline-row">
-            <div class="gov-event-timeline-row__icon">
-              <Icon :type="govEventIcon(evt.eventType)" />
-            </div>
-            <div class="gov-event-timeline-row__body">
-              <div class="gov-event-timeline-row__header">
-                <strong>{{ govEventTypeText(evt.eventType) }}</strong>
-                <span v-if="evt.fromStatus || evt.toStatus" class="gov-event-timeline-row__transition">
-                  <span v-if="evt.fromStatus">{{ evt.fromStatus }}</span>
-                  <Icon v-if="evt.fromStatus && evt.toStatus" type="ios-arrow-forward" />
-                  <span v-if="evt.toStatus">{{ evt.toStatus }}</span>
-                </span>
-                <span class="gov-event-timeline-row__time">{{ evt.gmtCreate || '-' }}</span>
-              </div>
-              <div v-if="evt.operatorUid" class="gov-event-timeline-row__operator">{{ $t('gov-event-operator') }}: {{ evt.operatorUid }}</div>
             </div>
           </div>
         </div>
@@ -833,31 +777,6 @@
     <CCModal v-model="showContinueSkipAutoExecTaskModal" :title="$t('qu-xiao-tiao-guo')" @ok="handleContinueAutoExecTask">
       {{ $t('qu-xiao-tiao-guo-hou-xia-ci-zhong-shi-ren-wu-shi-jiang-zhi-hang-gai-sql') }}
     </CCModal>
-    <CCModal v-model="showCorrectStmtModal" :title="$t('gov-correct-title')" :width="900" :mask-closable="false" @on-cancel="handleCloseCorrectModal">
-      <div class="gov-correct-form">
-        <div class="gov-correct-form__info">
-          <span>{{ $t('gov-correct-stmt-index-value', { index: correctStmtForm.stmtIndex }) }}</span>
-          <span v-if="correctStmtForm.failReason" class="gov-correct-form__fail-reason">
-            {{ $t('gov-stmt-fail-reason') }}: {{ correctStmtForm.failReason }}
-          </span>
-        </div>
-        <div class="gov-correct-form__editor-label">{{ $t('gov-correct-new-sql') }}</div>
-        <div class="gov-correct-form__editor-wrapper">
-          <ticket-editor ref="correctStmtEditor" data-source-type="MySQL" />
-        </div>
-        <div class="gov-correct-form__reason-label">
-          {{ $t('gov-correct-reason') }}
-          <span class="gov-correct-form__required">*</span>
-        </div>
-        <Input type="textarea" v-model="correctStmtForm.reason" :rows="3" :placeholder="$t('gov-correct-reason-placeholder')" />
-      </div>
-      <template #footer>
-        <Button type="primary" :loading="correctStmtLoading" :disabled="correctStmtLoading" @click="handleCorrectStatement">
-          {{ $t('gov-correct-confirm') }}
-        </Button>
-        <Button @click="handleCloseCorrectModal">{{ $t('qu-xiao') }}</Button>
-      </template>
-    </CCModal>
   </div>
 </template>
 
@@ -866,10 +785,8 @@ import appLogger from '@/utils/logger';
 import { mapState } from 'vuex';
 import { TICKET_PROCESS_STATUS } from '@/const';
 import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
-import TicketEditor from '@/components/editor/TicketEditor';
 import copyMixin from '@/mixins/copyMixin';
 import { isCk, isMongoDB, RULE_WARN_LEVEL } from '@/utils';
-import { GOV_EVENT_TYPE_I18N_KEYS, GOV_EVENT_ICONS } from '@/views/dbChange/govEventConstants';
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 5000;
 const TICKET_TERMINAL_STATUSES = new Set(['REJECTED', 'FINISHED', 'CLOSED', 'CANCELED', 'FAILED']);
@@ -941,8 +858,7 @@ const AUTO_EXEC_TASK_STATUS_I18N_KEYS = {
 export default {
   name: 'TicketDetail',
   components: {
-    ReadOnlyEditor,
-    TicketEditor
+    ReadOnlyEditor
   },
   mixins: [copyMixin],
   data() {
@@ -1129,19 +1045,6 @@ export default {
       },
       ticketType: '',
       authList: [],
-      isGovTicket: false,
-      stmtTimelineData: [],
-      stmtTimelineLoading: false,
-      eventTimelineData: [],
-      eventTimelineLoading: false,
-      showCorrectStmtModal: false,
-      correctStmtLoading: false,
-      correctStmtForm: {
-        stmtIndex: null,
-        ticketId: null,
-        failReason: '',
-        reason: ''
-      },
       v2GroupList: [],
       v2GroupLoading: false,
       v2RetryLoading: false,
@@ -1316,64 +1219,6 @@ export default {
         return false;
       }
       return (this.page - 1) * this.pageSize + this.selectedAutoExecTaskIndex < this.total - 1;
-    },
-    govSubmitterUid() {
-      if (!this.stmtTimelineData || !this.stmtTimelineData.length) {
-        return null;
-      }
-      for (const group of this.stmtTimelineData) {
-        const initial = (group.versions || []).find((v) => v.source === 'INITIAL');
-        if (initial && initial.operatorUid) {
-          return initial.operatorUid;
-        }
-      }
-      return null;
-    },
-    isGovSubmitter() {
-      const uid = this.userInfo?.uid;
-      if (!uid || !this.govSubmitterUid) {
-        return false;
-      }
-      return uid === this.govSubmitterUid;
-    },
-    govStmtMap() {
-      const map = new Map();
-      (this.stmtTimelineData || []).forEach((group) => {
-        map.set(group.stmtIndex, group);
-      });
-      return map;
-    },
-    govStmtTimelineColumns() {
-      return [
-        {
-          title: this.$t('gov-stmt-version'),
-          slot: 'version',
-          width: 120
-        },
-        {
-          title: this.$t('zhuang-tai'),
-          slot: 'status',
-          width: 100
-        },
-        {
-          title: this.$t('gov-stmt-history'),
-          slot: 'history'
-        }
-      ];
-    },
-    govStmtTimelineRows() {
-      return (this.stmtTimelineData || []).map((group) => {
-        const versions = group.versions || [];
-        const sorted = [...versions].sort((a, b) => (a.version || 0) - (b.version || 0));
-        const latest = sorted[sorted.length - 1] || {};
-        return {
-          stmtIndex: group.stmtIndex,
-          currentVersion: latest.version || 1,
-          currentStatus: group.currentStatus,
-          correctionCount: group.correctionCount || 0,
-          versions: sorted
-        };
-      });
     }
   },
   watch: {
@@ -2099,9 +1944,6 @@ export default {
           default:
             break;
         }
-        if (this.ticketType === 'DM_CHANGE') {
-          await this.loadGovData(type);
-        }
         if (this.ticketDetail.ticketType) {
           await this.loadV2GroupList();
         }
@@ -2310,132 +2152,6 @@ export default {
       } else {
         return this.analysisRuleResults.filter((rule) => rule.ruleLevel !== 'SUGGEST');
       }
-    },
-    async loadGovData(refreshType) {
-      if (this.ticketType !== 'DM_CHANGE') {
-        return;
-      }
-      await this.loadStmtTimeline();
-      if (this.isGovTicket && refreshType !== 'auto') {
-        await this.loadEventTimeline();
-      }
-    },
-    async loadStmtTimeline() {
-      this.stmtTimelineLoading = true;
-      try {
-        const res = await this.$services.dbChangeStmtTimeline({
-          data: { ticketId: this.ticketId },
-          modal: false
-        });
-        if (res.success) {
-          const groups = res.data?.groups || [];
-          this.stmtTimelineData = groups;
-          this.isGovTicket = groups.length > 0;
-        }
-      } finally {
-        this.stmtTimelineLoading = false;
-      }
-    },
-    async loadEventTimeline() {
-      if (!this.isGovTicket) {
-        return;
-      }
-      this.eventTimelineLoading = true;
-      try {
-        const res = await this.$services.dbChangeEventTimeline({
-          data: { ticketId: this.ticketId },
-          modal: false
-        });
-        if (res.success) {
-          this.eventTimelineData = res.data || [];
-        }
-      } finally {
-        this.eventTimelineLoading = false;
-      }
-    },
-    govStmtVersion(executeOrder) {
-      const group = this.govStmtMap.get(executeOrder);
-      if (!group) {
-        return 1;
-      }
-      const versions = group.versions || [];
-      if (!versions.length) {
-        return 1;
-      }
-      return Math.max(...versions.map((v) => v.version || 1));
-    },
-    taskRowClassName(row) {
-      if (!this.isGovTicket) {
-        return '';
-      }
-      if (row.status === 'FAILED') {
-        return 'gov-task-row--failed';
-      }
-      return '';
-    },
-    openCorrectStmtModal(row) {
-      this.correctStmtForm.stmtIndex = row.executeOrder;
-      this.correctStmtForm.ticketId = this.ticketId;
-      this.correctStmtForm.reason = '';
-      const group = this.govStmtMap.get(row.executeOrder);
-      if (group && group.versions && group.versions.length) {
-        const sorted = [...group.versions].sort((a, b) => (b.version || 0) - (a.version || 0));
-        this.correctStmtForm.failReason = sorted[0]?.failReason || '';
-      } else {
-        this.correctStmtForm.failReason = '';
-      }
-      this.showCorrectStmtModal = true;
-      this.$nextTick(() => {
-        const editor = this.$refs.correctStmtEditor;
-        if (editor) {
-          editor.setSql(row.execSql || '');
-        }
-      });
-    },
-    async handleCorrectStatement() {
-      if (this.correctStmtLoading) {
-        return;
-      }
-      const newSql = this.$refs.correctStmtEditor?.getSql() || '';
-      if (!newSql.trim()) {
-        this.$Message.error(this.$t('gov-sql-required'));
-        return;
-      }
-      if (!this.correctStmtForm.reason.trim()) {
-        this.$Message.error(this.$t('gov-correct-reason-required'));
-        return;
-      }
-      this.correctStmtLoading = true;
-      try {
-        const res = await this.$services.dbChangeCorrectStatement({
-          data: {
-            ticketId: this.ticketId,
-            stmtIndex: this.correctStmtForm.stmtIndex,
-            newSql,
-            reason: this.correctStmtForm.reason
-          }
-        });
-        if (res.success) {
-          this.$Message.success(this.$t('gov-correct-success'));
-          this.showCorrectStmtModal = false;
-          await this.loadStmtTimeline();
-          await this.queryAutoExecTaskList();
-        }
-      } finally {
-        this.correctStmtLoading = false;
-      }
-    },
-    handleCloseCorrectModal() {
-      this.showCorrectStmtModal = false;
-      this.correctStmtForm.reason = '';
-      this.correctStmtForm.failReason = '';
-    },
-    govEventTypeText(eventType) {
-      const key = GOV_EVENT_TYPE_I18N_KEYS[eventType];
-      return key ? this.$t(key) : eventType;
-    },
-    govEventIcon(eventType) {
-      return GOV_EVENT_ICONS[eventType] || 'ios-information-circle-outline';
     }
   }
 };
@@ -4363,62 +4079,6 @@ export default {
   }
 }
 
-.gov-task-row--failed td {
-  background-color: #fef0f0 !important;
-}
-
-.gov-task-version-tag {
-  display: inline-block;
-  padding: 1px 6px;
-  margin-left: 4px;
-  font-size: 12px;
-  color: #41454d;
-  background: #f0f0f0;
-  border-radius: 4px;
-}
-
-.gov-stmt-timeline-section {
-  margin-top: 16px;
-
-  .gov-stmt-correction-badge {
-    display: inline-block;
-    margin-left: 8px;
-    padding: 0 4px;
-    font-size: 12px;
-    color: #ed4014;
-    background: #fef0f0;
-    border-radius: 4px;
-  }
-
-  .gov-stmt-version-history {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .gov-stmt-version-entry {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-  }
-
-  .gov-stmt-version-num {
-    font-weight: 500;
-    color: #181d26;
-  }
-
-  .gov-stmt-fail-reason {
-    color: #ed4014;
-    font-size: 12px;
-  }
-
-  .gov-stmt-single-version {
-    font-size: 13px;
-    color: #41454d;
-  }
-}
-
 .gov-v2-group-section {
   .gov-v2-group-list {
     display: flex;
@@ -4503,110 +4163,6 @@ export default {
       display: flex;
       gap: 8px;
     }
-  }
-}
-
-.gov-event-timeline-section {
-  .gov-event-timeline-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .gov-event-timeline-row {
-    display: flex;
-    gap: 12px;
-    padding: 12px 0;
-    border-bottom: 1px solid #eaeaea;
-
-    &:last-child {
-      border-bottom: 0;
-    }
-
-    &__icon {
-      flex-shrink: 0;
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      background: #f8fafc;
-      color: #181d26;
-      font-size: 16px;
-    }
-
-    &__body {
-      flex: 1;
-      min-width: 0;
-    }
-
-    &__header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-
-      strong {
-        font-size: 14px;
-        color: #181d26;
-      }
-    }
-
-    &__transition {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 13px;
-      color: #41454d;
-    }
-
-    &__time {
-      font-size: 13px;
-      color: #707070;
-      margin-left: auto;
-    }
-
-    &__operator {
-      margin-top: 4px;
-      font-size: 13px;
-      color: #41454d;
-    }
-  }
-}
-
-.gov-correct-form {
-  &__info {
-    display: flex;
-    gap: 24px;
-    margin-bottom: 16px;
-    font-size: 14px;
-    color: #181d26;
-  }
-
-  &__fail-reason {
-    color: #ed4014;
-  }
-
-  &__editor-label,
-  &__reason-label {
-    font-size: 14px;
-    font-weight: 500;
-    color: #181d26;
-    margin-bottom: 8px;
-  }
-
-  &__required {
-    color: #ed4014;
-    margin-left: 4px;
-  }
-
-  &__editor-wrapper {
-    height: 200px;
-    border: 1px solid #eaeaea;
-    border-radius: 6px;
-    overflow: hidden;
-    margin-bottom: 16px;
   }
 }
 

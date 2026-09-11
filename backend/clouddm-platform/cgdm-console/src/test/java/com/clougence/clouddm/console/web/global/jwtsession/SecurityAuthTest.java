@@ -28,7 +28,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import com.clougence.clouddm.console.web.controller.governance.DbChangeGovernController;
 import com.clougence.clouddm.console.web.service.auth.RdpRoleService;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthRoleDO;
 import com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel;
@@ -171,11 +170,6 @@ public class SecurityAuthTest {
         "RDP_DB_CHANGE_GOVERN_READ", "RDP_PERM_GROUP_MANAGE",
         "RDP_LOGICAL_DB_MANAGE", "RDP_DB_CHANGE_PROD_PROMOTE", "RDP_DB_CHANGE_PROD_DML_DIRECT"
     ));
-
-    @Test
-    public void dbChangeGovernController_allMappingsHaveRequestAuth_registeredLabels() {
-        assertControllerAnnotations(DbChangeGovernController.class, SecurityLevel.HIGH);
-    }
 
     @Test
     public void permissionGroupController_allMappingsHaveRequestAuth_registeredLabels() {

@@ -55,3 +55,6 @@ install_upgrade.log
 .claude
 .design_docs
 .trellis
+# local dev runtime config & scripts (may contain credentials)
+backend/config/
+dev-alone.sh

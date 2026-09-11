@@ -38,16 +38,12 @@ import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.utils.JsonUtils;
 
 /**
- * Phase 11 Wave A / A3: skipTask / canceledSkipTask (continueTask) PROD rejection.
+ * skipTask / canceledSkipTask wiring test (touchpoint #5).
  * <p>
- * Touchpoint #5 (spec §2.2): both {@code skipTask} and {@code canceledSkipTask} in
- * {@code ApprovalControlServiceImpl} call {@code govExecutionGuardService.assertNotGovernanceProd}
- * BEFORE delegating to the engine. A PROD governance ticket must never reach
- * {@code autoExecService.skipTask/continueTask} — the guard throws first.
- * <p>
- * The existing {@code GovExecutionGuardServiceImplTest.assertNotGovernanceProd_prodTicket_throws}
- * tests the guard in isolation. This test pins the <b>wiring</b>: the guard is called in the
- * correct position (after ownership check, before engine delegation), for both methods.
+ * P5: the legacy {@code assertNotGovernanceProd} guard is now a no-op (legacy PROD governance
+ * tickets no longer exist). The guard is mocked to throw here so this test still pins the
+ * <b>wiring</b> — the guard is called in the correct position (after ownership check, before
+ * engine delegation) for both {@code skipTask} and {@code canceledSkipTask}.
  */
 public class ApprovalControlSkipContinueTest {
 
@@ -171,10 +167,9 @@ public class ApprovalControlSkipContinueTest {
         ticket.setOwnerUid(UID);
         ticket.setPrimaryUid(PUID);
         ApprovalMO mo = new ApprovalMO();
-        mo.setGovRole("PROD");
-        mo.setPromotionId(50L);
-        mo.setRevisionId(30L);
-        mo.setLogicalDbId(10L);
+        // P5: legacy PROD governance (govRole/promotionId/revisionId/logicalDbId) fields removed.
+        // The guard is mocked to throw here, so the ticket content is irrelevant — this pins the wiring
+        // (assertNotGovernanceProd called before engine delegation) for both skipTask and canceledSkipTask.
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;
     }

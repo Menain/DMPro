@@ -36,11 +36,9 @@ import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
-import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
@@ -61,10 +59,8 @@ public class GovAutoAdvanceServiceTest {
 
     private ApprovalDal               approvalDal;
     private DmApprovalMapper          approvalMapper;
-    private DbChangeGovernDal        dbChangeGovernDal;
+    private DbChangeEventDal        dbChangeEventDal;
     private DmDbChangeEventMapper     eventMapper;
-    private LogicalDbService          logicalDbService;
-    private DmEnvParamService         dmEnvParamService;
     private ApprovalStateService      approvalStateService;
     private ApprovalControlService    approvalControlService;
     private ImSenderService           imSenderService;
@@ -79,9 +75,7 @@ public class GovAutoAdvanceServiceTest {
     @Before
     public void setUp() {
         approvalDal = mock(ApprovalDal.class);
-        dbChangeGovernDal = mock(DbChangeGovernDal.class);
-        logicalDbService = mock(LogicalDbService.class);
-        dmEnvParamService = mock(DmEnvParamService.class);
+        dbChangeEventDal = mock(DbChangeEventDal.class);
         approvalStateService = mock(ApprovalStateService.class);
         approvalControlService = mock(ApprovalControlService.class);
         imSenderService = mock(ImSenderService.class);
@@ -93,16 +87,14 @@ public class GovAutoAdvanceServiceTest {
         approvalMapper = mock(DmApprovalMapper.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
         when(approvalDal.approvalMapper()).thenReturn(approvalMapper);
-        when(dbChangeGovernDal.eventMapper()).thenReturn(eventMapper);
+        when(dbChangeEventDal.eventMapper()).thenReturn(eventMapper);
         when(changeHandler.handleType()).thenReturn(ApprovalBiz.DM_CHANGE);
         when(ticketDbStmtDal.stmtMapper()).thenReturn(stmtMapper);
         when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(Collections.emptyList());
 
         impl = new GovAutoAdvanceServiceImpl(List.of(changeHandler));
         ReflectionTestUtils.setField(impl, "approvalDal", approvalDal);
-        ReflectionTestUtils.setField(impl, "dbChangeGovernDal", dbChangeGovernDal);
-        ReflectionTestUtils.setField(impl, "logicalDbService", logicalDbService);
-        ReflectionTestUtils.setField(impl, "dmEnvParamService", dmEnvParamService);
+        ReflectionTestUtils.setField(impl, "dbChangeEventDal", dbChangeEventDal);
         ReflectionTestUtils.setField(impl, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(impl, "approvalControlService", approvalControlService);
         ReflectionTestUtils.setField(impl, "imSenderService", imSenderService);
@@ -120,19 +112,19 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_nonGovernanceTicket_skippedNoGovQueries() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_QUERY, null, ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_QUERY, null, ApprovalStatus.WAIT_APPROVAL);
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
         service.advancePreTickets();
 
-        verify(dbChangeGovernDal, never()).eventMapper();
+        verify(dbChangeEventDal, never()).eventMapper();
         verifyNoInteractions(approvalControlService);
     }
 
     @Test
     public void advance_v2PreDdlButNotWaitApproval_skipped() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.RUNNING, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.RUNNING);
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
@@ -144,7 +136,7 @@ public class GovAutoAdvanceServiceTest {
     @Test
     public void advance_v2ProdDml_notAutoAdvanced() {
         // PROD_DML tickets are NOT auto-advanced (human approval required)
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PROD_DML", ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PROD_DML", ApprovalStatus.WAIT_APPROVAL);
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
@@ -155,8 +147,8 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_oldGovernanceTicketWithoutTicketType_skipped() {
-        // Old tickets (govRole=PRE but no ticketType) must not be advanced by the v2 filter
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, null, ApprovalStatus.WAIT_APPROVAL, "PRE");
+        // Old tickets (no ticketType — e.g. legacy governance or pre-v2) must not be advanced by the v2 filter
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, null, ApprovalStatus.WAIT_APPROVAL);
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
 
@@ -167,7 +159,7 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_v2PreDdl_dml_advancedWithCorrectConfig() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
         ticket.setRawSql("INSERT INTO foo VALUES (1)");
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
@@ -201,7 +193,7 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_v2PreDdl_ddl_advancedWithCorrectConfig() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
         ticket.setRawSql("CREATE TABLE foo (id INT)");
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
@@ -218,7 +210,7 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_v2PreDdl_mixed_advancedWithCorrectConfig() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
         ticket.setRawSql("CREATE TABLE foo; INSERT INTO foo VALUES (1)");
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
@@ -234,7 +226,7 @@ public class GovAutoAdvanceServiceTest {
 
     @Test
     public void advance_stateMachineMismatchDuringAdvance_noCrash() {
-        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL, null);
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
         when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
         when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
         setupSubmitEvent(ChangeType.DML);
@@ -264,18 +256,17 @@ public class GovAutoAdvanceServiceTest {
 
         service.advancePreTickets();
 
-        verifyNoInteractions(logicalDbService);
+        verifyNoInteractions(approvalControlService);
     }
 
     // ======= helpers =======
 
     /**
      * @param biz         approval biz type
-     * @param ticketType  v2 ticket type ("PRE_DDL" / "PROD_DML") or legacy govRole value for old-ticket skip tests
+     * @param ticketType  v2 ticket type ("PRE_DDL" / "PROD_DML"); null for non-v2 / skip tests
      * @param status      ticket status
-     * @param legacyGovRole if non-null, sets the old govRole field (for testing old-ticket skip). When null, no govRole set.
      */
-    private DmApprovalDO buildTicket(ApprovalBiz biz, String ticketType, ApprovalStatus status, String legacyGovRole) {
+    private DmApprovalDO buildTicket(ApprovalBiz biz, String ticketType, ApprovalStatus status) {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(TICKET_ID);
         ticket.setApproBiz(biz);
@@ -286,9 +277,6 @@ public class GovAutoAdvanceServiceTest {
         ApprovalMO mo = new ApprovalMO();
         if (ticketType != null) {
             mo.setTicketType(ticketType);
-        }
-        if (legacyGovRole != null) {
-            mo.setGovRole(legacyGovRole);
         }
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;

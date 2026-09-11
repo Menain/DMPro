@@ -34,15 +34,11 @@ import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
-import com.clougence.clouddm.console.web.model.vo.envparam.DmEnvParamTicketDesVO;
-import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
-import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
 import com.clougence.clouddm.console.web.util.DmTeamUtils;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
@@ -56,7 +52,6 @@ import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecType;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
-import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
 
@@ -72,11 +67,7 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     @Resource
     private ApprovalDal                approvalDal;
     @Resource
-    private DbChangeGovernDal         dbChangeGovernDal;
-    @Resource
-    private LogicalDbService          logicalDbService;
-    @Resource
-    private DmEnvParamService         dmEnvParamService;
+    private DbChangeEventDal         dbChangeEventDal;
     @Resource
     private ApprovalStateService      approvalStateService;
     @Resource
@@ -165,16 +156,6 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
             ApprovalStatus.WAIT_APPROVAL.name(), ApprovalStatus.WAIT_CONFIRM.name(), changeType);
     }
 
-    // ------- SYSTEM auto-confirm (WAIT_CONFIRM → WAIT_EXEC) -------
-
-    private void systemAutoConfirm(DmApprovalDO ticket, ChangeType changeType) {
-        long ticketId = ticket.getId();
-        DmAutoExecConfigFO config = buildAutoExecConfig(changeType);
-        this.approvalControlService.confirmTicketBySystem(ticketId, config);
-        this.appendEvent(ticketId, GovEventType.SYSTEM_CONFIRM,
-            ApprovalStatus.WAIT_CONFIRM.name(), ApprovalStatus.WAIT_EXEC.name(), changeType);
-    }
-
     // ------- V2 SYSTEM auto-confirm (WAIT_CONFIRM → WAIT_EXEC, no old-style job, then per-group createGroupJob) -------
 
     private void systemAutoConfirmForV2(DmApprovalDO ticket, ChangeType changeType) {
@@ -232,7 +213,7 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     // ------- helpers -------
 
     private ChangeType resolveChangeType(long ticketId) {
-        List<DmDbChangeEventDO> events = this.dbChangeGovernDal.eventMapper().queryByTicketId(ticketId);
+        List<DmDbChangeEventDO> events = this.dbChangeEventDal.eventMapper().queryByTicketId(ticketId);
         for (DmDbChangeEventDO event : events) {
             if (GovEventType.SUBMIT.name().equals(event.getEventType())) {
                 Map<String, Object> data = JsonUtils.toObj(event.getEventData(), HashMap.class);
@@ -257,7 +238,7 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
         data.put("changeType", changeType.name());
         eventDO.setEventData(JsonUtils.toJson(data));
 
-        this.dbChangeGovernDal.eventMapper().insert(eventDO);
+        this.dbChangeEventDal.eventMapper().insert(eventDO);
     }
 
     private static ApprovalMO parseTicketInfo(String ticketInfo) {

@@ -28,7 +28,7 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalStateService
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
@@ -58,7 +58,7 @@ public class AutoExecReleaseJobCompletionTest {
     private DmProdReleaseStmtMapper  stmtMapper;
     private ExecutionDal             execDal;
     private DmExecAutoJobMapper      autoJobMapper;
-    private DbChangeGovernDal        dbChangeGovernDal;
+    private DbChangeEventDal        dbChangeEventDal;
     private DmDbChangeEventMapper     eventMapper;
     private ApprovalDal              approvalDal;
     private DmApprovalMapper          approvalMapper;
@@ -81,9 +81,9 @@ public class AutoExecReleaseJobCompletionTest {
         autoJobMapper = mock(DmExecAutoJobMapper.class);
         when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
 
-        dbChangeGovernDal = mock(DbChangeGovernDal.class);
+        dbChangeEventDal = mock(DbChangeEventDal.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
-        when(dbChangeGovernDal.eventMapper()).thenReturn(eventMapper);
+        when(dbChangeEventDal.eventMapper()).thenReturn(eventMapper);
         when(eventMapper.insert(any(DmDbChangeEventDO.class))).thenReturn(1);
 
         approvalDal = mock(ApprovalDal.class);
@@ -99,7 +99,7 @@ public class AutoExecReleaseJobCompletionTest {
         when(ticketDbStmtDal.stmtMapper()).thenReturn(ticketStmtMapper);
 
         ReflectionTestUtils.setField(autoExecService, "prodReleaseDal", prodReleaseDal);
-        ReflectionTestUtils.setField(autoExecService, "dbChangeGovernDal", dbChangeGovernDal);
+        ReflectionTestUtils.setField(autoExecService, "dbChangeEventDal", dbChangeEventDal);
         ReflectionTestUtils.setField(autoExecService, "releaseStateMachine", releaseStateMachine);
         ReflectionTestUtils.setField(autoExecService, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(autoExecService, "approvalStateService", approvalStateService);

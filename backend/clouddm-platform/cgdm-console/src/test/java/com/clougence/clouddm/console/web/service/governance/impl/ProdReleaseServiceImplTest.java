@@ -39,7 +39,7 @@ import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateF
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
 import com.clougence.clouddm.console.web.util.DmTeamUtils;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.DbPairDal;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
@@ -87,7 +87,7 @@ public class ProdReleaseServiceImplTest {
     private ApprovalControlService   approvalControlService;
     private ApprovalFlowService      approvalFlowService;
     private ApprovalStateService     approvalStateService;
-    private DbChangeGovernDal       dbChangeGovernDal;
+    private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
 
     private static final String PUID = "puid-001";
@@ -139,9 +139,9 @@ public class ProdReleaseServiceImplTest {
         approvalFlowService = mock(ApprovalFlowService.class);
         approvalStateService = mock(ApprovalStateService.class);
 
-        dbChangeGovernDal = mock(DbChangeGovernDal.class);
+        dbChangeEventDal = mock(DbChangeEventDal.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
-        when(dbChangeGovernDal.eventMapper()).thenReturn(eventMapper);
+        when(dbChangeEventDal.eventMapper()).thenReturn(eventMapper);
         when(eventMapper.insert(any(DmDbChangeEventDO.class))).thenReturn(1);
 
         // execDal for retryReleaseStmt's active-job check
@@ -150,7 +150,7 @@ public class ProdReleaseServiceImplTest {
         when(execDal.autoJobMapper()).thenReturn(staticJobMapper);
 
         ReflectionTestUtils.setField(service, "prodReleaseDal", prodReleaseDal);
-        ReflectionTestUtils.setField(service, "dbChangeGovernDal", dbChangeGovernDal);
+        ReflectionTestUtils.setField(service, "dbChangeEventDal", dbChangeEventDal);
         ReflectionTestUtils.setField(service, "ticketDbStmtDal", ticketDbStmtDal);
         ReflectionTestUtils.setField(service, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(service, "dsDal", dsDal);

@@ -29,7 +29,6 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.cicd.ImMessageType;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.cicd.model.ChangeTicketInfo;
-import com.clougence.clouddm.console.web.component.governance.GovChangeFormAssembler;
 import com.clougence.clouddm.console.web.component.governance.GovTicketV2FormAssembler;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -77,8 +76,6 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     private ApprovalStateService approvalStateService;
     @Resource
     private ChangeCascadeService changeCascadeService;
-    @Resource
-    private GovChangeFormAssembler govChangeFormAssembler;
     @Resource
     private GovTicketV2FormAssembler govTicketV2FormAssembler;
 
@@ -286,13 +283,9 @@ public class ChangeApprovalHandler implements ApprovalHandler {
             // D8: parse failure → fallback to CI/CD path (never let governance detection become a CI/CD failure mode)
             info = null;
         }
-        // P4: v2 governance ticket branch (PRE_DDL / PROD_DML) — ticketType is set, govRole is not
+        // P4: v2 governance ticket branch (PRE_DDL / PROD_DML) — ticketType is set; legacy role is not
         if (info != null && info.getTicketType() != null) {
             return govTicketV2FormAssembler.build(ticketDO, info, templateId);
-        }
-        // Phase 9 touchpoint #7: old governance branch (PRE/PROD governance tickets)
-        if (info != null && info.getGovRole() != null) {
-            return govChangeFormAssembler.build(ticketDO, info, templateId);
         }
         // —— CI/CD original logic (zero change) ——
         if (info == null || info.getChangeOwnerUid() == null || info.getChangeId() == null) {

@@ -22,94 +22,38 @@ import org.junit.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
-import com.clougence.clouddm.console.web.service.governance.GovAutoConfirmService;
-import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
-import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
-import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 
+/**
+ * P5 trim: duties 2-5 (revision freeze / failure notify / promotion sync / PROD auto-confirm) were
+ * removed with the legacy promotion chain. Only duty 1 (advancePreTickets, v2 PRE_DDL path) remains,
+ * so the scheduler no longer exercises per-duty isolation — this test pins that the single duty is
+ * invoked and a Throwable is swallowed by the loop guard.
+ */
 public class GovPipelineSchedulerTest {
 
-    private GovPipelineScheduler scheduler;
-    private GovAutoAdvanceService   advanceService;
-    private RevisionFreezeService   freezeService;
-    private GovFailureNotifyService  notifyService;
-    private GovPromotionSyncService  syncService;
-    private GovAutoConfirmService    autoConfirmService;
+    private GovPipelineScheduler  scheduler;
+    private GovAutoAdvanceService advanceService;
 
     @Before
     public void setUp() {
         scheduler = new GovPipelineScheduler();
         advanceService = mock(GovAutoAdvanceService.class);
-        freezeService = mock(RevisionFreezeService.class);
-        notifyService = mock(GovFailureNotifyService.class);
-        syncService = mock(GovPromotionSyncService.class);
-        autoConfirmService = mock(GovAutoConfirmService.class);
         ReflectionTestUtils.setField(scheduler, "govAutoAdvanceService", advanceService);
-        ReflectionTestUtils.setField(scheduler, "revisionFreezeService", freezeService);
-        ReflectionTestUtils.setField(scheduler, "govFailureNotifyService", notifyService);
-        ReflectionTestUtils.setField(scheduler, "govPromotionSyncService", syncService);
-        ReflectionTestUtils.setField(scheduler, "govAutoConfirmService", autoConfirmService);
     }
 
     @Test
-    public void doSchedule_advanceThrows_othersStillRun() throws Exception {
-        doThrow(new RuntimeException("advance error"))
-            .when(advanceService).advancePreTickets();
-
+    public void doSchedule_invokesAdvancePreTickets() throws Exception {
         invokeDoSchedule();
-
-        verify(freezeService).freezeFinishedRevisions();
-        verify(notifyService).scanAndNotify();
-        verify(syncService).syncPromotionStatus();
-        verify(autoConfirmService).autoConfirmProdTickets();
+        verify(advanceService).advancePreTickets();
     }
 
     @Test
-    public void doSchedule_syncThrows_othersStillRun() throws Exception {
-        doThrow(new RuntimeException("sync error"))
-            .when(syncService).syncPromotionStatus();
+    public void doSchedule_advanceThrows_noExceptionEscapes() throws Exception {
+        doThrow(new RuntimeException("advance error")).when(advanceService).advancePreTickets();
 
         invokeDoSchedule();
 
         verify(advanceService).advancePreTickets();
-        verify(freezeService).freezeFinishedRevisions();
-        verify(notifyService).scanAndNotify();
-        verify(autoConfirmService).autoConfirmProdTickets();
-    }
-
-    @Test
-    public void doSchedule_allThrow_noExceptionEscapes() throws Exception {
-        doThrow(new RuntimeException("advance error"))
-            .when(advanceService).advancePreTickets();
-        doThrow(new RuntimeException("freeze error"))
-            .when(freezeService).freezeFinishedRevisions();
-        doThrow(new RuntimeException("notify error"))
-            .when(notifyService).scanAndNotify();
-        doThrow(new RuntimeException("sync error"))
-            .when(syncService).syncPromotionStatus();
-        doThrow(new RuntimeException("confirm error"))
-            .when(autoConfirmService).autoConfirmProdTickets();
-
-        invokeDoSchedule();
-
-        verify(advanceService).advancePreTickets();
-        verify(freezeService).freezeFinishedRevisions();
-        verify(notifyService).scanAndNotify();
-        verify(syncService).syncPromotionStatus();
-        verify(autoConfirmService).autoConfirmProdTickets();
-    }
-
-    @Test
-    public void doSchedule_autoConfirmThrows_othersStillRun() throws Exception {
-        doThrow(new RuntimeException("confirm error"))
-            .when(autoConfirmService).autoConfirmProdTickets();
-
-        invokeDoSchedule();
-
-        verify(advanceService).advancePreTickets();
-        verify(freezeService).freezeFinishedRevisions();
-        verify(notifyService).scanAndNotify();
-        verify(syncService).syncPromotionStatus();
     }
 
     private void invokeDoSchedule() throws Exception {

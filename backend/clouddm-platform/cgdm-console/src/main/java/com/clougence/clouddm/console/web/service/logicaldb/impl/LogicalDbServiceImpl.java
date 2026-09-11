@@ -37,10 +37,8 @@ import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbCreateFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbListFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbUpdateFO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbBindingVO;
-import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.MyLogicalDbVO;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.logicaldb.LogicalDbService;
 import com.clougence.clouddm.console.web.util.DmDsUtils;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
@@ -51,10 +49,8 @@ import com.clougence.clouddm.platform.dal.model.auth.DmAuthResDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbDO;
 import com.clougence.clouddm.platform.dal.model.logicaldb.DmLogicalDbEnvBindingDO;
-import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 import com.clougence.clouddm.platform.dal.model.logicaldb.LogicalDbStatus;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
-import com.clougence.clouddm.sdk.model.env.EnvParamKeys;
 import com.clougence.clouddm.sdk.security.auth.AuthKind;
 import com.clougence.utils.CollectionUtils;
 import com.clougence.utils.StringUtils;
@@ -74,8 +70,6 @@ public class LogicalDbServiceImpl implements LogicalDbService {
     private DataSourceDal      dsDal;
     @Resource
     private AuthDal            authDal;
-    @Resource
-    private DmEnvParamService  envParamService;
 
     // ==================== CRUD ====================
 
@@ -198,21 +192,6 @@ public class LogicalDbServiceImpl implements LogicalDbService {
             item.setResPath(normalizedPath);
         }
 
-        // GOV_ROLE conflict check: same non-empty role appearing ≥2 times → reject
-        Map<String, List<Long>> roleEnvMap = new HashMap<>();
-        for (BindingItemFO item : items) {
-            String govRole = envParamService.queryParam(puid, item.getEnvId(), EnvParamKeys.GOV_ROLE);
-            if (StringUtils.isNotBlank(govRole)) {
-                roleEnvMap.computeIfAbsent(govRole, k -> new ArrayList<>()).add(item.getEnvId());
-            }
-        }
-        for (Map.Entry<String, List<Long>> entry : roleEnvMap.entrySet()) {
-            if (entry.getValue().size() > 1) {
-                throw new ErrorMessageException("GOV_ROLE conflict: role '" + entry.getKey()
-                    + "' is assigned to multiple environments: " + entry.getValue());
-            }
-        }
-
         // --- all validations passed: delete-all + insert-all (same transaction) ---
         logicalDbDal.bindingMapper().deleteByLogicalDbId(fo.getLogicalDbId());
         for (BindingItemFO item : items) {
@@ -256,52 +235,9 @@ public class LogicalDbServiceImpl implements LogicalDbService {
                 vo.setEnvName(env.getEnvName());
             }
 
-            // GOV_* display values: null = not configured → default semantics
-            vo.setGovRole(envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_ROLE));
-            vo.setGovDmlDirect(envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_DML_DIRECT));
-            vo.setGovDmlRowLimit(envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_DML_ROW_LIMIT));
-            vo.setGovAutoConfirm(envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_AUTO_CONFIRM));
             vos.add(vo);
         }
         return vos;
-    }
-
-    // ==================== Server-side resolution (internal API) ====================
-
-    @Override
-    public LogicalDbTarget getBinding(String puid, long logicalDbId, GovRole role) {
-        DmLogicalDbDO logicalDb = requireLogicalDbOwnedBy(puid, logicalDbId);
-        if (!LogicalDbStatus.ENABLED.name().equals(logicalDb.getStatus())) {
-            throw new ErrorMessageException("Logical DB is not enabled: " + logicalDbId);
-        }
-
-        List<DmLogicalDbEnvBindingDO> bindings = logicalDbDal.bindingMapper().listByLogicalDbId(logicalDbId);
-        List<DmLogicalDbEnvBindingDO> matched = new ArrayList<>();
-        for (DmLogicalDbEnvBindingDO binding : bindings) {
-            String govRole = envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_ROLE);
-            if (role.name().equals(govRole)) {
-                matched.add(binding);
-            }
-        }
-
-        if (matched.isEmpty()) {
-            throw new ErrorMessageException("Logical DB " + logicalDbId + " has no binding for " + role + " role environment");
-        }
-        if (matched.size() > 1) {
-            List<Long> conflictEnvIds = matched.stream().map(DmLogicalDbEnvBindingDO::getEnvId).collect(Collectors.toList());
-            throw new ErrorMessageException("GOV_ROLE conflict: multiple " + role + " bindings found for logical DB "
-                + logicalDbId + ", envIds=" + conflictEnvIds);
-        }
-
-        DmLogicalDbEnvBindingDO target = matched.get(0);
-        LogicalDbTarget result = new LogicalDbTarget();
-        result.setBindingId(target.getId());
-        result.setLogicalDbId(logicalDbId);
-        result.setEnvId(target.getEnvId());
-        result.setDsId(target.getDsId());
-        result.setResPath(target.getResPath());
-        result.setGovRole(role);
-        return result;
     }
 
     // ==================== myLogicalDbs ====================
@@ -320,7 +256,7 @@ public class LogicalDbServiceImpl implements LogicalDbService {
         // D1: single listByKind query for all auth_res rows of this uid (only when not primary)
         List<DmAuthResDO> authRows = isPrimary ? Collections.emptyList() : authDal.resMapper().listByKind(uid, AuthKind.DataSource);
 
-        // dsType cache: lazily loaded from a single listByUser query when a PRE binding first needs it
+        // dsType cache: lazily loaded from a single listByUser query when the first binding needs it
         Map<Long, String> dsTypeMap = Collections.emptyMap();
         boolean dsTypeMapLoaded = false;
 
@@ -331,39 +267,23 @@ public class LogicalDbServiceImpl implements LogicalDbService {
                 continue;
             }
 
-            // filter bindings to those with GOV_ROLE ∈ {PRE, PROD}; track PRE binding for dsType resolution
-            List<DmLogicalDbEnvBindingDO> govBindings = new ArrayList<>();
-            DmLogicalDbEnvBindingDO preBinding = null;
-            for (DmLogicalDbEnvBindingDO binding : bindings) {
-                String govRole = envParamService.queryParam(puid, binding.getEnvId(), EnvParamKeys.GOV_ROLE);
-                if (GovRole.PRE.name().equals(govRole) || GovRole.PROD.name().equals(govRole)) {
-                    govBindings.add(binding);
-                }
-                if (preBinding == null && GovRole.PRE.name().equals(govRole)) {
-                    preBinding = binding;
-                }
-            }
-            if (govBindings.isEmpty()) {
-                continue;
-            }
-
-            // resolve dsType from PRE binding datasource (null-safe: no PRE binding or lookup miss → null, never throws)
+            // P5: governance-role filtering removed — any binding makes the logical DB visible.
+            // Resolve dsType from the first binding (null-safe: lookup miss → null, never throws).
+            DmLogicalDbEnvBindingDO firstBinding = bindings.get(0);
             String dsType = null;
-            if (preBinding != null) {
-                if (!dsTypeMapLoaded) {
-                    dsTypeMapLoaded = true;
-                    dsTypeMap = buildDsTypeMap(puid);
-                }
-                dsType = dsTypeMap.get(preBinding.getDsId());
+            if (!dsTypeMapLoaded) {
+                dsTypeMapLoaded = true;
+                dsTypeMap = buildDsTypeMap(puid);
             }
+            dsType = dsTypeMap.get(firstBinding.getDsId());
 
             if (isPrimary) {
                 result.add(toMyLogicalDbVO(logicalDb, dsType));
                 continue;
             }
 
-            // check if user has any auth on any PRE/PROD binding (in-memory match against pre-fetched authRows)
-            if (hasAnyBindingAuth(govBindings, authRows)) {
+            // check if user has any auth on any binding (in-memory match against pre-fetched authRows)
+            if (hasAnyBindingAuth(bindings, authRows)) {
                 result.add(toMyLogicalDbVO(logicalDb, dsType));
             }
         }

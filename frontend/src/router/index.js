@@ -113,18 +113,6 @@ const routes = [
         component: () => import(/* webpackChunkName: "ticket" */ '../views/ticket/ticket')
       },
       {
-        path: 'dbChange/promotion',
-        name: 'DbChange_Promotion',
-        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/promotion'),
-        meta: { requiredAuth: 'RDP_DB_CHANGE_GOVERN_READ' }
-      },
-      {
-        path: 'dbChange/promotion/:promotionId',
-        name: 'DbChange_Promotion_Detail',
-        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/promotionDetail'),
-        meta: { requiredAuth: 'RDP_DB_CHANGE_GOVERN_READ' }
-      },
-      {
         path: 'dbChange/ledger',
         name: 'DbChange_Ledger',
         component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/ledger'),

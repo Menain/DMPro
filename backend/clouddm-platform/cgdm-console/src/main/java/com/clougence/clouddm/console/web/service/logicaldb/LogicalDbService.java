@@ -22,10 +22,8 @@ import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbCreateFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbListFO;
 import com.clougence.clouddm.console.web.model.fo.logicaldb.LogicalDbUpdateFO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbBindingVO;
-import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbTarget;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.LogicalDbVO;
 import com.clougence.clouddm.console.web.model.vo.logicaldb.MyLogicalDbVO;
-import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
 
 public interface LogicalDbService {
 
@@ -44,12 +42,4 @@ public interface LogicalDbService {
     List<LogicalDbBindingVO> bindingList(String puid, long logicalDbId);
 
     List<MyLogicalDbVO> myLogicalDbs(String puid, String uid);
-
-    /**
-     * Server-side resolution of the target binding for a given governance role.
-     * Internal API — no HTTP surface. Consumed by Phase 4 preSubmit and Phase 6 promote.
-     *
-     * @throws com.clougence.clouddm.api.common.exception.ErrorMessageException if 0 or >1 bindings match
-     */
-    LogicalDbTarget getBinding(String puid, long logicalDbId, GovRole role);
 }

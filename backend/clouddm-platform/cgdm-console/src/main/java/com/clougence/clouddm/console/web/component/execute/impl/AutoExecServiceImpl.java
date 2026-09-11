@@ -140,7 +140,7 @@ public class AutoExecServiceImpl implements AutoExecService {
     @Resource
     private com.clougence.clouddm.platform.dal.access.ProdReleaseDal prodReleaseDal;
     @Resource
-    private com.clougence.clouddm.platform.dal.access.DbChangeGovernDal dbChangeGovernDal;
+    private com.clougence.clouddm.platform.dal.access.DbChangeEventDal dbChangeEventDal;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine releaseStateMachine;
 
@@ -545,7 +545,7 @@ public class AutoExecServiceImpl implements AutoExecService {
         event.setToStatus(toStatus);
         event.setOperatorUid(operatorUid);
         event.setEventData(eventData);
-        this.dbChangeGovernDal.eventMapper().insert(event);
+        this.dbChangeEventDal.eventMapper().insert(event);
     }
 
     private void appendReleaseStmtEvent(long releaseId, long stmtId,

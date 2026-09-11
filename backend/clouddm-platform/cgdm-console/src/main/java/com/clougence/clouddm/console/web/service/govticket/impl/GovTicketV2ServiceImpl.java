@@ -57,7 +57,7 @@ import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
-import com.clougence.clouddm.platform.dal.access.DbChangeGovernDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.NamingDao;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
@@ -120,7 +120,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @Resource
     private ApprovalDal         approvalDal;
     @Resource
-    private DbChangeGovernDal   dbChangeGovernDal;
+    private DbChangeEventDal   dbChangeEventDal;
     @Resource
     private ApprovalFlowService approvalFlowService;
     @Resource
@@ -597,7 +597,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         data.put("groupCount", groupCount);
         event.setEventData(JsonUtils.toJson(data));
 
-        dbChangeGovernDal.eventMapper().insert(event);
+        dbChangeEventDal.eventMapper().insert(event);
     }
 
     // Internal precheck result holder for submit

@@ -13,23 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.model.vo.governance;
+package com.clougence.clouddm.platform.dal.access;
 
-import java.util.Date;
+import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
 
-import lombok.Getter;
-import lombok.Setter;
+/**
+ * Append-only {@code dm_db_change_event} table access. P5 trimmed the legacy governance
+ * Dal (which also exposed stmt_version / revision / promotion mappers) down to the single
+ * event mapper that the v2 ticket and P3 production-release pipelines reuse.
+ */
+public interface DbChangeEventDal {
 
-@Getter
-@Setter
-public class PromotionVO {
-
-    private Long   id;
-    private String promotionCode;
-    private String promotionType;
-    private Long   revisionId;
-    private Long   logicalDbId;
-    private String status;
-    private Date   gmtCreate;
-    private Date   gmtModified;
+    DmDbChangeEventMapper eventMapper();
 }

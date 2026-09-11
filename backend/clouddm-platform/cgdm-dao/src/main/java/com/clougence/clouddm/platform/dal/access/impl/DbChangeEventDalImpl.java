@@ -13,23 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.model.vo.governance;
+package com.clougence.clouddm.platform.dal.access.impl;
 
-import java.util.Date;
+import org.springframework.stereotype.Service;
 
-import lombok.Getter;
-import lombok.Setter;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
+import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
 
-@Getter
-@Setter
-public class AvailableRevisionVO {
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 
-    private Long   revisionId;
-    private String revisionCode;
-    private String changeType;
-    private Date   gmtCreate;
-    private Long   sourceTicketId;
-    private int    stmtCount;
-    private Long   logicalDbId;
-    private String logicalDbResourceName;
+@Slf4j
+@Service
+public class DbChangeEventDalImpl implements DbChangeEventDal {
+
+    @Resource
+    private DmDbChangeEventMapper eventMapper;
+
+    @Override
+    public DmDbChangeEventMapper eventMapper() {
+        return eventMapper;
+    }
 }

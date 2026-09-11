@@ -15,14 +15,11 @@
  */
 package com.clougence.clouddm.console.web.model.vo.logicaldb;
 
-import com.clougence.clouddm.platform.dal.model.logicaldb.GovRole;
-
 import lombok.Getter;
 import lombok.Setter;
 
 /**
- * Internal resolution result from getBinding — not an HTTP VO.
- * Consumed by Phase 4 (preSubmit) and Phase 6 (promote).
+ * Internal resolution result for a logical-DB binding target.
  */
 @Getter
 @Setter
@@ -33,5 +30,4 @@ public class LogicalDbTarget {
     private Long     envId;
     private Long     dsId;
     private String   resPath;
-    private GovRole  govRole;
 }

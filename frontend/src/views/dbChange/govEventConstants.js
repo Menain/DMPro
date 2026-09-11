@@ -66,37 +66,10 @@ export const GOV_EVENT_ICONS = {
 };
 
 /**
- * Promotion status i18n keys — covers all 9 values of PromotionStatus enum:
- * CREATED, APPROVING, APPROVED, CONFIRMED, EXECUTING, SUCCEEDED, REJECTED, CANCELLED, FAILED.
+ * Promotion status / type / change-type i18n maps were removed in P5 together with the legacy
+ * promotion chain (PromotionStatus / PromotionType enums deleted; ChangeType label was only
+ * rendered by the retired promotion page). The v2 / release pipelines keep their own maps below.
  */
-export const PROMOTION_STATUS_I18N_KEYS = {
-  CREATED: 'gov-promotion-status-CREATED',
-  APPROVING: 'gov-promotion-status-APPROVING',
-  APPROVED: 'gov-promotion-status-APPROVED',
-  CONFIRMED: 'gov-promotion-status-CONFIRMED',
-  EXECUTING: 'gov-promotion-status-EXECUTING',
-  SUCCEEDED: 'gov-promotion-status-SUCCEEDED',
-  REJECTED: 'gov-promotion-status-REJECTED',
-  CANCELLED: 'gov-promotion-status-CANCELLED',
-  FAILED: 'gov-promotion-status-FAILED'
-};
-
-/**
- * Promotion type i18n keys — PRE_PROMOTION / DIRECT_PROD_DML.
- */
-export const PROMOTION_TYPE_I18N_KEYS = {
-  PRE_PROMOTION: 'gov-promotion-type-PRE_PROMOTION',
-  DIRECT_PROD_DML: 'gov-promotion-type-DIRECT_PROD_DML'
-};
-
-/**
- * Change type i18n keys — DDL / DML / MIXED.
- */
-export const CHANGE_TYPE_I18N_KEYS = {
-  DDL: 'gov-change-type-DDL',
-  DML: 'gov-change-type-DML',
-  MIXED: 'gov-change-type-MIXED'
-};
 
 /**
  * Production release status i18n keys — covers all 7 values of ProdReleaseStatus enum:

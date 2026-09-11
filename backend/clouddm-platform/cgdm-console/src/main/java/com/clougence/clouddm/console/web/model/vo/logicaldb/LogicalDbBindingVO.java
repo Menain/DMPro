@@ -28,10 +28,4 @@ public class LogicalDbBindingVO {
     private Long   dsId;
     private String dsName;
     private String resPath;
-
-    // GOV_* env param display values (null = not configured → default semantics)
-    private String govRole;
-    private String govDmlDirect;
-    private String govDmlRowLimit;
-    private String govAutoConfirm;
 }

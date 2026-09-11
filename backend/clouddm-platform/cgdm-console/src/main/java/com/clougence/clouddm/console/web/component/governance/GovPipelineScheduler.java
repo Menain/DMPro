@@ -19,10 +19,6 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.api.common.boot.UnifiedPostConstruct;
 import com.clougence.clouddm.console.web.service.governance.GovAutoAdvanceService;
-import com.clougence.clouddm.console.web.service.governance.GovAutoConfirmService;
-import com.clougence.clouddm.console.web.service.governance.GovFailureNotifyService;
-import com.clougence.clouddm.console.web.service.governance.GovPromotionSyncService;
-import com.clougence.clouddm.console.web.service.governance.RevisionFreezeService;
 import com.clougence.utils.ThreadUtils;
 
 import jakarta.annotation.Resource;
@@ -33,9 +29,9 @@ import lombok.extern.slf4j.Slf4j;
  * Single daemon thread, while(true) loop, 1s safeSleep, Throwable guard.
  * Each responsibility runs in its own try-catch so one failure doesn't block the other.
  *
- * Phase 4: advancePreTickets (duty 1) + freezeFinishedRevisions (duty 2).
- * Phase 5 hook: notifyFailedStatements.
- * Phase 6 hook: syncPromotionStatus.
+ * P5 trim: duties 2-5 (revision freeze / failure notify / promotion sync / PROD auto-confirm) belonged
+ * to the retired legacy promotion chain and were removed. Duty 1 (advancePreTickets) is retained —
+ * it already filters on ticketType=="PRE_DDL" and drives the v2 auto-approve + per-group job flow.
  */
 @Slf4j
 @Service
@@ -43,14 +39,6 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
 
     @Resource
     private GovAutoAdvanceService  govAutoAdvanceService;
-    @Resource
-    private RevisionFreezeService  revisionFreezeService;
-    @Resource
-    private GovFailureNotifyService govFailureNotifyService;
-    @Resource
-    private GovPromotionSyncService govPromotionSyncService;
-    @Resource
-    private GovAutoConfirmService   govAutoConfirmService;
 
     @Override
     public void init() throws Exception {
@@ -79,39 +67,11 @@ public class GovPipelineScheduler implements UnifiedPostConstruct {
     }
 
     private void doSchedule() {
-        // Duty 1: SYSTEM auto-approve + auto-confirm for PRE governance tickets
+        // Duty 1: SYSTEM auto-approve + auto-confirm for PRE_DDL governance tickets (v2 path)
         try {
             govAutoAdvanceService.advancePreTickets();
         } catch (Throwable e) {
             log.error("[GovPipeline] advancePreTickets error", e);
-        }
-
-        // Duty 2: freeze revisions from FINISHED PRE governance tickets
-        try {
-            revisionFreezeService.freezeFinishedRevisions();
-        } catch (Throwable e) {
-            log.error("[GovPipeline] freezeFinishedRevisions error", e);
-        }
-
-        // Duty 3: notify failed statements (Phase 5)
-        try {
-            govFailureNotifyService.scanAndNotify();
-        } catch (Throwable e) {
-            log.error("[GovPipeline] scanAndNotify error", e);
-        }
-
-        // Duty 4: sync promotion status from source ticket (Phase 6)
-        try {
-            govPromotionSyncService.syncPromotionStatus();
-        } catch (Throwable e) {
-            log.error("[GovPipeline] syncPromotionStatus error", e);
-        }
-
-        // Duty 5: auto-confirm PROD governance tickets when GOV_AUTO_CONFIRM=on (Phase 7)
-        try {
-            govAutoConfirmService.autoConfirmProdTickets();
-        } catch (Throwable e) {
-            log.error("[GovPipeline] autoConfirmProdTickets error", e);
         }
     }
 }

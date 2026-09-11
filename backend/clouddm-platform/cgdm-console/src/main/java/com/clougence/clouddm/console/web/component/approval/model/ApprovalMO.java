@@ -32,11 +32,6 @@ public class ApprovalMO {
     private String  changeOwnerUid;
     private Long    changeId;
 
-    private Long    promotionId;
-    private Long    revisionId;
-    private Long    logicalDbId;
-    private String  govRole;
-
     // v2 governance ticket fields
     private String  ticketType;     // PRE_DDL | PROD_DML
     private Long    serviceId;
