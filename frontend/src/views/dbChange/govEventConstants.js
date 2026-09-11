@@ -26,7 +26,16 @@ export const GOV_EVENT_TYPE_I18N_KEYS = {
   GUARD_DENY: 'gov-event-type-GUARD_DENY',
   AUTO_CONFIRM: 'gov-event-type-AUTO_CONFIRM',
   DIRECT_DML_SUBMIT: 'gov-event-type-DIRECT_DML_SUBMIT',
-  DIRECT_DML_DENY: 'gov-event-type-DIRECT_DML_DENY'
+  DIRECT_DML_DENY: 'gov-event-type-DIRECT_DML_DENY',
+  RELEASE_CREATED: 'gov-event-type-RELEASE_CREATED',
+  RELEASE_APPROVED: 'gov-event-type-RELEASE_APPROVED',
+  RELEASE_REJECTED: 'gov-event-type-RELEASE_REJECTED',
+  RELEASE_CANCELLED: 'gov-event-type-RELEASE_CANCELLED',
+  RELEASE_EXEC_STARTED: 'gov-event-type-RELEASE_EXEC_STARTED',
+  RELEASE_STMT_SUCCESS: 'gov-event-type-RELEASE_STMT_SUCCESS',
+  RELEASE_STMT_FAILED: 'gov-event-type-RELEASE_STMT_FAILED',
+  RELEASE_HASH_DRIFT: 'gov-event-type-RELEASE_HASH_DRIFT',
+  RELEASE_DONE: 'gov-event-type-RELEASE_DONE'
 };
 
 export const GOV_EVENT_ICONS = {
@@ -44,7 +53,16 @@ export const GOV_EVENT_ICONS = {
   GUARD_DENY: 'ios-close-outline',
   AUTO_CONFIRM: 'ios-checkmark-circle-outline',
   DIRECT_DML_SUBMIT: 'ios-paper-plane-outline',
-  DIRECT_DML_DENY: 'ios-close-circle-outline'
+  DIRECT_DML_DENY: 'ios-close-circle-outline',
+  RELEASE_CREATED: 'ios-rocket-outline',
+  RELEASE_APPROVED: 'ios-checkmark-circle-outline',
+  RELEASE_REJECTED: 'ios-close-circle-outline',
+  RELEASE_CANCELLED: 'ios-remove-circle-outline',
+  RELEASE_EXEC_STARTED: 'ios-play-circle-outline',
+  RELEASE_STMT_SUCCESS: 'ios-checkmark-outline',
+  RELEASE_STMT_FAILED: 'ios-close-outline',
+  RELEASE_HASH_DRIFT: 'ios-alert-outline',
+  RELEASE_DONE: 'ios-checkbox-outline'
 };
 
 /**
@@ -78,4 +96,18 @@ export const CHANGE_TYPE_I18N_KEYS = {
   DDL: 'gov-change-type-DDL',
   DML: 'gov-change-type-DML',
   MIXED: 'gov-change-type-MIXED'
+};
+
+/**
+ * Production release status i18n keys — covers all 7 values of ProdReleaseStatus enum:
+ * APPROVING, APPROVED, EXECUTING, DONE, PARTIAL_FAILED, REJECTED, CANCELLED.
+ */
+export const RELEASE_STATUS_I18N_KEYS = {
+  APPROVING: 'gov-release-status-APPROVING',
+  APPROVED: 'gov-release-status-APPROVED',
+  EXECUTING: 'gov-release-status-EXECUTING',
+  DONE: 'gov-release-status-DONE',
+  PARTIAL_FAILED: 'gov-release-status-PARTIAL_FAILED',
+  REJECTED: 'gov-release-status-REJECTED',
+  CANCELLED: 'gov-release-status-CANCELLED'
 };

@@ -65,4 +65,8 @@ public class RdpTicketBaseInfoVO {
     private String                    ticketType;
     private String                    serviceName;
 
+    // P3 production release extension (from ticketInfo JSON, approBiz=DM_PROD_RELEASE)
+    private Long                      releaseId;
+    private String                    releaseNo;
+
 }

@@ -125,6 +125,30 @@ const routes = [
         meta: { requiredAuth: 'RDP_DB_CHANGE_GOVERN_READ' }
       },
       {
+        path: 'dbChange/ledger',
+        name: 'DbChange_Ledger',
+        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/ledger'),
+        meta: { requiredAuth: 'RDP_WORKER_ORDER_READ' }
+      },
+      {
+        path: 'dbChange/ledger/detail',
+        name: 'DbChange_Ledger_Detail',
+        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/ledgerDetail'),
+        meta: { requiredAuth: 'RDP_WORKER_ORDER_READ' }
+      },
+      {
+        path: 'dbChange/release',
+        name: 'DbChange_Release',
+        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/release'),
+        meta: { requiredAuth: 'RDP_WORKER_ORDER_READ' }
+      },
+      {
+        path: 'dbChange/release/:releaseId',
+        name: 'DbChange_Release_Detail',
+        component: () => import(/* webpackChunkName: "db-change" */ '../views/dbChange/releaseDetail'),
+        meta: { requiredAuth: 'RDP_WORKER_ORDER_READ' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'

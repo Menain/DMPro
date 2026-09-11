@@ -10,5 +10,12 @@ export const dbChangeApi = {
   dbChangePromotionList: '/api/entry/dbChangeGovern/promotionList',
   // 注意：入参 FO 字段 id 语义为 promotionId（后端复用 LogicalDbIdFO）
   dbChangePromotionDetail: '/api/entry/dbChangeGovern/promotionDetail',
-  dbChangeDirectDmlSubmit: '/api/entry/dbChangeGovern/directDmlSubmit'
+  dbChangeDirectDmlSubmit: '/api/entry/dbChangeGovern/directDmlSubmit',
+  govLedgerDbs: '/api/entry/govledger/dbs',
+  govLedgerListByDb: '/api/entry/govledger/listByDb',
+  govLedgerDetail: '/api/entry/govledger/detail',
+  govReleaseCreate: '/api/entry/govrelease/create',
+  govReleaseList: '/api/entry/govrelease/list',
+  govReleaseDetail: '/api/entry/govrelease/detail',
+  govReleaseRetryStmt: '/api/entry/govrelease/retryStmt'
 };

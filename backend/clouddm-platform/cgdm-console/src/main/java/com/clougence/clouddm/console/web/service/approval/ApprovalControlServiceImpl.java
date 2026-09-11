@@ -408,6 +408,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                             vo.setServiceName(svc.getServiceName());
                         }
                     }
+                    vo.setReleaseId(mo.getReleaseId());
+                    vo.setReleaseNo(mo.getReleaseNo());
                 }
             } catch (Exception ignored) {
                 // ticketInfo is not a v2 governance ticket

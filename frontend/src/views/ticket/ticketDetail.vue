@@ -159,6 +159,29 @@
         </div>
       </section>
 
+      <section v-if="ticketType === 'DM_PROD_RELEASE' && releaseSummary" class="page-section gov-release-summary-section">
+        <div class="page-section__title">{{ $t('gov-release-summary-title') }}</div>
+        <div class="gov-release-summary-card">
+          <div class="gov-release-summary-row">
+            <span class="gov-release-summary-label">{{ $t('gov-release-no') }}</span>
+            <span class="gov-mono">{{ releaseSummary.releaseNo }}</span>
+          </div>
+          <div class="gov-release-summary-row">
+            <span class="gov-release-summary-label">{{ $t('gov-release-status-label') }}</span>
+            <Tag :color="releaseStatusColor(releaseSummary.status)">{{ releaseStatusText(releaseSummary.status) }}</Tag>
+          </div>
+          <div class="gov-release-summary-row">
+            <span class="gov-release-summary-label">{{ $t('gov-release-title') }}</span>
+            <span>{{ releaseSummary.title || '-' }}</span>
+          </div>
+          <div class="gov-release-summary-actions">
+            <Button type="primary" @click="goToRelease(releaseSummary.id)">
+              {{ $t('gov-release-view-detail') }}
+            </Button>
+          </div>
+        </div>
+      </section>
+
       <section v-if="ticketProgressSteps.length" class="page-section ticket-progress-card">
         <div class="page-section__title">{{ $t('jin-du') }}</div>
         <div class="ticket-progress-section">
@@ -1121,7 +1144,8 @@ export default {
       },
       v2GroupList: [],
       v2GroupLoading: false,
-      v2RetryLoading: false
+      v2RetryLoading: false,
+      releaseSummary: null
     };
   },
   async mounted() {
@@ -2081,6 +2105,9 @@ export default {
         if (this.ticketDetail.ticketType) {
           await this.loadV2GroupList();
         }
+        if (this.ticketType === 'DM_PROD_RELEASE') {
+          await this.loadReleaseSummary();
+        }
       }
     },
     async loadV2GroupList() {
@@ -2127,6 +2154,46 @@ export default {
       } catch (e) {
         return null;
       }
+    },
+    async loadReleaseSummary() {
+      const releaseId = this.ticketDetail?.releaseId;
+      if (!releaseId) {
+        this.releaseSummary = null;
+        return;
+      }
+      try {
+        const res = await this.$services.govReleaseDetail({ data: { releaseId }, modal: false });
+        if (res.success && res.data) {
+          this.releaseSummary = res.data;
+        } else {
+          this.releaseSummary = null;
+        }
+      } catch {
+        this.releaseSummary = null;
+      }
+    },
+    goToRelease(releaseId) {
+      if (releaseId) {
+        this.$router.push(`/dbChange/release/${releaseId}`);
+      }
+    },
+    releaseStatusText(status) {
+      const keys = {
+        APPROVING: 'gov-release-status-APPROVING',
+        APPROVED: 'gov-release-status-APPROVED',
+        EXECUTING: 'gov-release-status-EXECUTING',
+        DONE: 'gov-release-status-DONE',
+        PARTIAL_FAILED: 'gov-release-status-PARTIAL_FAILED',
+        REJECTED: 'gov-release-status-REJECTED',
+        CANCELLED: 'gov-release-status-CANCELLED'
+      };
+      return keys[status] ? this.$t(keys[status]) : status || '-';
+    },
+    releaseStatusColor(status) {
+      if (status === 'DONE') return 'success';
+      if (status === 'PARTIAL_FAILED') return 'warning';
+      if (status === 'REJECTED' || status === 'CANCELLED') return 'error';
+      return 'primary';
     },
     async cancelTicket() {
       const data = {
@@ -4540,6 +4607,42 @@ export default {
     border-radius: 6px;
     overflow: hidden;
     margin-bottom: 16px;
+  }
+}
+
+.gov-release-summary-section {
+  .gov-release-summary-card {
+    background: var(--surface-soft, #f8fafc);
+    padding: 16px 24px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .gov-release-summary-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+  }
+
+  .gov-release-summary-label {
+    min-width: 100px;
+    color: var(--muted, #41454d);
+    flex-shrink: 0;
+  }
+
+  .gov-release-summary-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .gov-mono {
+    font-family: Menlo, Monaco, 'Courier New', monospace;
+    font-size: 13px;
+    word-break: break-all;
   }
 }
 </style>

@@ -34,6 +34,8 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   }
   if (myCatLog.includes('CAT_RDP_WORKER_ORDER') && !isDesktop) {
     primary.push(linkItem('ticket', '/#/ticket', 'gong-dan', 'icon-v2-TicketAuth'));
+    primary.push(linkItem('dbChange/ledger', '/#/dbChange/ledger', 'bian-geng-tai-zhang', 'icon-v2-DataBase2'));
+    primary.push(linkItem('dbChange/release', '/#/dbChange/release', 'sheng-chan-fa-bu-dan', 'icon-v2-DataBase2'));
   }
   if (myCatLog.includes('CAT_RDP_DB_CHANGE_GOVERN') && !isDesktop) {
     primary.push(linkItem('dbChange/promotion', '/#/dbChange/promotion', 'sheng-chan-fa-bu', 'icon-v2-DataBase2'));

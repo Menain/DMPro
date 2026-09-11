@@ -17,9 +17,12 @@ package com.clougence.clouddm.console.web.service.governance.impl;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.stereotype.Service;
 
@@ -32,10 +35,12 @@ import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
 import com.clougence.clouddm.console.web.service.dbpair.DbPairService;
 import com.clougence.clouddm.console.web.service.governance.GovLedgerService;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
+import com.clougence.clouddm.platform.dal.access.DbPairDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.dbpair.DmDbServiceDO;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
 import com.clougence.utils.JsonUtils;
@@ -63,6 +68,8 @@ public class GovLedgerServiceImpl implements GovLedgerService {
     private ApprovalDal         approvalDal;
     @Resource
     private ProdReleaseDal     prodReleaseDal;
+    @Resource
+    private DbPairDal          dbPairDal;
 
     @Override
     public List<DbPairVO> dbs(String puid) {
@@ -84,6 +91,8 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             byTicket.computeIfAbsent(s.getTicketId(), k -> new ArrayList<>()).add(s);
         }
 
+        // Track VO → serviceId for batch serviceName fill (avoid N+1 queries)
+        Map<GovLedgerTicketVO, Long> voServiceIds = new LinkedHashMap<>();
         List<GovLedgerTicketVO> result = new ArrayList<>();
         for (Map.Entry<Long, List<DmTicketDbStmtDO>> entry : byTicket.entrySet()) {
             long ticketId = entry.getKey();
@@ -129,10 +138,45 @@ public class GovLedgerServiceImpl implements GovLedgerService {
                 }
             }
 
+            voServiceIds.put(vo, mo.getServiceId());
             result.add(vo);
         }
 
+        // Batch-fill serviceName from dm_db_service (serviceId from ticketInfo JSON)
+        fillServiceNames(voServiceIds);
+
         return result;
+    }
+
+    /**
+     * Batch-resolve serviceName from dm_db_service by serviceId collected from ticketInfo JSON.
+     * serviceId null or not found in dm_db_service → serviceName stays null (frontend tolerates).
+     */
+    private void fillServiceNames(Map<GovLedgerTicketVO, Long> voServiceIds) {
+        if (voServiceIds.isEmpty()) return;
+
+        Set<Long> serviceIds = new HashSet<>();
+        for (Long sid : voServiceIds.values()) {
+            if (sid != null) {
+                serviceIds.add(sid);
+            }
+        }
+        if (serviceIds.isEmpty()) return;
+
+        List<DmDbServiceDO> services = dbPairDal.serviceMapper().selectBatchIds(serviceIds);
+        Map<Long, String> nameMap = new HashMap<>();
+        if (services != null) {
+            for (DmDbServiceDO svc : services) {
+                nameMap.put(svc.getId(), svc.getServiceName());
+            }
+        }
+
+        for (Map.Entry<GovLedgerTicketVO, Long> e : voServiceIds.entrySet()) {
+            Long sid = e.getValue();
+            if (sid != null) {
+                e.getKey().setServiceName(nameMap.get(sid));
+            }
+        }
     }
 
     @Override
