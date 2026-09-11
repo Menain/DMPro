@@ -41,4 +41,8 @@ public class ApprovalMO {
     private String  ticketType;     // PRE_DDL | PROD_DML
     private Long    serviceId;
     private List<Long> pairIds;
+
+    // P3 production release fields
+    private Long    releaseId;
+    private String  releaseNo;
 }

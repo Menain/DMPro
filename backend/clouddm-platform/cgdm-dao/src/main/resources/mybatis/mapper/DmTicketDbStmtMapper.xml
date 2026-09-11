@@ -42,6 +42,31 @@
             id = #{id}
     </select>
 
+    <select id="queryByDsAndDb" resultMap="ticketDbStmtDO">
+        SELECT
+            <include refid="sqlColumns"/>
+        FROM
+            dm_ticket_db_stmt
+        WHERE
+            ds_id = #{dsId}
+            AND db_name = #{dbName}
+        ORDER BY
+            id ASC
+    </select>
+
+    <select id="queryByTicketIdAndDsAndDb" resultMap="ticketDbStmtDO">
+        SELECT
+            <include refid="sqlColumns"/>
+        FROM
+            dm_ticket_db_stmt
+        WHERE
+            ticket_id = #{ticketId}
+            AND ds_id = #{dsId}
+            AND db_name = #{dbName}
+        ORDER BY
+            id ASC
+    </select>
+
     <update id="updateExecStatus">
         UPDATE
             dm_ticket_db_stmt

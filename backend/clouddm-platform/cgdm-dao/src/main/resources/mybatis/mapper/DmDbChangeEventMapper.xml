@@ -9,6 +9,7 @@
         <result column="promotion_id" property="promotionId"/>
         <result column="revision_id" property="revisionId"/>
         <result column="ticket_id" property="ticketId"/>
+        <result column="release_id" property="releaseId"/>
         <result column="event_type" property="eventType"/>
         <result column="from_status" property="fromStatus"/>
         <result column="to_status" property="toStatus"/>
@@ -23,6 +24,7 @@
         promotion_id,
         revision_id,
         ticket_id,
+        release_id,
         event_type,
         from_status,
         to_status,
@@ -59,6 +61,17 @@
             dm_db_change_event
         WHERE
             promotion_id = #{promotionId}
+        ORDER BY
+            gmt_create
+    </select>
+
+    <select id="queryByReleaseId" resultMap="dmDbChangeEventDO">
+        SELECT
+            <include refid="dmDbChangeEvent"/>
+        FROM
+            dm_db_change_event
+        WHERE
+            release_id = #{releaseId}
         ORDER BY
             gmt_create
     </select>

@@ -161,6 +161,9 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private PlatformTransactionManager  txManager;
     @Resource
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.governance.ProdReleaseService prodReleaseService;
 
     //
     // ticket list
@@ -939,6 +942,16 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             DmApprovalDO dmTicketDO = this.approvalDal.approvalMapper().queryByBizId(rdpTicketDO.getBizId());
             if (dmTicketDO == null) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+            }
+            // P3 release branch: DM_PROD_RELEASE tickets trigger ProdReleaseService.startExecution
+            if (rdpTicketDO.getApproBiz() == com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_PROD_RELEASE) {
+                com.clougence.clouddm.console.web.component.approval.model.ApprovalMO releaseMo
+                    = com.clougence.utils.JsonUtils.toObj(dmTicketDO.getTicketInfo(),
+                        com.clougence.clouddm.console.web.component.approval.model.ApprovalMO.class);
+                if (releaseMo != null && releaseMo.getReleaseId() != null) {
+                    this.prodReleaseService.startExecution(releaseMo.getReleaseId(), fo.getConfirmUid());
+                }
+                return;
             }
             // Phase 7 touchpoint #2: gate-two guard (non-governance/PRE short-circuits to PASS)
             com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion

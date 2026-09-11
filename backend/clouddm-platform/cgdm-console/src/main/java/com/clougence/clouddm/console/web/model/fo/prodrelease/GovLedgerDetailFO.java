@@ -13,20 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.console.web.model.fo.prodrelease;
 
-import java.util.List;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.Setter;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+@Getter
+@Setter
+public class GovLedgerDetailFO {
 
-public interface DmDbChangeEventMapper extends BaseMapper<DmDbChangeEventDO> {
+    @NotNull
+    private long ticketId;
 
-    List<DmDbChangeEventDO> queryByTicketId(Long ticketId);
+    @NotNull
+    private long dsId;
 
-    List<DmDbChangeEventDO> queryByRevisionId(Long revisionId);
-
-    List<DmDbChangeEventDO> queryByPromotionId(Long promotionId);
-
-    List<DmDbChangeEventDO> queryByReleaseId(Long releaseId);
+    @NotBlank
+    private String dbName;
 }

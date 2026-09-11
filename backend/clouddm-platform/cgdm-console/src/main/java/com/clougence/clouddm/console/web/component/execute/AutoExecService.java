@@ -59,6 +59,34 @@ public interface AutoExecService {
      */
     void handleV2JobCompletion(long jobId, boolean success, String errorDetail);
 
+    /**
+     * P3 production release: creates a per-stmt execution job for a release stmt snapshot.
+     * <p>
+     * Mirrors {@link #createGroupJob} but sets {@code depend_on_release_stmt_id} (not group_id)
+     * and splits the SQL from the stmt's {@code sql_content}.
+     * <p>
+     * Inheritance fix (design §8): EXECUTING mark is applied AFTER job insert succeeds;
+     * failure path resets stmt to PENDING.
+     *
+     * @param stmt           the release statement snapshot row
+     * @param jobBizId       generated job bizId
+     * @param transactional  whether to wrap tasks in a transaction
+     * @param errorStrategy  error strategy for the job
+     * @param languageTag    locale language tag for worker messages
+     * @param uid            operator uid
+     */
+    void createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                             String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
+                             String languageTag, String uid);
+
+    /**
+     * P3 release job completion handler: updates the stmt's exec_status and, when all stmts
+     * for the release are terminal, aggregates to the release level.
+     * On success: chains the next PENDING stmt for the same (release, prod_ds_id, prod_db_name).
+     * Called by ExecJobRServiceProvider and dispatchJob when a release job reaches terminal state.
+     */
+    void handleReleaseJobCompletion(long jobId, boolean success, String errorDetail);
+
     void startJob(String jobBizId, String operatorUid);
 
     void deleteJob(String jobBizId);

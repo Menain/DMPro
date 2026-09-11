@@ -28,5 +28,9 @@ public interface DmTicketDbStmtMapper extends BaseMapper<DmTicketDbStmtDO> {
 
     DmTicketDbStmtDO queryById(@Param("id") long id);
 
+    List<DmTicketDbStmtDO> queryByDsAndDb(@Param("dsId") long dsId, @Param("dbName") String dbName);
+
+    List<DmTicketDbStmtDO> queryByTicketIdAndDsAndDb(@Param("ticketId") long ticketId, @Param("dsId") long dsId, @Param("dbName") String dbName);
+
     int updateExecStatus(@Param("id") long id, @Param("execStatus") String execStatus, @Param("execDetail") String execDetail);
 }

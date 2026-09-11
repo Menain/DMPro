@@ -212,7 +212,9 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
         this.jobLog(Loglevel.ERROR, I18nDmMsgKeys.AUTO_EXEC_CREATE_SESSION_ERROR_MESSAGE, dto.getJobId(),
                 dto.getMessage());
 
-        if (jobDO.getDependOnGroupId() != null) {
+        if (jobDO.getDependOnReleaseStmtId() != null) {
+            this.autoExecService.handleReleaseJobCompletion(dto.getJobId(), false, dto.getMessage());
+        } else if (jobDO.getDependOnGroupId() != null) {
             this.autoExecService.handleV2JobCompletion(dto.getJobId(), false, dto.getMessage());
         } else {
             this.approvalStateService.failExecution(jobDO.getDependOnBizId(), null);
@@ -227,7 +229,9 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
         this.jobLog(Loglevel.ERROR, I18nDmMsgKeys.AUTO_EXEC_JOB_PREPARE_ERROR_MESSAGE, dto.getJobId(),
                 dto.getMessage());
 
-        if (jobDO.getDependOnGroupId() != null) {
+        if (jobDO.getDependOnReleaseStmtId() != null) {
+            this.autoExecService.handleReleaseJobCompletion(dto.getJobId(), false, dto.getMessage());
+        } else if (jobDO.getDependOnGroupId() != null) {
             this.autoExecService.handleV2JobCompletion(dto.getJobId(), false, dto.getMessage());
         } else {
             this.approvalStateService.failExecution(jobDO.getDependOnBizId(), null);
@@ -244,7 +248,9 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
         }
         this.jobLog(Loglevel.INFO, I18nDmMsgKeys.AUTO_EXEC_JOB_FINISH_MESSAGE, dto.getJobId());
 
-        if (jobDO.getDependOnGroupId() != null) {
+        if (jobDO.getDependOnReleaseStmtId() != null) {
+            this.autoExecService.handleReleaseJobCompletion(dto.getJobId(), true, null);
+        } else if (jobDO.getDependOnGroupId() != null) {
             this.autoExecService.handleV2JobCompletion(dto.getJobId(), true, null);
         } else {
             this.approvalStateService.completeExecution(jobDO.getDependOnBizId());
@@ -263,7 +269,9 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
         this.jobLog(Loglevel.ERROR, I18nDmMsgKeys.AUTO_EXEC_JOB_FAILED_MESSAGE, dto.getJobId(),
                 taskDO.getExecOrder(), taskDO.getExecSql());
 
-        if (jobDO.getDependOnGroupId() != null) {
+        if (jobDO.getDependOnReleaseStmtId() != null) {
+            this.autoExecService.handleReleaseJobCompletion(dto.getJobId(), false, dto.getMessage());
+        } else if (jobDO.getDependOnGroupId() != null) {
             this.autoExecService.handleV2JobCompletion(dto.getJobId(), false, dto.getMessage());
         } else {
             this.approvalStateService.failExecution(jobDO.getDependOnBizId(), null);
@@ -324,7 +332,10 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
 
         DmExecAutoJobDO jobDO = this.execDal.autoJobMapper().selectById(taskDO.getAutoExecJobId());
         if (jobDO != null) {
-            if (jobDO.getDependOnGroupId() != null) {
+            if (jobDO.getDependOnReleaseStmtId() != null) {
+                // P3 release: stmt is already EXECUTING; no ticket-level RUNNING needed
+                // (release status aggregation is driven by handleReleaseJobCompletion)
+            } else if (jobDO.getDependOnGroupId() != null) {
                 // V2: mark ticket RUNNING through group → ticket chain
                 // markExecutionRunning(dependOnBizId) is a no-op for v2 (null bizId);
                 // the ticket status is already WAIT_EXEC from confirm, and will transition

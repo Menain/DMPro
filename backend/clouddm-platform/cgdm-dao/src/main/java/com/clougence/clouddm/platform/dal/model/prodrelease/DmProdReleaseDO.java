@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.platform.dal.model.prodrelease;
 
 import java.util.Date;
 
@@ -27,12 +27,14 @@ import lombok.Getter;
 import lombok.Setter;
 
 /**
- * Governance event log — append-only (insert only, no update/delete).
+ * Production release header — one row per batch-promoted release ticket.
+ * Mutable via controlled state-machine transitions (ProdReleaseStateMachine).
+ * approval_id links to the dm_approval ticket created via ApprovalBiz.DM_PROD_RELEASE.
  */
 @Getter
 @Setter
-@TableName(value = "dm_db_change_event")
-public class DmDbChangeEventDO {
+@TableName(value = "dm_prod_release")
+public class DmProdReleaseDO {
 
     @TableId(type = IdType.AUTO)
     private Long   id;
@@ -43,21 +45,17 @@ public class DmDbChangeEventDO {
     @TableField(insertStrategy = FieldStrategy.NOT_NULL, updateStrategy = FieldStrategy.NOT_NULL)
     private Date   gmtModified;
 
-    private Long   promotionId;
+    private String releaseNo;
 
-    private Long   revisionId;
+    private String title;
 
-    private Long   ticketId;
+    private String status;
 
-    private Long   releaseId;
+    private Long   approvalId;
 
-    private String eventType;
+    private String creatorUid;
 
-    private String fromStatus;
+    private String primaryUid;
 
-    private String toStatus;
-
-    private String operatorUid;
-
-    private String eventData;
+    private String gateResult;
 }

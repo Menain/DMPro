@@ -13,20 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.mapper.dbchange;
+package com.clougence.clouddm.platform.dal.access;
 
-import java.util.List;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+/**
+ * Dal aggregation for production release tables.
+ * release table is mutable via controlled state-machine methods (transitStatus / updateApprovalId / updateGateResult).
+ * stmt table has insert, select, updateExecStatus, deleteByReleaseId — no arbitrary update/delete.
+ */
+public interface ProdReleaseDal {
 
-public interface DmDbChangeEventMapper extends BaseMapper<DmDbChangeEventDO> {
+    DmProdReleaseMapper releaseMapper();
 
-    List<DmDbChangeEventDO> queryByTicketId(Long ticketId);
-
-    List<DmDbChangeEventDO> queryByRevisionId(Long revisionId);
-
-    List<DmDbChangeEventDO> queryByPromotionId(Long promotionId);
-
-    List<DmDbChangeEventDO> queryByReleaseId(Long releaseId);
+    DmProdReleaseStmtMapper stmtMapper();
 }

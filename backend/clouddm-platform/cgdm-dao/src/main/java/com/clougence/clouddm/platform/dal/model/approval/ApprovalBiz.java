@@ -27,6 +27,7 @@ public enum ApprovalBiz {
     /** DM */
     DM_QUERY,
     DM_CHANGE,
+    DM_PROD_RELEASE,
 
     /** CC */
     CC_DATA_JOB_AUTH,

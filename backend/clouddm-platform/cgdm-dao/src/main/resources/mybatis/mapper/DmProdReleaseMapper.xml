@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper">
+
+    <resultMap id="dmProdReleaseDO" type="com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="release_no" property="releaseNo"/>
+        <result column="title" property="title"/>
+        <result column="status" property="status"/>
+        <result column="approval_id" property="approvalId"/>
+        <result column="creator_uid" property="creatorUid"/>
+        <result column="primary_uid" property="primaryUid"/>
+        <result column="gate_result" property="gateResult"/>
+    </resultMap>
+
+    <sql id="dmProdRelease">
+        id,
+        gmt_create,
+        gmt_modified,
+        release_no,
+        title,
+        status,
+        approval_id,
+        creator_uid,
+        primary_uid,
+        gate_result
+    </sql>
+
+    <select id="queryById" resultMap="dmProdReleaseDO">
+        SELECT
+            <include refid="dmProdRelease"/>
+        FROM
+            dm_prod_release
+        WHERE
+            id = #{id}
+    </select>
+
+    <update id="transitStatus">
+        UPDATE
+            dm_prod_release
+        SET
+            status = #{toStatus}
+        WHERE
+            id = #{id}
+            AND status IN
+            <foreach collection="expectedFrom" item="s" open="(" close=")" separator=",">
+                #{s}
+            </foreach>
+    </update>
+
+    <update id="updateApprovalId">
+        UPDATE
+            dm_prod_release
+        SET
+            approval_id = #{approvalId}
+        WHERE
+            id = #{id}
+    </update>
+
+    <update id="updateGateResult">
+        UPDATE
+            dm_prod_release
+        SET
+            gate_result = #{gateResult}
+        WHERE
+            id = #{id}
+    </update>
+
+    <select id="listByConditionAndPage" resultMap="dmProdReleaseDO">
+        SELECT
+            <include refid="dmProdRelease"/>
+        FROM
+            dm_prod_release
+        WHERE
+            primary_uid = #{puid}
+        <if test="status != null and status != ''">
+            AND status = #{status}
+        </if>
+        ORDER BY
+            gmt_create DESC
+    </select>
+
+    <select id="countActiveByProdDb" resultType="int">
+        SELECT
+            COUNT(*)
+        FROM
+            dm_prod_release r
+        INNER JOIN
+            dm_prod_release_stmt s
+        ON
+            s.release_id = r.id
+        WHERE
+            s.prod_ds_id = #{prodDsId}
+            AND s.prod_db_name = #{prodDbName}
+            AND r.status NOT IN ('DONE', 'REJECTED', 'CANCELLED')
+    </select>
+
+</mapper>

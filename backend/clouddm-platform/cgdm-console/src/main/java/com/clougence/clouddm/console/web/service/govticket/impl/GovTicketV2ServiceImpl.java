@@ -129,6 +129,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private com.clougence.clouddm.console.web.component.execute.AutoExecService autoExecService;
     @Resource
     private org.springframework.transaction.PlatformTransactionManager txManager;
+    @Resource
+    private com.clougence.clouddm.platform.dal.access.ExecutionDal execDal;
 
     // ==================== check ====================
 
@@ -248,8 +250,19 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (group == null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FOUND.name(), groupId));
         }
-        if (!EXEC_STATUS_FAILED.equals(group.getExecStatus())) {
+        if (!EXEC_STATUS_FAILED.equals(group.getExecStatus())
+            && !EXEC_STATUS_PENDING.equals(group.getExecStatus())
+            && !EXEC_STATUS_EXECUTING.equals(group.getExecStatus())) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FAILED.name()));
+        }
+        // Inheritance fix (design §8): for PENDING/EXECUTING, also verify no active job exists
+        if (EXEC_STATUS_PENDING.equals(group.getExecStatus()) || EXEC_STATUS_EXECUTING.equals(group.getExecStatus())) {
+            var existingJob = this.execDal.autoJobMapper().queryByDependOnGroupId(groupId);
+            if (existingJob != null
+                && existingJob.getStatus() != com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus.FAILED
+                && existingJob.getStatus() != com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus.TERMINATION) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RELEASE_STMT_JOB_ACTIVE.name()));
+            }
         }
 
         // Load ticket to determine ticket type for exec config + tenant scope check

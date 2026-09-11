@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.platform.dal.model.dbchange;
+package com.clougence.clouddm.platform.dal.model.prodrelease;
 
 import java.util.Date;
 
@@ -27,12 +27,15 @@ import lombok.Getter;
 import lombok.Setter;
 
 /**
- * Governance event log — append-only (insert only, no update/delete).
+ * Per-DB statement snapshot row for a production release.
+ * One row per source statement group that has been merged into a release.
+ * uk_source_stmt prevents double-merge; uk_execution_key prevents double-execution.
+ * hash = GovSqlHashUtils.hash(sql_content) — re-verified before job creation.
  */
 @Getter
 @Setter
-@TableName(value = "dm_db_change_event")
-public class DmDbChangeEventDO {
+@TableName(value = "dm_prod_release_stmt")
+public class DmProdReleaseStmtDO {
 
     @TableId(type = IdType.AUTO)
     private Long   id;
@@ -43,21 +46,25 @@ public class DmDbChangeEventDO {
     @TableField(insertStrategy = FieldStrategy.NOT_NULL, updateStrategy = FieldStrategy.NOT_NULL)
     private Date   gmtModified;
 
-    private Long   promotionId;
-
-    private Long   revisionId;
-
-    private Long   ticketId;
-
     private Long   releaseId;
 
-    private String eventType;
+    private Long   prodDsId;
 
-    private String fromStatus;
+    private String prodDbName;
 
-    private String toStatus;
+    private int    seq;
 
-    private String operatorUid;
+    private String sqlContent;
 
-    private String eventData;
+    private String hash;
+
+    private Long   sourceTicketId;
+
+    private Long   sourceStmtId;
+
+    private String executionKey;
+
+    private String execStatus;
+
+    private String execDetail;
 }

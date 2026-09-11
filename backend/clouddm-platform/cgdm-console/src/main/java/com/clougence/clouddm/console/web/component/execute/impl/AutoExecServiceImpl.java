@@ -77,6 +77,8 @@ import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.*;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
+import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
+import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
 import com.clougence.clouddm.platform.dal.model.system.DmSysWorkerDO;
 import com.clougence.clouddm.platform.dal.model.system.SysAttachmentType;
 import com.clougence.clouddm.platform.dal.util.PageObj;
@@ -135,6 +137,12 @@ public class AutoExecServiceImpl implements AutoExecService {
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
     @Resource
     private com.clougence.clouddm.platform.dal.access.TicketDbStmtDal ticketDbStmtDal;
+    @Resource
+    private com.clougence.clouddm.platform.dal.access.ProdReleaseDal prodReleaseDal;
+    @Resource
+    private com.clougence.clouddm.platform.dal.access.DbChangeGovernDal dbChangeGovernDal;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine releaseStateMachine;
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
@@ -243,9 +251,6 @@ public class AutoExecServiceImpl implements AutoExecService {
             this.doDeleteJob(oldJob.getId());
         }
 
-        // Mark group as EXECUTING
-        this.ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), "EXECUTING", null);
-
         // Fetch DS config
         DmDsDO dsDO = this.dsDal.dsMapper().queryDsIdentityById(group.getDsId());
         DataSourceConfig dsConfig = this.configService.fetchDsConfigFromExists(dsDO.getId());
@@ -276,6 +281,10 @@ public class AutoExecServiceImpl implements AutoExecService {
         job.setScheduleTime(new Date());
 
         this.execDal.autoJobMapper().insert(job);
+
+        // Inheritance fix (design §8): EXECUTING mark moved AFTER job insert succeeds.
+        // Previously it was before insert, leaving the group in EXECUTING with no job if insert failed.
+        this.ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), "EXECUTING", null);
 
         // Split SQL and create tasks
         try (StringReader reader = new StringReader(group.getSqlContent());
@@ -315,7 +324,11 @@ public class AutoExecServiceImpl implements AutoExecService {
         } catch (RuntimeException e) {
             try {
                 TransactionTemplate cleanup = new TransactionTemplate(this.txManager);
-                cleanup.executeWithoutResult(status -> this.doDeleteJob(job.getId()));
+                cleanup.executeWithoutResult(status -> {
+                    this.doDeleteJob(job.getId());
+                    // Restore group to PENDING (inheritance fix: failure path resets)
+                    this.ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), "PENDING", e.getMessage());
+                });
             } catch (RuntimeException cleanupError) {
                 e.addSuppressed(cleanupError);
                 log.error("Cleanup partially created v2 group job failed, jobId={}", job.getId(), cleanupError);
@@ -323,6 +336,229 @@ public class AutoExecServiceImpl implements AutoExecService {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    // ==================== P3 release stmt job creation ====================
+
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                                      String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
+                                      String languageTag, String uid) {
+        // Idempotency: clear old job for this stmt
+        DmExecAutoJobDO oldJob = this.execDal.autoJobMapper().queryByDependOnReleaseStmtId(stmt.getId());
+        if (oldJob != null) {
+            this.doDeleteJob(oldJob.getId());
+        }
+
+        // Fetch DS config
+        DmDsDO dsDO = this.dsDal.dsMapper().queryDsIdentityById(stmt.getProdDsId());
+        DataSourceConfig dsConfig = this.configService.fetchDsConfigFromExists(dsDO.getId());
+
+        // Build levels: [envId, dsId, dbName]
+        List<String> levels = new ArrayList<>();
+        levels.add(dsDO.getDsEnvId().toString());
+        levels.add(dsDO.getId().toString());
+        levels.add(stmt.getProdDbName());
+        DsLevels dsLevels = this.configService.parseLevels(levels);
+
+        // Create job
+        DmExecAutoJobDO job = new DmExecAutoJobDO();
+        job.setLevels(dsLevels.dbLevels());
+        job.setDataSourceId(dsDO.getId());
+        job.setDependOnBizId(null);
+        job.setDependOnGroupId(null);
+        job.setDependOnReleaseStmtId(stmt.getId());
+        job.setBizId(jobBizId);
+        job.setUid(uid);
+        job.setExecType(AutoExecType.IMMEDIATE);
+        job.setStatus(AutoExecJobStatus.PREPARING);
+
+        RsExecAutoJobConfigObj jobConfig = new RsExecAutoJobConfigObj();
+        jobConfig.setEnableTransactional(transactional);
+        jobConfig.setErrorStrategy(errorStrategy);
+        jobConfig.setLanguageTag(languageTag);
+        job.setConfig(jobConfig);
+        job.setScheduleTime(new Date());
+
+        this.execDal.autoJobMapper().insert(job);
+
+        // EXECUTING mark after job insert succeeds (design §8 inheritance fix)
+        this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "EXECUTING", null);
+
+        // Split SQL and create tasks
+        try (StringReader reader = new StringReader(stmt.getSqlContent());
+             Stream<SplitScript> scripts = this.analysisService.analysisSplitStream(
+                 dsConfig, reader, Collections.emptyList(), 1, 0)) {
+
+            int order = 1;
+            List<DmExecAutoTaskDO> taskBatch = new ArrayList<>(AUTO_EXEC_TASK_INSERT_BATCH_SIZE);
+            Iterator<SplitScript> iterator = scripts.iterator();
+            while (iterator.hasNext()) {
+                SplitScript script = iterator.next();
+                DmExecAutoTaskDO execTask = new DmExecAutoTaskDO();
+                execTask.setExecSql(script.getScript());
+                execTask.setExecOrder(order++);
+                execTask.setStatus(AutoExecTaskStatus.WAIT_EXEC);
+                execTask.setAutoExecJobId(job.getId());
+                execTask.setBizId(DmTeamUtils.nextExecTaskBizId());
+                execTask.setQueryId(UUID.randomUUID().toString());
+                taskBatch.add(execTask);
+                if (taskBatch.size() == AUTO_EXEC_TASK_INSERT_BATCH_SIZE) {
+                    if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                        throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                    }
+                    taskBatch.clear();
+                }
+            }
+
+            if (order == 1) {
+                throw new IllegalStateException("Auto execution job must contain at least one SQL statement.");
+            }
+
+            if (!taskBatch.isEmpty()) {
+                if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                    throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                }
+            }
+        } catch (RuntimeException e) {
+            try {
+                TransactionTemplate cleanup = new TransactionTemplate(this.txManager);
+                cleanup.executeWithoutResult(status -> {
+                    this.doDeleteJob(job.getId());
+                    this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "PENDING", e.getMessage());
+                });
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+                log.error("Cleanup partially created release stmt job failed, jobId={}", job.getId(), cleanupError);
+            }
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // ==================== P3 release job completion aggregation ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void handleReleaseJobCompletion(long jobId, boolean success, String errorDetail) {
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryById(jobId);
+        if (job == null || job.getDependOnReleaseStmtId() == null) {
+            return; // not a release job
+        }
+
+        // Update stmt exec_status
+        String stmtStatus = success ? "SUCCESS" : "FAILED";
+        this.prodReleaseDal.stmtMapper().updateExecStatus(job.getDependOnReleaseStmtId(), stmtStatus, errorDetail);
+
+        DmProdReleaseStmtDO stmt = this.prodReleaseDal.stmtMapper().queryById(job.getDependOnReleaseStmtId());
+        if (stmt == null) {
+            return;
+        }
+
+        DmProdReleaseDO release = this.prodReleaseDal.releaseMapper().queryById(stmt.getReleaseId());
+        if (release == null) {
+            return;
+        }
+
+        // Append stmt event
+        appendReleaseStmtEvent(release.getId(), stmt.getId(),
+            success ? com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_SUCCESS
+                   : com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_FAILED,
+            stmtStatus, errorDetail);
+
+        // Chained execution: on success, start the next PENDING stmt for the same DB
+        if (success) {
+            DmProdReleaseStmtDO next = this.prodReleaseDal.stmtMapper().nextPendingStmt(
+                release.getId(), stmt.getProdDsId(), stmt.getProdDbName(), stmt.getSeq());
+            if (next != null) {
+                // Gate: re-hash before building job (anti-drift, design §4)
+                String recomputed = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(next.getSqlContent());
+                if (!recomputed.equals(next.getHash())) {
+                    this.prodReleaseDal.stmtMapper().updateExecStatus(next.getId(), "FAILED",
+                        "Hash drift: stored=" + next.getHash() + " recomputed=" + recomputed);
+                    appendReleaseStmtEvent(release.getId(), next.getId(),
+                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_HASH_DRIFT,
+                        "FAILED", "Hash drift detected");
+                    // Mark release as PARTIAL_FAILED
+                    aggregateReleaseCompletion(release, false);
+                    return;
+                }
+                String nextJobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
+                String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
+                this.createReleaseStmtJob(next, nextJobBizId, false,
+                    com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE, languageTag, job.getUid());
+                this.startJob(nextJobBizId, job.getUid());
+                return;
+            }
+        }
+
+        // Aggregate: check if all stmts for this release are terminal
+        List<DmProdReleaseStmtDO> allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseId(release.getId());
+        boolean allTerminal = allStmts.stream().allMatch(s ->
+            "SUCCESS".equals(s.getExecStatus()) || "FAILED".equals(s.getExecStatus()));
+
+        if (allTerminal) {
+            boolean anyFailed = allStmts.stream().anyMatch(s -> "FAILED".equals(s.getExecStatus()));
+            aggregateReleaseCompletion(release, !anyFailed);
+        }
+    }
+
+    private void aggregateReleaseCompletion(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release, boolean allSuccess) {
+        if (allSuccess) {
+            this.releaseStateMachine.transit(release.getId(),
+                java.util.Set.of(com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.EXECUTING),
+                com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.DONE);
+            appendReleaseEvent(release.getId(),
+                com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_DONE,
+                "EXECUTING", "DONE", null, null);
+        } else {
+            this.releaseStateMachine.transit(release.getId(),
+                java.util.Set.of(com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.EXECUTING),
+                com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.PARTIAL_FAILED);
+        }
+
+        // Update approval ticket status
+        if (release.getApprovalId() != null) {
+            DmApprovalDO ticket = this.approvalDal.approvalMapper().queryById(release.getApprovalId());
+            if (ticket != null) {
+                if (allSuccess) {
+                    this.approvalStateService.completeExecution(ticket.getBizId());
+                } else {
+                    this.approvalStateService.failExecution(ticket.getBizId(),
+                        "One or more release statements failed execution");
+                }
+            }
+        }
+    }
+
+    private void appendReleaseEvent(long releaseId,
+                                     com.clougence.clouddm.platform.dal.model.dbchange.GovEventType type,
+                                     String fromStatus, String toStatus, String operatorUid, String eventData) {
+        com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO event
+            = new com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO();
+        event.setReleaseId(releaseId);
+        event.setEventType(type.name());
+        event.setFromStatus(fromStatus);
+        event.setToStatus(toStatus);
+        event.setOperatorUid(operatorUid);
+        event.setEventData(eventData);
+        this.dbChangeGovernDal.eventMapper().insert(event);
+    }
+
+    private void appendReleaseStmtEvent(long releaseId, long stmtId,
+                                         com.clougence.clouddm.platform.dal.model.dbchange.GovEventType type,
+                                         String status, String detail) {
+        try {
+            java.util.Map<String, Object> data = new java.util.HashMap<>();
+            data.put("stmtId", stmtId);
+            data.put("status", status);
+            if (detail != null) data.put("detail", detail);
+            appendReleaseEvent(releaseId, type, null, status, null, com.clougence.utils.JsonUtils.toJson(data));
+        } catch (Exception e) {
+            log.warn("Failed to append release stmt event", e);
         }
     }
 
@@ -408,8 +644,28 @@ public class AutoExecServiceImpl implements AutoExecService {
         // Phase 7 touchpoint #3: gate-two guard (covers retry/reschedule paths — §4.6)
         DmExecAutoJobDO guardJob = this.execDal.autoJobMapper().queryById(jobId);
         if (guardJob != null) {
-            // V2 branch: dependOnGroupId != null → group → ticket
-            if (guardJob.getDependOnGroupId() != null) {
+            // P3 release branch: dependOnReleaseStmtId != null → release stmt → release
+            if (guardJob.getDependOnReleaseStmtId() != null) {
+                com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO guardStmt
+                    = this.prodReleaseDal.stmtMapper().queryById(guardJob.getDependOnReleaseStmtId());
+                if (guardStmt != null) {
+                    com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO guardRelease
+                        = this.prodReleaseDal.releaseMapper().queryById(guardStmt.getReleaseId());
+                    if (guardRelease != null) {
+                        // Verify release is EXECUTING and stmt is PENDING/FAILED
+                        boolean releaseOk = "EXECUTING".equals(guardRelease.getStatus());
+                        boolean stmtOk = "PENDING".equals(guardStmt.getExecStatus())
+                            || "FAILED".equals(guardStmt.getExecStatus())
+                            || "EXECUTING".equals(guardStmt.getExecStatus());
+                        if (!releaseOk || !stmtOk) {
+                            this.doDeleteJob(jobId);
+                            this.prodReleaseDal.stmtMapper().updateExecStatus(guardStmt.getId(), "PENDING",
+                                "Release not EXECUTING or stmt not in retryable state");
+                            return;
+                        }
+                    }
+                }
+            } else if (guardJob.getDependOnGroupId() != null) {
                 DmTicketDbStmtDO guardGroup = this.ticketDbStmtDal.stmtMapper().queryById(guardJob.getDependOnGroupId());
                 if (guardGroup != null) {
                     DmApprovalDO guardTicket = this.approvalDal.approvalMapper().queryById(guardGroup.getTicketId());
@@ -447,7 +703,9 @@ public class AutoExecServiceImpl implements AutoExecService {
         } catch (RuntimeException e) {
             DmExecAutoJobDO failedJob = this.execDal.autoJobMapper().queryById(jobId);
             if (failedJob != null && this.execDal.autoJobMapper().markJobFailedIfActive(jobId) == 1) {
-                if (failedJob.getDependOnGroupId() != null) {
+                if (failedJob.getDependOnReleaseStmtId() != null) {
+                    this.handleReleaseJobCompletion(jobId, false, null);
+                } else if (failedJob.getDependOnGroupId() != null) {
                     this.handleV2JobCompletion(jobId, false, null);
                 } else {
                     this.approvalStateService.failExecution(failedJob.getDependOnBizId(), null);
