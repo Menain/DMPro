@@ -151,6 +151,30 @@ export default {
   },
   methods: {
     ...mapMutations([UPDATE_SOCKET_STATUS]),
+    writeTicketPrefill(message) {
+      if (!message || typeof message !== 'string') {
+        return;
+      }
+      const hasGovLink = message.includes('govV2=1');
+      const hasPrefillLink = message.includes('prefill=1');
+      if (!hasGovLink && !hasPrefillLink) {
+        return;
+      }
+      const sql = this.tab.lastExecutedSql || this.monacoEditor?.getModel()?.getValue() || '';
+      const ts = Date.now();
+      if (hasGovLink) {
+        const pairMatch = message.match(/pairId[=:]([^&\s)]+)/);
+        const pairId = pairMatch ? pairMatch[1] : null;
+        const prefill = { pairId, sql, ts };
+        localStorage.setItem('cgdm.govTicketPrefill.v2', JSON.stringify(prefill));
+      }
+      if (hasPrefillLink) {
+        const levels = this.browseGenLevelsData(this.tab.node);
+        const dsId = levels && levels.length > 1 ? levels[1] : null;
+        const prefill = { dsId, sql, ts };
+        localStorage.setItem('cgdm.ticketPrefill', JSON.stringify(prefill));
+      }
+    },
     handleCloseModal() {
       this.currentSql = '';
       this.currentWarnLevel = '';
@@ -352,6 +376,7 @@ export default {
       this.tab.running = true;
       this.tab.result.active = 'message';
       this.tab.currentQueryType = 'query';
+      this.tab.lastExecutedSql = selectedSql;
       const wsData = {
         type: WS_TYPE.WS_REQ_QUERY,
         object: {
@@ -755,6 +780,7 @@ export default {
               currentTab.message.show = true;
               currentTab.message.text = formatError(entity.message);
               currentTab.message.type = entity.level;
+              this.writeTicketPrefill(entity.message);
             } else {
               currentTab.executeInfo.push({
                 time: queryData.time,

@@ -95,7 +95,12 @@ const routes = [
       {
         path: 'ticket',
         name: 'Ticket',
-        component: Ticket
+        component: Ticket,
+        beforeEnter: (to) => {
+          if (to.query.govV2 === '1' || to.query.prefill === '1') {
+            return { path: '/ticket_create', query: to.query };
+          }
+        }
       },
       {
         path: '/ticket/:id',

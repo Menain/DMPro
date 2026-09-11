@@ -22,6 +22,7 @@ import java.util.stream.Collectors;
 import com.clougence.clouddm.base.metadata.ds.ConfigValType;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalAnalysisStateMO;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalExecutionStateMO;
+import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.config.RootUserConfig;
 import com.clougence.clouddm.console.web.component.config.UserConfigKvDef;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsConfigKvDef;
@@ -675,6 +676,16 @@ public class RdpConvertUtils {
         vo.setFinishTime(DateFormatType.s_yyyyMMdd_HHmmss.format(ticketDO.getFinishTime()));
         vo.setUserName(ownerUserDO == null ? DmI18nUtils.getMessage(I18nRdpMsgKeys.USER_NOT_EXIST_ERROR.name()) : ownerUserDO.getUsername());
         vo.setResourceType(resourceType);
+        if (StringUtils.isNotBlank(ticketDO.getTicketInfo())) {
+            try {
+                ApprovalMO mo = JsonUtils.toObj(ticketDO.getTicketInfo(), ApprovalMO.class);
+                if (mo != null) {
+                    vo.setTicketType(mo.getTicketType());
+                }
+            } catch (Exception ignored) {
+                // ticketInfo is not a v2 governance ticket
+            }
+        }
         return vo;
     }
 

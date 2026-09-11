@@ -83,6 +83,23 @@
                 </span>
               </Tooltip>
             </div>
+            <div v-if="ticketDetail.ticketType" class="ticket-meta-item">
+              <span class="ticket-meta-item__label ticket-meta-item__label--with-icon">
+                <Icon type="ios-pricetag-outline" />
+                {{ $t('lei-xing') }}
+              </span>
+              <span class="ticket-meta-item__value">
+                <Tag v-if="ticketDetail.ticketType === 'PRE_DDL'" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
+                <Tag v-else-if="ticketDetail.ticketType === 'PROD_DML'" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+              </span>
+            </div>
+            <div v-if="ticketDetail.serviceName" class="ticket-meta-item">
+              <span class="ticket-meta-item__label ticket-meta-item__label--with-icon">
+                <Icon type="ios-people-outline" />
+                {{ $t('gov-v2-service') }}
+              </span>
+              <span class="ticket-meta-item__value">{{ ticketDetail.serviceName }}</span>
+            </div>
             <div class="ticket-meta-item">
               <span class="ticket-meta-item__label ticket-meta-item__label--with-icon">
                 <Icon type="ios-layers-outline" />
@@ -530,6 +547,50 @@
           :ds-type="ticketDetail.dataSourceType"
           @reach-bottom="loadNextTicketSqlContent"
         />
+      </section>
+      <section v-if="ticketDetail.ticketType && v2GroupList.length" class="page-section gov-v2-group-section">
+        <div class="page-section__title">{{ $t('gov-v2-group-list') }}</div>
+        <div class="gov-v2-group-list">
+          <div v-for="group in v2GroupList" :key="group.groupId" class="gov-v2-group-row">
+            <div class="gov-v2-group-row__header">
+              <div class="gov-v2-group-row__db">
+                <Icon type="ios-server-outline" />
+                <span>{{ group.dbName }}</span>
+              </div>
+              <span :class="['gov-v2-group-row__status', `is-${group.execStatus}`]">
+                {{ group.execStatus }}
+              </span>
+            </div>
+            <div class="gov-v2-group-row__body">
+              <div class="gov-v2-group-row__sql">
+                <read-only-editor :text="group.sqlContent" :ds-type="ticketDetail.dataSourceType" :max-height="200" />
+              </div>
+              <div v-if="group.execDetail" class="gov-v2-group-row__detail">
+                <span>{{ $t('gov-v2-exec-detail') }}:</span>
+                <span>{{ group.execDetail }}</span>
+              </div>
+              <div v-if="parsePrecheckResult(group.precheckResult)" class="gov-v2-group-row__precheck">
+                <span class="gov-v2-group-row__precheck-status">
+                  {{ $t('gov-v2-precheck-status') }}: {{ parsePrecheckResult(group.precheckResult).checkStatus }}
+                </span>
+                <span class="gov-v2-group-row__precheck-type">
+                  {{ parsePrecheckResult(group.precheckResult).changeType }}
+                </span>
+              </div>
+              <div class="gov-v2-group-row__actions">
+                <Button
+                  v-if="group.execStatus === 'FAILED' && ticketDetail.canExecute"
+                  type="primary"
+                  size="small"
+                  :loading="v2RetryLoading"
+                  @click="handleRetryGroup(group.groupId)"
+                >
+                  {{ $t('gov-v2-retry') }}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
       <section v-if="isGovTicket && eventTimelineData.length" class="page-section gov-event-timeline-section">
         <div class="page-section__title">{{ $t('gov-event-timeline') }}</div>
@@ -1057,7 +1118,10 @@ export default {
         ticketId: null,
         failReason: '',
         reason: ''
-      }
+      },
+      v2GroupList: [],
+      v2GroupLoading: false,
+      v2RetryLoading: false
     };
   },
   async mounted() {
@@ -2014,6 +2078,54 @@ export default {
         if (this.ticketType === 'DM_CHANGE') {
           await this.loadGovData(type);
         }
+        if (this.ticketDetail.ticketType) {
+          await this.loadV2GroupList();
+        }
+      }
+    },
+    async loadV2GroupList() {
+      if (!this.ticketDetail.ticketType) {
+        return;
+      }
+      this.v2GroupLoading = true;
+      try {
+        const res = await this.$services.dbChangeV2GroupList({
+          data: { ticketId: this.ticketId },
+          modal: false
+        });
+        if (res.success) {
+          this.v2GroupList = res.data || [];
+        }
+      } finally {
+        this.v2GroupLoading = false;
+      }
+    },
+    async handleRetryGroup(groupId) {
+      if (this.v2RetryLoading) {
+        return;
+      }
+      this.v2RetryLoading = true;
+      try {
+        const res = await this.$services.dbChangeV2RetryGroup({
+          data: { groupId }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-v2-retry-success'));
+          await this.getTicketDetail();
+          await this.loadV2GroupList();
+        }
+      } finally {
+        this.v2RetryLoading = false;
+      }
+    },
+    parsePrecheckResult(json) {
+      if (!json) {
+        return null;
+      }
+      try {
+        return JSON.parse(json);
+      } catch (e) {
+        return null;
       }
     },
     async cancelTicket() {
@@ -4237,6 +4349,93 @@ export default {
   .gov-stmt-single-version {
     font-size: 13px;
     color: #41454d;
+  }
+}
+
+.gov-v2-group-section {
+  .gov-v2-group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .gov-v2-group-row {
+    border: 1px solid #eaeaea;
+    border-radius: 6px;
+    overflow: hidden;
+
+    &__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--bg-secondary, #f8fafc);
+
+      .gov-v2-group-row__db {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        color: #181d26;
+      }
+
+      .gov-v2-group-row__status {
+        font-size: 13px;
+        font-weight: 500;
+
+        &.is-SUCCESS {
+          color: #18b566;
+        }
+        &.is-FAILED {
+          color: #ed4014;
+        }
+        &.is-PENDING {
+          color: #707070;
+        }
+        &.is-EXECUTING {
+          color: #2d8cf0;
+        }
+      }
+    }
+
+    &__body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    &__detail {
+      font-size: 13px;
+      color: #41454d;
+
+      span:first-child {
+        font-weight: 500;
+        color: #181d26;
+        margin-right: 8px;
+      }
+    }
+
+    &__precheck {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+
+      .gov-v2-group-row__precheck-status {
+        font-weight: 500;
+        color: #181d26;
+      }
+
+      .gov-v2-group-row__precheck-type {
+        color: #41454d;
+      }
+    }
+
+    &__actions {
+      display: flex;
+      gap: 8px;
+    }
   }
 }
 

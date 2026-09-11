@@ -73,6 +73,7 @@ import com.clougence.clouddm.platform.dal.access.*;
 import com.clougence.clouddm.platform.dal.access.entry.DsCacheEntry;
 import com.clougence.clouddm.platform.dal.model.approval.*;
 import com.clougence.clouddm.platform.dal.model.auth.*;
+import com.clougence.clouddm.platform.dal.model.dbpair.DmDbServiceDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecType;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
@@ -128,6 +129,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private AuthDal                     authDal;
     @Resource
     private ApprovalDal                 approvalDal;
+    @Resource
+    private DbPairDal                  dbPairDal;
     @Resource
     private ObjectCacheDao              objectCacheDao;
     @Resource
@@ -295,10 +298,41 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             vos.add(t);
         }
 
+        fillServiceNames(records, vos);
+
         vos.sort((o1, o2) -> -o1.getGmtCreate().compareTo(o2.getGmtCreate()));
 
         results.setRecords(vos);
         return results;
+    }
+
+    private void fillServiceNames(List<DmApprovalDO> records, List<RdpTicketBasicVO> vos) {
+        Map<Long, String> serviceNameCache = new HashMap<>();
+        for (int i = 0; i < records.size(); i++) {
+            DmApprovalDO tdo = records.get(i);
+            RdpTicketBasicVO vo = vos.get(i);
+            if (vo.getTicketType() == null || vo.getTicketType().isEmpty()) {
+                continue;
+            }
+            try {
+                ApprovalMO mo = JsonUtils.toObj(tdo.getTicketInfo(), ApprovalMO.class);
+                if (mo == null || mo.getServiceId() == null) {
+                    continue;
+                }
+                Long serviceId = mo.getServiceId();
+                String serviceName;
+                if (!serviceNameCache.containsKey(serviceId)) {
+                    DmDbServiceDO svc = dbPairDal.serviceMapper().selectById(serviceId);
+                    serviceName = svc != null ? svc.getServiceName() : null;
+                    serviceNameCache.put(serviceId, serviceName);
+                } else {
+                    serviceName = serviceNameCache.get(serviceId);
+                }
+                vo.setServiceName(serviceName);
+            } catch (Exception ignored) {
+                // ticketInfo is not a v2 governance ticket or serviceId missing
+            }
+        }
     }
 
     @Override
@@ -358,6 +392,24 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         vo.setDsEnvName(approvalDO.getEnvName());
         ApprovalStatus ticketStatus = approvalDO.getTicketStatus();
         vo.setTicketStatus(ticketStatus);
+
+        // v2 governance ticket: parse ticketType and serviceName from ticketInfo
+        if (StringUtils.isNotBlank(approvalDO.getTicketInfo())) {
+            try {
+                ApprovalMO mo = JsonUtils.toObj(approvalDO.getTicketInfo(), ApprovalMO.class);
+                if (mo != null) {
+                    vo.setTicketType(mo.getTicketType());
+                    if (mo.getServiceId() != null) {
+                        DmDbServiceDO svc = dbPairDal.serviceMapper().selectById(mo.getServiceId());
+                        if (svc != null) {
+                            vo.setServiceName(svc.getServiceName());
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // ticketInfo is not a v2 governance ticket
+            }
+        }
 
         List<DmApprovalProcessDO> processDOS = this.approvalDal.processMapper().listByTicketId(approvalDO.getId());
         List<RdpTicketProcessVO> processVOS = processDOS.stream().map(RdpConvertUtils::convertToTicketProcessVO).collect(Collectors.toList());

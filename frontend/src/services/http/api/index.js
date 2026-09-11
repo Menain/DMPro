@@ -27,6 +27,7 @@ import { permGroupApi } from '@/services/http/api/permGroup';
 import { logicalDbApi } from '@/services/http/api/logicalDb';
 import { dbChangeApi } from '@/services/http/api/dbChange';
 import { dbPairApi } from '@/services/http/api/dbPair';
+import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
 
 export const api = {
   ...authApi,
@@ -57,5 +58,6 @@ export const api = {
   ...permGroupApi,
   ...logicalDbApi,
   ...dbChangeApi,
-  ...dbPairApi
+  ...dbPairApi,
+  ...dbChangeV2Api
 };

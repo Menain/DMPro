@@ -61,4 +61,8 @@ public class RdpTicketBaseInfoVO {
     private String                    mobileUrl;
     private String                    ticketMessage;
 
+    // v2 governance ticket extension (from ticketInfo JSON)
+    private String                    ticketType;
+    private String                    serviceName;
+
 }

@@ -87,7 +87,7 @@
         </div>
       </div>
     </div>
-    <GovTicketCreate v-else />
+    <GovTicketV2Create v-else />
     <CCModal
       v-model="showValidationResultModal"
       :width="800"
@@ -124,7 +124,7 @@
 </template>
 <script lang="js">
 import DsSelect from '@/views/ticket/components/DsSelect';
-import GovTicketCreate from '@/views/ticket/components/GovTicketCreate';
+import GovTicketV2Create from '@/views/ticket/components/GovTicketV2Create';
 import TicketEditor from '@/components/editor/TicketEditor';
 import SqlFileUploadModal from '@/components/function/SqlFileUploadModal.vue';
 import { RULE_WARN_LEVEL } from '@/utils';
@@ -135,7 +135,7 @@ export default {
   components: {
     TicketEditor,
     DsSelect,
-    GovTicketCreate,
+    GovTicketV2Create,
     SqlFileUploadModal
   },
   computed: {
@@ -251,6 +251,10 @@ export default {
   mounted() {
     this.listAllDs();
     this.ticketData.ticketTitle = `${this.$t('gong-dan')}${new Date().getTime()}`;
+    if (this.$route.query.govV2 === '1') {
+      this.isGovMode = true;
+    }
+    this.applyStandardPrefill();
 
     this.$nextTick(() => {
       this.initializeHeights();
@@ -262,6 +266,40 @@ export default {
     window.removeEventListener('resize', this.handleWindowResize);
   },
   methods: {
+    applyStandardPrefill() {
+      if (this.$route.query.prefill !== '1') {
+        return;
+      }
+      const PREFILL_KEY = 'cgdm.ticketPrefill';
+      const PREFILL_TTL_MS = 10 * 60 * 1000;
+      const raw = localStorage.getItem(PREFILL_KEY);
+      if (!raw) {
+        return;
+      }
+      try {
+        const prefill = JSON.parse(raw);
+        if (!prefill.ts || Date.now() - prefill.ts >= PREFILL_TTL_MS) {
+          localStorage.removeItem(PREFILL_KEY);
+          return;
+        }
+        if (prefill.dsId) {
+          this.ticketData.instanceId = prefill.dsId;
+          this.$nextTick(() => {
+            if (typeof this.handleChangeInstance === 'function') {
+              this.handleChangeInstance();
+            }
+          });
+        }
+        if (prefill.sql) {
+          this.$nextTick(() => {
+            this.$refs.rawSqlEditor?.setSql(prefill.sql);
+          });
+        }
+      } catch (e) {
+        // invalid prefill data
+      }
+      localStorage.removeItem(PREFILL_KEY);
+    },
     openSqlUploadModal() {
       this.showSqlUploadModal = true;
     },

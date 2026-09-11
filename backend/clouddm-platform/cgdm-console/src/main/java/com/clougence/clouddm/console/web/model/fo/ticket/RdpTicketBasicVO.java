@@ -46,4 +46,9 @@ public class RdpTicketBasicVO {
     private ApprovalStatus ticketStatus;
     private String         finishTime;
 
+    // ----- v2 governance ticket extension (from ticketInfo JSON) ------
+
+    private String         ticketType;
+    private String         serviceName;
+
 }

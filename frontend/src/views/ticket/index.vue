@@ -39,6 +39,13 @@
           </div>
           <div class="table-container">
             <Table size="small" :columns="ticketColumns" :data="ticketData" :scroll="ticketTableScroll" border :loading="loading">
+              <template #approBiz="{ row }">
+                <div>{{ APPROV_BIZ_MAP[row.approBiz] }}</div>
+                <Tag v-if="row.ticketType === 'PRE_DDL'" size="small" color="primary" style="margin-top: 2px">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
+                <Tag v-else-if="row.ticketType === 'PROD_DML'" size="small" color="warning" style="margin-top: 2px">
+                  {{ $t('gov-v2-type-prod-dml') }}
+                </Tag>
+              </template>
               <template #ticketStatus="{ row }">
                 <div :style="`display: flex;color:${TICKET_STATUS_COLOR[row.ticketStatus]}`">
                   <div style="margin-right: 3px">{{ TICKET_STATUS[row.ticketStatus] }}</div>
@@ -181,9 +188,8 @@ export default {
         },
         {
           title: this.$t('lei-xing'),
-          key: 'approBiz',
-          render: (h, params) => h('div', APPROV_BIZ_MAP[params.row?.approBiz]),
-          width: 85,
+          slot: 'approBiz',
+          width: 120,
           align: 'center'
         },
         {
@@ -199,7 +205,12 @@ export default {
         {
           title: this.$t('zi-yuan'),
           slot: 'targetInfo',
-          width: 340
+          width: 280
+        },
+        {
+          title: this.$t('gov-v2-service'),
+          key: 'serviceName',
+          width: 120
         },
         {
           title: this.$t('shen-qing-ren'),
@@ -228,7 +239,7 @@ export default {
   },
   computed: {
     ticketTableScroll() {
-      return { x: 1587 };
+      return { x: 1682 };
     },
     ticketQueryPlaceholder() {
       switch (this.searchKey.queryType) {
