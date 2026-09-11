@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.console.web.service.governance.impl;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -217,13 +218,26 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
         for (DmDbChangeEventDO event : events) {
             if (GovEventType.SUBMIT.name().equals(event.getEventType())) {
                 Map<String, Object> data = JsonUtils.toObj(event.getEventData(), HashMap.class);
-                Object ct = data.get("changeType");
+                Object ct = data == null ? null : data.get("changeType");
                 if (ct != null) {
                     return ChangeType.valueOf(String.valueOf(ct));
                 }
             }
         }
-        throw new ErrorMessageException("No SUBMIT event found for ticket " + ticketId);
+        // SUBMIT events written before the changeType contract: derive it from per-group precheck results.
+        List<ChangeType> groupTypes = new ArrayList<>();
+        for (DmTicketDbStmtDO stmt : this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId)) {
+            Map<String, Object> precheck = JsonUtils.toObj(stmt.getPrecheckResult(), HashMap.class);
+            Object ct = precheck == null ? null : precheck.get("changeType");
+            if (ct != null) {
+                groupTypes.add(ChangeType.valueOf(String.valueOf(ct)));
+            }
+        }
+        if (groupTypes.isEmpty()) {
+            throw new ErrorMessageException("No changeType available for ticket " + ticketId
+                                            + ": SUBMIT event lacks it and no statement group precheck carries it");
+        }
+        return ChangeType.merge(groupTypes);
     }
 
     private void appendEvent(long ticketId, GovEventType eventType, String fromStatus, String toStatus, ChangeType changeType) {

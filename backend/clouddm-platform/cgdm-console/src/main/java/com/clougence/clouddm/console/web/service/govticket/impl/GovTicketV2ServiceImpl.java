@@ -233,7 +233,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
 
         // Append submit event
-        appendSubmitEvent(ticket.getId(), uid, ticketType, prechecks.size());
+        ChangeType ticketChangeType = ChangeType.merge(prechecks.stream()
+            .map(pc -> ChangeType.valueOf(pc.result.getChangeType()))
+            .collect(Collectors.toList()));
+        appendSubmitEvent(ticket.getId(), uid, ticketType, prechecks.size(), ticketChangeType);
 
         GovTicketV2SubmitVO result = new GovTicketV2SubmitVO();
         result.setTicketId(ticket.getId());
@@ -578,7 +581,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         return pair.getProdDbName();
     }
 
-    private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount) {
+    private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount, ChangeType changeType) {
         DmDbChangeEventDO event = new DmDbChangeEventDO();
         event.setTicketId(ticketId);
         event.setEventType(GovEventType.SUBMIT.name());
@@ -589,6 +592,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         Map<String, Object> data = new HashMap<>();
         data.put("ticketType", ticketType);
         data.put("groupCount", groupCount);
+        data.put("changeType", changeType.name());
         event.setEventData(JsonUtils.toJson(data));
 
         dbChangeEventDal.eventMapper().insert(event);

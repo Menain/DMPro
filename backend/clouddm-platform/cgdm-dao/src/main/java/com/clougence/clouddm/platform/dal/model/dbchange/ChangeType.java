@@ -22,5 +22,34 @@ package com.clougence.clouddm.platform.dal.model.dbchange;
 public enum ChangeType {
     DDL,
     DML,
-    MIXED
+    MIXED;
+
+    /**
+     * Merges group-level classifications into a ticket-level one:
+     * any MIXED, or DDL and DML coexisting, yields MIXED; otherwise the single present type.
+     */
+    public static ChangeType merge(java.util.Collection<ChangeType> types) {
+        boolean hasDdl = false;
+        boolean hasDml = false;
+        for (ChangeType type : types) {
+            if (type == MIXED) {
+                return MIXED;
+            }
+            if (type == DDL) {
+                hasDdl = true;
+            } else if (type == DML) {
+                hasDml = true;
+            }
+        }
+        if (hasDdl && hasDml) {
+            return MIXED;
+        }
+        if (hasDdl) {
+            return DDL;
+        }
+        if (hasDml) {
+            return DML;
+        }
+        throw new IllegalArgumentException("No change types to merge");
+    }
 }

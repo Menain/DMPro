@@ -51,6 +51,7 @@ import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.utils.JsonUtils;
 
 public class GovAutoAdvanceServiceTest {
@@ -280,6 +281,30 @@ public class GovAutoAdvanceServiceTest {
         }
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;
+    }
+
+    @Test
+    public void advance_submitEventWithoutChangeType_fallsBackToGroupPrechecks() {
+        // Legacy SUBMIT events carry no changeType: derive MIXED from DDL+DML group prechecks (non-transactional)
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
+        ticket.setRawSql("CREATE TABLE foo; INSERT INTO foo VALUES (1)");
+        when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
+        DmDbChangeEventDO legacyEvent = new DmDbChangeEventDO();
+        legacyEvent.setEventType(GovEventType.SUBMIT.name());
+        legacyEvent.setEventData(JsonUtils.toJson(Map.of("ticketType", "PRE_DDL", "groupCount", 2)));
+        when(eventMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(legacyEvent));
+        DmTicketDbStmtDO ddlGroup = new DmTicketDbStmtDO();
+        ddlGroup.setPrecheckResult(JsonUtils.toJson(Map.of("checkStatus", "PASS", "changeType", "DDL")));
+        DmTicketDbStmtDO dmlGroup = new DmTicketDbStmtDO();
+        dmlGroup.setPrecheckResult(JsonUtils.toJson(Map.of("checkStatus", "PASS", "changeType", "DML")));
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(ddlGroup, dmlGroup));
+
+        service.advancePreTickets();
+
+        ArgumentCaptor<DmAutoExecConfigFO> configCaptor = ArgumentCaptor.forClass(DmAutoExecConfigFO.class);
+        verify(approvalControlService).confirmTicketBySystemForV2(eq(TICKET_ID), configCaptor.capture());
+        assertFalse("DDL+DML groups merge to MIXED → autocommit", configCaptor.getValue().isEnableTransactional());
     }
 
     private void setupSubmitEvent(ChangeType changeType) {
