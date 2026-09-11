@@ -19,6 +19,8 @@ import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.List;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -31,10 +33,14 @@ import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.access.ChangeFlowDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
+import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
+import com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoJobMapper;
+import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 
 /**
  * Phase 9 R2: approval sync idempotency pinning tests (design D6 — zero production code).
@@ -63,8 +69,12 @@ public class ApprovalSyncIdempotencyTest {
     private ExecutionDal             execDal;
     private AuthDal                  authDal;
     private ChangeCascadeService     changeCascadeService;
+    private DmExecAutoJobMapper      autoJobMapper;
+    private TicketDbStmtDal          ticketDbStmtDal;
+    private DmTicketDbStmtMapper     ticketStmtMapper;
 
     private static final long TICKET_ID = 100L;
+    private static final String BIZ_ID  = "biz-100";
 
     @Before
     public void setUp() {
@@ -76,6 +86,9 @@ public class ApprovalSyncIdempotencyTest {
         execDal = mock(ExecutionDal.class);
         authDal = mock(AuthDal.class);
         changeCascadeService = mock(ChangeCascadeService.class);
+        autoJobMapper = mock(DmExecAutoJobMapper.class);
+        ticketDbStmtDal = mock(TicketDbStmtDal.class);
+        ticketStmtMapper = mock(DmTicketDbStmtMapper.class);
 
         ReflectionTestUtils.setField(handler, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(handler, "approvalDal", approvalDal);
@@ -83,8 +96,13 @@ public class ApprovalSyncIdempotencyTest {
         ReflectionTestUtils.setField(handler, "execDal", execDal);
         ReflectionTestUtils.setField(handler, "authDal", authDal);
         ReflectionTestUtils.setField(handler, "changeCascadeService", changeCascadeService);
+        ReflectionTestUtils.setField(handler, "ticketDbStmtDal", ticketDbStmtDal);
 
         when(approvalDal.approvalMapper()).thenReturn(approvalMapper);
+        when(ticketDbStmtDal.stmtMapper()).thenReturn(ticketStmtMapper);
+        // Default: the sweep's selectByIdForUpdate returns a non-terminal ticket so the
+        // recovery guard proceeds; tests that need a terminal ticket override this stub.
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(v2Ticket());
     }
 
     // ======= 1. Repeated callback idempotency =======
@@ -201,5 +219,96 @@ public class ApprovalSyncIdempotencyTest {
             assertFalse("queryByApproIdentity must not take ApprovalBiz parameter",
                 type == ApprovalBiz.class);
         }
+    }
+
+    // ======= 5. WAIT_EXEC sweep recovers a lost v2 completion =======
+
+    @Test
+    public void executeTicket_v2GroupsAllSuccess_completesTicket() {
+        // Lost-aggregation recovery: no legacy job, every group SUCCESS → complete on the sweep
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(v2Ticket());
+        when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        when(autoJobMapper.queryByDependOnBizId(BIZ_ID)).thenReturn(null);
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID))
+            .thenReturn(List.of(v2Group(1L, "SUCCESS"), v2Group(2L, "SUCCESS")));
+
+        handler.executeTicket(TICKET_ID, ApprovalBiz.DM_CHANGE, mock(ImSenderService.class));
+
+        verify(approvalStateService).completeExecution(BIZ_ID);
+        verify(approvalStateService, never()).failExecution(anyString(), any());
+    }
+
+    @Test
+    public void executeTicket_v2GroupFailed_failsTicket() {
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(v2Ticket());
+        when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        when(autoJobMapper.queryByDependOnBizId(BIZ_ID)).thenReturn(null);
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID))
+            .thenReturn(List.of(v2Group(1L, "SUCCESS"), v2Group(2L, "FAILED")));
+
+        handler.executeTicket(TICKET_ID, ApprovalBiz.DM_CHANGE, mock(ImSenderService.class));
+
+        verify(approvalStateService).failExecution(eq(BIZ_ID), anyString());
+        verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    @Test
+    public void executeTicket_v2GroupsNotTerminal_waitsForCallbacks() {
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(v2Ticket());
+        when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        when(autoJobMapper.queryByDependOnBizId(BIZ_ID)).thenReturn(null);
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID))
+            .thenReturn(List.of(v2Group(1L, "SUCCESS"), v2Group(2L, "EXECUTING")));
+
+        handler.executeTicket(TICKET_ID, ApprovalBiz.DM_CHANGE, mock(ImSenderService.class));
+
+        verifyNoInteractions(approvalStateService);
+    }
+
+    @Test
+    public void executeTicket_legacyTicketWithoutGroups_noRecovery() {
+        // Legacy WAIT_EXEC ticket without a job row and without v2 groups: sweep stays a no-op
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(v2Ticket());
+        when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        when(autoJobMapper.queryByDependOnBizId(BIZ_ID)).thenReturn(null);
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID)).thenReturn(Collections.emptyList());
+
+        handler.executeTicket(TICKET_ID, ApprovalBiz.DM_CHANGE, mock(ImSenderService.class));
+
+        verifyNoInteractions(approvalStateService);
+    }
+
+    @Test
+    public void executeTicket_v2AlreadyCompleted_noDoubleCompletion() {
+        // Concurrent callback already drove the ticket to FINISHED while the sweep was in
+        // flight: the selectByIdForUpdate lock sees the committed terminal status and skips,
+        // so completeExecution/failExecution are never called a second time.
+        DmApprovalDO finished = v2Ticket();
+        finished.setTicketStatus(ApprovalStatus.FINISHED);
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(v2Ticket());
+        when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        when(autoJobMapper.queryByDependOnBizId(BIZ_ID)).thenReturn(null);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(finished);
+        // Groups read is never reached because the terminal-status guard returns first
+
+        handler.executeTicket(TICKET_ID, ApprovalBiz.DM_CHANGE, mock(ImSenderService.class));
+
+        verifyNoInteractions(approvalStateService);
+        verify(ticketStmtMapper, never()).queryByTicketId(anyLong());
+    }
+
+    private DmApprovalDO v2Ticket() {
+        DmApprovalDO ticket = new DmApprovalDO();
+        ticket.setId(TICKET_ID);
+        ticket.setBizId(BIZ_ID);
+        return ticket;
+    }
+
+    private DmTicketDbStmtDO v2Group(long id, String execStatus) {
+        DmTicketDbStmtDO group = new DmTicketDbStmtDO();
+        group.setId(id);
+        group.setTicketId(TICKET_ID);
+        group.setExecStatus(execStatus);
+        return group;
     }
 }

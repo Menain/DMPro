@@ -572,19 +572,23 @@ public class AutoExecServiceImpl implements AutoExecService {
             return; // not a v2 job
         }
 
-        // Update group exec_status
-        String groupStatus = success ? "SUCCESS" : "FAILED";
-        this.ticketDbStmtDal.stmtMapper().updateExecStatus(job.getDependOnGroupId(), groupStatus, errorDetail);
-
-        // Find the ticket through the group
+        // Lock the ticket row BEFORE writing group status: parallel group jobs finish within
+        // the same second, and under RR isolation two concurrent transactions would each see
+        // the other group still non-terminal in their own snapshot — both then skip the
+        // completion below and the ticket sticks at WAIT_EXEC forever. The row lock serializes
+        // them, so the later transaction always reads the earlier one's committed group status.
         DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(job.getDependOnGroupId());
         if (group == null) {
             return;
         }
-        DmApprovalDO ticket = this.approvalDal.approvalMapper().queryById(group.getTicketId());
+        DmApprovalDO ticket = this.approvalDal.approvalMapper().selectByIdForUpdate(group.getTicketId());
         if (ticket == null) {
             return;
         }
+
+        // Update group exec_status
+        String groupStatus = success ? "SUCCESS" : "FAILED";
+        this.ticketDbStmtDal.stmtMapper().updateExecStatus(job.getDependOnGroupId(), groupStatus, errorDetail);
 
         // Check all groups for this ticket
         List<DmTicketDbStmtDO> allGroups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(group.getTicketId());

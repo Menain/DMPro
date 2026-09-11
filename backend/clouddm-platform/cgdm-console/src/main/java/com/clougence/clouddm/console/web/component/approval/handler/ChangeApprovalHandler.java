@@ -38,6 +38,7 @@ import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.access.ChangeFlowDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
+import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.model.approval.*;
 import com.clougence.clouddm.platform.dal.model.auth.AccountType;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
@@ -45,6 +46,7 @@ import com.clougence.clouddm.platform.dal.model.auth.RsAuthPersonObj;
 import com.clougence.clouddm.platform.dal.model.cicd.*;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.plugin.PluginManager;
 import com.clougence.clouddm.sdk.approval.ApprovalActivityInfo;
 import com.clougence.clouddm.sdk.approval.ApprovalCreateInstanceResult;
@@ -75,6 +77,8 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     @Resource
     private ApprovalStateService approvalStateService;
     @Resource
+    private TicketDbStmtDal      ticketDbStmtDal;
+    @Resource
     private ChangeCascadeService changeCascadeService;
     @Resource
     private GovTicketV2FormAssembler govTicketV2FormAssembler;
@@ -90,10 +94,45 @@ public class ChangeApprovalHandler implements ApprovalHandler {
         DmApprovalDO ticketDO = this.approvalDal.approvalMapper().queryById(approvalId);
         DmExecAutoJobDO jobDO = this.execDal.autoJobMapper().queryByDependOnBizId(ticketDO.getBizId());
         if (jobDO == null) {
+            this.recoverV2CompletionIfDue(ticketDO);
             return;
         }
 
         this.updateExecutionStatus(approvalId, jobDO.getStatus(), sender);
+    }
+
+    /**
+     * v2 group jobs carry depend_on_group_id, so the legacy lookup in executeTicket never sees
+     * them: when every group of such a ticket already reached a terminal state but the
+     * completion aggregation was lost (concurrent callbacks racing on RR snapshots), finish or
+     * fail the ticket here on the WAIT_EXEC scheduler sweep. Aggregation semantics mirror
+     * AutoExecServiceImpl.handleV2JobCompletion.
+     * <p>
+     * Takes the same ticket row lock ({@code selectByIdForUpdate}) as the callback path so a
+     * concurrent {@code handleV2JobCompletion} that already drove the ticket to a terminal
+     * status is visible here — without it the sweep and callback could both invoke
+     * completeExecution/failExecution and duplicate the terminal transition.
+     */
+    private void recoverV2CompletionIfDue(DmApprovalDO ticketDO) {
+        DmApprovalDO locked = this.approvalDal.approvalMapper().selectByIdForUpdate(ticketDO.getId());
+        if (locked == null || ApprovalStatus.isEndStatus(locked.getTicketStatus())) {
+            return; // already completed/failed by the concurrent callback (or ticket gone)
+        }
+        List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(locked.getId());
+        if (groups.isEmpty()) {
+            return; // legacy ticket without groups: nothing to recover
+        }
+        boolean allTerminal = groups.stream().allMatch(g ->
+            "SUCCESS".equals(g.getExecStatus()) || "FAILED".equals(g.getExecStatus()));
+        if (!allTerminal) {
+            return;
+        }
+        if (groups.stream().anyMatch(g -> "FAILED".equals(g.getExecStatus()))) {
+            this.approvalStateService.failExecution(locked.getBizId(),
+                "One or more database groups failed execution");
+        } else {
+            this.approvalStateService.completeExecution(locked.getBizId());
+        }
     }
 
     @Override
