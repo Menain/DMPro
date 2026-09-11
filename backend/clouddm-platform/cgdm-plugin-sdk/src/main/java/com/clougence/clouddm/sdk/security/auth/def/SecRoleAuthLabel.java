@@ -219,4 +219,7 @@ public interface SecRoleAuthLabel {
 
     @AuthLabel(order = 4, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_RDP_DB_CHANGE_PROD_DML_DIRECT, tag = SecSysRole.DBA_ROLE_NAME)
     String RDP_DB_CHANGE_PROD_DML_DIRECT    = "RDP_DB_CHANGE_PROD_DML_DIRECT";
+
+    @AuthLabel(order = 5, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_DB_PAIR_MANAGE, tag = SecSysRole.DBA_ROLE_NAME)
+    String GOV_DB_PAIR_MANAGE              = "GOV_DB_PAIR_MANAGE";
 }

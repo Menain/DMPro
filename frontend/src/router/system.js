@@ -181,6 +181,12 @@ export default [
     meta: { requiredAuth: 'RDP_LOGICAL_DB_MANAGE' }
   },
   {
+    path: '/manager/dbPair',
+    name: 'Management_DbPair',
+    component: () => import(/* webpackChunkName: "system-db-pair" */ '@/views/system/dbPair/index'),
+    meta: { requiredAuth: 'GOV_DB_PAIR_MANAGE' }
+  },
+  {
     path: 'management/logs',
     redirect: '/manager/logs'
   },
