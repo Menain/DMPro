@@ -293,6 +293,19 @@ export const PREFERENCE_TABS = [
     labelKey: 'preference-tab-approval',
     sections: [
       {
+        name: 'ticket-entry',
+        titleKey: 'preference-section-ticket-entry',
+        fields: [
+          {
+            key: 'hideStandardTicketEntry',
+            labelKey: 'preference-hide-standard-ticket-entry',
+            helpKey: 'preference-hide-standard-ticket-entry-help',
+            widget: 'switch',
+            defaultValue: false
+          }
+        ]
+      },
+      {
         name: 'approval-sql-file',
         titleKey: 'preference-section-approval-sql-file',
         fields: [

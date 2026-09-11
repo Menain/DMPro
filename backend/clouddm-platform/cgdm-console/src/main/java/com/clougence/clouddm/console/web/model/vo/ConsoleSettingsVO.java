@@ -40,5 +40,6 @@ public class ConsoleSettingsVO {
     private Integer                       sqlFileMaxSize;
     private Integer                       languageMaxRequestKiloByte;
     private Integer                       approvalExplainMaxSize;
+    private Boolean                       hideStandardTicketEntry;
 
 }

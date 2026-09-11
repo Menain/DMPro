@@ -10,6 +10,8 @@
 
 灰度安全底线：**未在 `dm_db_pair` 中登记的库全程行为零变化**——普通工单不受治理约束（代码保证：v2 提单按 `ticketType` 区分，未登记库不产生 PRE_DDL/PROD_DML 工单，guard / dispatch 对非治理工单 short-circuit PASS，零治理表查询）。
 
+系统偏好 `hideStandardTicketEntry`（默认关闭）可隐藏普通工单入口（创建页模式单选、提交工单弹窗权限单选项、控制台拦截的普通工单跳转），仅保留治理单一入口；关闭时行为零变化。
+
 灰度三步走：
 1. **纳管**：为一个非核心库在「库映射」页登记一对预发/生产库与归属服务。
 2. **试跑 PRE_DDL**：对登记库发起 PRE_DDL 工单，走自动审批 → 预检 → 自动执行 → 台账 → 转产发布单。
@@ -63,10 +65,12 @@ ORDER BY installed_rank;
 
 治理 v2 工单按 `ticketType` 分两类，均在工单创建页以治理模式提交：
 
-- **PRE_DDL**：预发库 DDL 变更。提交后走 SYSTEM 自动审批 → 自动确认 → 按组（`dm_ticket_db_stmt`）创建执行任务 → 预检 → 执行。
-- **PROD_DML**：生产库 DML 订正。需人工审批通过后执行。
+- **PRE_DDL**：预发库变更，允许 DDL 与数据订正 DML 混合（整组语句随发布单重放生产）。提交后走 SYSTEM 自动审批 → 自动确认 → 按组（`dm_ticket_db_stmt`）创建执行任务 → 预检 → 执行。
+- **PROD_DML**：生产库 DML 订正，必须为纯 DML。需人工审批通过后执行。
 
-**预检闸门**：v2 提单时按 `analysisRulesStream` 直接调用预检（控制台拦截复用 `GovStmtSplitServiceImpl.isDdlType/isDmlType` 做成分纯度校验）。PRE_DDL 必须为纯 DDL，PROD_DML 必须为纯 DML；不满足在提交时即拒。
+**预检闸门**：v2 提单时按 `analysisRulesStream` 直接调用预检（控制台拦截复用 `GovStmtSplitServiceImpl.isDdlType/isDmlType` 做成分纯度校验）。PROD_DML 含 DDL 在提交时即拒；PRE 单不限语句类型，但混合内容须保证可在生产原样重放。
+
+**混合重放语义责任**：发布单快照 hash 只防篡改、不防数据状态差异——PRE 内 DML 在预发与生产命中的行可能不同，语义一致性由提交人保证。PRE 组任务与发布单重放均为非事务执行（`transactional=false`），部分失败经 `PARTIAL_FAILED` 状态按组重试（`retryGroup`）。
 
 **SYSTEM 自动推进**：`GovPipelineScheduler` 单 duty（`advancePreTickets`）按 `ticketType==PRE_DDL ∧ status==WAIT_APPROVAL` 过滤，执行 SYSTEM 自动审批 + `confirmTicketBySystemForV2` + 按组 `createGroupJob`。
 

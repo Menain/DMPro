@@ -253,6 +253,9 @@ export default {
           return this.$t('qing-shu-ru-gong-dan-biao-ti-guan-jian-zi-cha-xun');
       }
     },
+    APPROV_BIZ_MAP() {
+      return APPROV_BIZ_MAP;
+    },
     TICKET_STATUS() {
       return TICKET_STATUS;
     },
@@ -272,7 +275,7 @@ export default {
         this.isRootAccount ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
       ].join(' ');
     },
-    ...mapState(['userInfo', 'myCatLog', 'myAuth'])
+    ...mapState(['userInfo', 'myCatLog', 'myAuth', 'dmGlobalSetting'])
   },
   methods: {
     handleCloseTicketCreateModal() {
@@ -313,6 +316,10 @@ export default {
       this.listTickets();
     },
     handleShowTicketCreateModal() {
+      if (this.dmGlobalSetting?.hideStandardTicketEntry === true) {
+        this.$router.push('/ticket_create');
+        return;
+      }
       this.showTicketCreateModal = true;
     },
     async listTickets() {

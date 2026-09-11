@@ -277,7 +277,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
 
-        // Determine exec config from ticket type (type purity ensures PRE_DDL=DDL, PROD_DML=DML)
+        // Determine exec config from ticket type (precheck keeps PROD_DML pure DML; PRE tickets may mix DDL+DML)
         boolean transactional = TICKET_TYPE_PROD_DML.equals(ticketType);
         com.clougence.clouddm.api.console.autoexec.ErrorStrategy errorStrategy
             = com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE;
@@ -430,17 +430,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
         result.setChangeType(changeType);
 
-        // Step 2: Type purity check
-        String requiredType = TICKET_TYPE_PRE_DDL.equals(ticketType) ? "DDL" : "DML";
-        String forbiddenType = TICKET_TYPE_PRE_DDL.equals(ticketType) ? "DML" : "DDL";
-        if (TICKET_TYPE_PRE_DDL.equals(ticketType) && hasDml) {
-            result.setCheckStatus("FAIL");
-            result.setErrorMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TYPE_MISMATCH.name(), result.getDbName(), "DML", requiredType));
-            return result;
-        }
+        // Step 2: Type purity check — PROD_DML must be pure DML; PRE tickets may mix DDL+DML so the
+        // frozen release snapshot can replay the whole pre-statement set in production.
         if (TICKET_TYPE_PROD_DML.equals(ticketType) && hasDdl) {
             result.setCheckStatus("FAIL");
-            result.setErrorMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TYPE_MISMATCH.name(), result.getDbName(), "DDL", requiredType));
+            result.setErrorMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TYPE_MISMATCH.name(), result.getDbName(), "DDL", "DML"));
             return result;
         }
 

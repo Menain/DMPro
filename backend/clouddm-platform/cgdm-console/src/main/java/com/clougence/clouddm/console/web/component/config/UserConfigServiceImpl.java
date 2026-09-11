@@ -332,6 +332,11 @@ public class UserConfigServiceImpl implements UserConfigService {
     }
 
     @Override
+    public boolean hideStandardTicketEntry() {
+        return Boolean.TRUE.equals(this.systemDal.fetchSystemConf(RootUserConfig.Fields.hideStandardTicketEntry, Boolean.class));
+    }
+
+    @Override
     public void initSubAccountConfigs(String uid) {
         NormalUserConfig config = new NormalUserConfig();
         List<UserConfigKvDef> defs = collectConfigs(config, uid);

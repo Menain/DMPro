@@ -51,4 +51,6 @@ public interface UserConfigService {
     int sqlFileMaxSize();
 
     int approvalExplainMaxSize();
+
+    boolean hideStandardTicketEntry();
 }

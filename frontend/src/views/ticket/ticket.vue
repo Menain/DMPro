@@ -1,6 +1,6 @@
 <template>
   <div class="ticket-create-container">
-    <div class="ticket-mode-bar">
+    <div class="ticket-mode-bar" v-if="!hideStandardEntry">
       <RadioGroup v-model="isGovMode" size="small">
         <Radio :label="false">{{ $t('gov-ticket-mode-standard') }}</Radio>
         <Radio :label="true">{{ $t('gov-ticket-mode-governance') }}</Radio>
@@ -141,6 +141,9 @@ export default {
   computed: {
     ...mapState(['dmGlobalSetting']),
     ...mapGetters(['hasCatalogAndSchema']),
+    hideStandardEntry() {
+      return this.dmGlobalSetting?.hideStandardTicketEntry === true;
+    },
     sqlFileMaxMegaByte() {
       return this.dmGlobalSetting?.sqlFileMaxSize || 20;
     },
@@ -251,7 +254,7 @@ export default {
   mounted() {
     this.listAllDs();
     this.ticketData.ticketTitle = `${this.$t('gong-dan')}${new Date().getTime()}`;
-    if (this.$route.query.govV2 === '1') {
+    if (this.$route.query.govV2 === '1' || this.hideStandardEntry) {
       this.isGovMode = true;
     }
     this.applyStandardPrefill();

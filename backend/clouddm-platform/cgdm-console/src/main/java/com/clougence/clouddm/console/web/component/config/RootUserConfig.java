@@ -247,6 +247,8 @@ public class RootUserConfig {
     private Integer       approvalDmlExplainMaxStatements;
     @UserConfigDef(name = "approvalDmlExplainMaxStatementMegaByte", defaultValue = "1", descKey = I18nUserConfigMsgKeys.APPROVAL_DML_EXPLAIN_MAX_STATEMENT_MB, valueRange = "1 ~ 20 MB", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
     private Integer       approvalDmlExplainMaxStatementMegaByte;
+    @UserConfigDef(name = "hideStandardTicketEntry", defaultValue = "false", descKey = I18nUserConfigMsgKeys.HIDE_STANDARD_TICKET_ENTRY, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       hideStandardTicketEntry;
     @UserConfigDef(name = "defaultColumnDisplayChars", defaultValue = "250", valueRange = "10~500, default 250", descKey = I18nUserConfigMsgKeys.SQL_RESULT_COL_MAXIMUM_DISPLAY_SIZE, configTagType = UserConfigTagType.QUERY_RESULT, confBelong = ConfBelong.CloudDM)
     private Integer       defaultColumnDisplayChars;
     @UserConfigDef(name = "consoleMetadataCache", defaultValue = "true", valueRange = "true, false", descKey = I18nUserConfigMsgKeys.SQL_RESULT_METADATA_CACHE, configTagType = UserConfigTagType.QUERY_RESULT, confBelong = ConfBelong.CloudDM)

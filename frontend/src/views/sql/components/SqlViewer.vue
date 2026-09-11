@@ -30,7 +30,7 @@
     />
     <div class="editor-resize" />
     <div :class="`query-message ${tab.message.type}`" v-if="tab.message.text && tab.message.show && tab.connected">
-      <div v-html="tab.message.text"></div>
+      <div v-html="messageText"></div>
       <CustomIcon type="icon-v2-close2" @click="handleCloseError" hoverStyle />
     </div>
     <div class="query-message Error" v-if="!tab.connected && tab.msgContent">
@@ -100,6 +100,15 @@ export default {
   computed: {
     ...mapGetters(['isDesktop']),
     ...mapState(['dmGlobalSetting']),
+    messageText() {
+      if (this.dmGlobalSetting?.hideStandardTicketEntry !== true) {
+        return this.tab.message.text;
+      }
+      const holder = document.createElement('div');
+      holder.innerHTML = this.tab.message.text;
+      holder.querySelectorAll('a[href*="prefill=1"]').forEach((link) => link.remove());
+      return holder.innerHTML;
+    },
     noPassedRuleColumns() {
       const columns = [
         {
@@ -168,7 +177,7 @@ export default {
         const prefill = { pairId, sql, ts };
         localStorage.setItem('cgdm.govTicketPrefill.v2', JSON.stringify(prefill));
       }
-      if (hasPrefillLink) {
+      if (hasPrefillLink && this.dmGlobalSetting?.hideStandardTicketEntry !== true) {
         const levels = this.browseGenLevelsData(this.tab.node);
         const dsId = levels && levels.length > 1 ? levels[1] : null;
         const prefill = { dsId, sql, ts };
