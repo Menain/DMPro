@@ -78,6 +78,10 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
     private ProdReleaseDal           prodReleaseDal;
     @Resource
     private ProdReleaseStateMachine  releaseStateMachine;
+    // @Lazy breaks the bean cycle: provider -> this handler -> ProdReleaseService
+    //   -> ApprovalControlService -> ApprovalFlowService -> provider (callbacks only
+    //   resolve the service at runtime, never during wiring).
+    @org.springframework.context.annotation.Lazy
     @Resource
     private ProdReleaseService        prodReleaseService;
 
