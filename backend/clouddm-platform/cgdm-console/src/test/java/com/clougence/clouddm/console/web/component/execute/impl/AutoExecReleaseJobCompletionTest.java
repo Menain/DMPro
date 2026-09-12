@@ -227,6 +227,17 @@ public class AutoExecReleaseJobCompletionTest {
             eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.DONE));
         // Verify approval completed
         verify(approvalStateService).completeExecution(bizId);
+        // Per-stmt success event is written via appendReleaseStmtEvent with a null operator
+        // (no operator in scope on the job-completion callback) -> SYSTEM fallback; pins
+        // the contract that callback-driven stmt events survive the NOT NULL operator_uid.
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_STMT_SUCCESS".equals(e.getEventType())
+                && "SYSTEM".equals(e.getOperatorUid())));
+        // RELEASE_DONE event must carry a non-null operator_uid (column is NOT NULL);
+        // job-completion aggregation has no operator in scope -> SYSTEM fallback
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_DONE".equals(e.getEventType())
+                && "SYSTEM".equals(e.getOperatorUid())));
     }
 
     // ==================== Aggregation: any FAILED -> PARTIAL_FAILED ====================

@@ -84,6 +84,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private static final String EXEC_STATUS_FAILED  = "FAILED";
     private static final String TICKET_TYPE_PRE_DDL  = "PRE_DDL";
     private static final String STATUS_ENABLED       = "ENABLED";
+    private static final String SYSTEM_OPERATOR      = "SYSTEM";
 
     @Resource
     private ProdReleaseDal          prodReleaseDal;
@@ -618,7 +619,12 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         event.setEventType(type.name());
         event.setFromStatus(fromStatus);
         event.setToStatus(toStatus);
-        event.setOperatorUid(operatorUid);
+        // dm_db_change_event.operator_uid is NOT NULL without default and MyBatis-Plus
+        // inline insert skips null fields. Callback-driven events (handleApproved/Rejected/
+        // Cancelled, completion aggregation) have no operator uid in scope — the real
+        // approver identity lives on the approval activity rows. Fall back to SYSTEM
+        // (same convention as GovAutoAdvanceServiceImpl) instead of failing the insert.
+        event.setOperatorUid(StringUtils.isBlank(operatorUid) ? SYSTEM_OPERATOR : operatorUid);
         event.setEventData(eventData);
         dbChangeEventDal.eventMapper().insert(event);
     }

@@ -543,7 +543,10 @@ public class AutoExecServiceImpl implements AutoExecService {
         event.setEventType(type.name());
         event.setFromStatus(fromStatus);
         event.setToStatus(toStatus);
-        event.setOperatorUid(operatorUid);
+        // operator_uid is NOT NULL without default and MyBatis-Plus inline insert skips
+        // null fields; job-completion aggregation has no operator in scope — fall back
+        // to SYSTEM (same convention as GovAutoAdvanceServiceImpl).
+        event.setOperatorUid(operatorUid == null || operatorUid.isBlank() ? "SYSTEM" : operatorUid);
         event.setEventData(eventData);
         this.dbChangeEventDal.eventMapper().insert(event);
     }

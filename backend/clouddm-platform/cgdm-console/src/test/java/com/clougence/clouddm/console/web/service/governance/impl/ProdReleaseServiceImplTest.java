@@ -319,9 +319,16 @@ public class ProdReleaseServiceImplTest {
 
         // Verify stmt marked FAILED
         verify(stmtMapper).updateExecStatus(eq(600L), eq("FAILED"), anyString());
-        // Verify hash drift event
+        // Hash drift event is operator-driven (startExecution carries uid) — the null/blank
+        // fallback must NOT mask the real uid for RELEASE_CREATED/EXEC_STARTED/HASH_DRIFT.
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && e.getEventType() != null && e.getEventType().contains("HASH_DRIFT")));
+            e != null && e.getEventType() != null && e.getEventType().contains("HASH_DRIFT")
+                && UID.equals(e.getOperatorUid())));
+        // aggregateIfAllTerminal has no operator in scope -> RELEASE_STMT_FAILED must fall
+        // back to SYSTEM (operator_uid column is NOT NULL without default).
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_STMT_FAILED".equals(e.getEventType())
+                && "SYSTEM".equals(e.getOperatorUid())));
         // Verify aggregation: transit to PARTIAL_FAILED
         verify(releaseStateMachine).transit(eq(releaseId),
             eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
@@ -358,8 +365,10 @@ public class ProdReleaseServiceImplTest {
         service.handleRejected(releaseId);
 
         verify(stmtMapper).deleteByReleaseId(releaseId);
+        // operator_uid column is NOT NULL — callback events must fall back to SYSTEM
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && e.getEventType() != null && e.getEventType().contains("REJECTED")));
+            e != null && e.getEventType() != null && e.getEventType().contains("REJECTED")
+                && "SYSTEM".equals(e.getOperatorUid())));
     }
 
     @Test
@@ -389,7 +398,8 @@ public class ProdReleaseServiceImplTest {
 
         verify(stmtMapper).deleteByReleaseId(releaseId);
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && e.getEventType() != null && e.getEventType().contains("CANCELLED")));
+            e != null && e.getEventType() != null && e.getEventType().contains("CANCELLED")
+                && "SYSTEM".equals(e.getOperatorUid())));
     }
 
     // ==================== handleApproved event ====================
@@ -404,7 +414,8 @@ public class ProdReleaseServiceImplTest {
         service.handleApproved(releaseId);
 
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && e.getEventType() != null && e.getEventType().contains("APPROVED")));
+            e != null && e.getEventType() != null && e.getEventType().contains("APPROVED")
+                && "SYSTEM".equals(e.getOperatorUid())));
     }
 
     // ==================== retryReleaseStmt acceptance matrix ====================
