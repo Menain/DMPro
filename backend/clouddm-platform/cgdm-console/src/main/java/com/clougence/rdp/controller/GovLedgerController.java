@@ -27,8 +27,6 @@ import com.clougence.clouddm.api.common.rpc.ResWebDataUtils;
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerDetailFO;
-import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerListByDbFO;
-import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2GroupVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
@@ -42,7 +40,6 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Ledger controller — read-only, visible to all logged-in users (D6).
  * No tenant filtering at service layer — every logged-in user sees all executed PRE_DDL tickets.
- * Coexists with P2's groupList (which does tenant-filter) — independent endpoints.
  */
 @RestController
 @RequestMapping(value = DmControllerUrlPrefix.CONSOLE_PREFIX)
@@ -53,18 +50,10 @@ public class GovLedgerController {
     private GovLedgerService govLedgerService;
 
     @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
-    @RequestMapping(value = "/govledger/dbs", method = RequestMethod.POST)
-    public ResWebData<?> dbs(HttpServletRequest request) {
+    @RequestMapping(value = "/govledger/list", method = RequestMethod.POST)
+    public ResWebData<?> list(HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
-        List<DbPairVO> data = govLedgerService.dbs(puid);
-        return ResWebDataUtils.buildSuccess(data);
-    }
-
-    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
-    @RequestMapping(value = "/govledger/listByDb", method = RequestMethod.POST)
-    public ResWebData<?> listByDb(@Valid @RequestBody GovLedgerListByDbFO fo, HttpServletRequest request) {
-        String puid = (String) request.getAttribute(RdpUserService.PUID);
-        List<GovLedgerTicketVO> data = govLedgerService.listByDb(puid, fo);
+        List<GovLedgerTicketVO> data = govLedgerService.list(puid);
         return ResWebDataUtils.buildSuccess(data);
     }
 

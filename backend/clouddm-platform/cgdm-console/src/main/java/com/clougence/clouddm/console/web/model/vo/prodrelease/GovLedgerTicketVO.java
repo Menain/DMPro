@@ -15,6 +15,8 @@
  */
 package com.clougence.clouddm.console.web.model.vo.prodrelease;
 
+import java.util.List;
+
 import lombok.Getter;
 import lombok.Setter;
 
@@ -25,10 +27,13 @@ public class GovLedgerTicketVO {
     private long   ticketId;
     private String ticketTitle;
     private String serviceName;
+    private Long   serviceId;
     private String ownerUid;
     private String gmtCreate;
     private String execStatus;
     private String sqlSummary;
+    private List<LedgerDbItemVO> preDbs;
+    private List<String>         prodDbs;
     private boolean promoted;
     private String releaseNo;
     private String releaseStatus;

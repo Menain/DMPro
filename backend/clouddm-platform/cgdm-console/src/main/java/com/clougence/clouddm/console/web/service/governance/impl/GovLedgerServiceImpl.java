@@ -20,28 +20,34 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerDetailFO;
-import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerListByDbFO;
-import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2GroupVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
-import com.clougence.clouddm.console.web.service.dbpair.DbPairService;
+import com.clougence.clouddm.console.web.model.vo.prodrelease.LedgerDbItemVO;
 import com.clougence.clouddm.console.web.service.governance.GovLedgerService;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
+import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.DbPairDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
+import com.clougence.clouddm.platform.dal.mapper.datasource.DmDsMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
+import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbServiceDO;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
+import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.format.DateFormatType;
@@ -51,7 +57,9 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Ledger service — read-only, no primary_uid filtering (D6: all logged-in users can see).
- * Coexists with P2's groupList (which does tenant-filter) — independent query paths.
+ * Lists all FINISHED PRE_DDL tickets whose statement groups are all SUCCESS,
+ * aligned with {@code ProdReleaseServiceImpl.createRelease} validation so the
+ * frontend can never show a selectable ticket that would be rejected on submit.
  */
 @Slf4j
 @Service
@@ -59,47 +67,75 @@ public class GovLedgerServiceImpl implements GovLedgerService {
 
     private static final String TICKET_TYPE_PRE_DDL = "PRE_DDL";
     private static final String EXEC_STATUS_SUCCESS  = "SUCCESS";
+    private static final String STATUS_ENABLED       = "ENABLED";
 
-    @Resource
-    private DbPairService      dbPairService;
     @Resource
     private TicketDbStmtDal    ticketDbStmtDal;
     @Resource
     private ApprovalDal         approvalDal;
     @Resource
-    private ProdReleaseDal     prodReleaseDal;
+    private ProdReleaseDal      prodReleaseDal;
     @Resource
     private DbPairDal          dbPairDal;
+    @Resource
+    private DataSourceDal       dsDal;
 
     @Override
-    public List<DbPairVO> dbs(String puid) {
-        // Reuse availablePairs with side="PRE" (pre-side dimension)
-        return dbPairService.availablePairs(puid, "PRE");
-    }
-
-    @Override
-    public List<GovLedgerTicketVO> listByDb(String puid, GovLedgerListByDbFO fo) {
-        // Query all stmt groups for this (dsId, dbName) — no tenant filter
-        List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByDsAndDb(fo.getDsId(), fo.getDbName());
+    public List<GovLedgerTicketVO> list(String puid) {
+        // 1. Load all statement groups, ordered by id for deterministic first-stmt semantics
+        List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().selectList(
+            new LambdaQueryWrapper<DmTicketDbStmtDO>().orderByAsc(DmTicketDbStmtDO::getId));
         if (stmts == null || stmts.isEmpty()) {
             return Collections.emptyList();
         }
 
-        // Group by ticketId
+        // 2. Group by ticketId (LinkedHashMap preserves first-seen order)
         Map<Long, List<DmTicketDbStmtDO>> byTicket = new LinkedHashMap<>();
         for (DmTicketDbStmtDO s : stmts) {
             byTicket.computeIfAbsent(s.getTicketId(), k -> new ArrayList<>()).add(s);
         }
 
-        // Track VO → serviceId for batch serviceName fill (avoid N+1 queries)
+        // 3. Batch-load all tickets (avoid N+1)
+        Set<Long> ticketIds = byTicket.keySet();
+        List<DmApprovalDO> tickets = approvalDal.approvalMapper().selectBatchIds(ticketIds);
+        Map<Long, DmApprovalDO> ticketMap = new HashMap<>();
+        if (tickets != null) {
+            for (DmApprovalDO t : tickets) {
+                ticketMap.put(t.getId(), t);
+            }
+        }
+
+        // 4. Batch-load all distinct pairs (for prodDbs resolution)
+        Set<Long> pairIds = new HashSet<>();
+        for (DmTicketDbStmtDO s : stmts) {
+            if (s.getPairId() != null) {
+                pairIds.add(s.getPairId());
+            }
+        }
+        Map<Long, DmDbPairDO> pairMap = batchLoadPairs(pairIds);
+
+        // 5. Resolve dsNames for all distinct dsIds (pre + prod) with a cache map
+        Set<Long> dsIds = new HashSet<>();
+        for (DmTicketDbStmtDO s : stmts) {
+            if (s.getDsId() != null) {
+                dsIds.add(s.getDsId());
+            }
+        }
+        for (DmDbPairDO pair : pairMap.values()) {
+            if (pair.getProdDsId() != null) {
+                dsIds.add(pair.getProdDsId());
+            }
+        }
+        Map<Long, String> dsNameMap = resolveDsNames(dsIds);
+
+        // 6. Build VOs
         Map<GovLedgerTicketVO, Long> voServiceIds = new LinkedHashMap<>();
         List<GovLedgerTicketVO> result = new ArrayList<>();
         for (Map.Entry<Long, List<DmTicketDbStmtDO>> entry : byTicket.entrySet()) {
             long ticketId = entry.getKey();
             List<DmTicketDbStmtDO> ticketStmts = entry.getValue();
 
-            // Load ticket
-            DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+            DmApprovalDO ticket = ticketMap.get(ticketId);
             if (ticket == null) continue;
 
             // Condition 1: ticket FINISHED
@@ -109,12 +145,13 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
             if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) continue;
 
-            // Condition 3: all stmts SUCCESS for this (dsId, dbName)
+            // Condition 3: ALL stmts SUCCESS (full-ticket scope, aligned with createRelease)
             boolean allSuccess = ticketStmts.stream().allMatch(s -> EXEC_STATUS_SUCCESS.equals(s.getExecStatus()));
             if (!allSuccess) continue;
 
-            // Promoted check: any stmt already in dm_prod_release_stmt
-            DmProdReleaseStmtDO releaseStmt = prodReleaseDal.stmtMapper().queryBySourceStmtId(ticketStmts.get(0).getId());
+            // Promoted check: first stmt already in dm_prod_release_stmt
+            DmTicketDbStmtDO firstStmt = ticketStmts.get(0);
+            DmProdReleaseStmtDO releaseStmt = prodReleaseDal.stmtMapper().queryBySourceStmtId(firstStmt.getId());
             boolean promoted = releaseStmt != null;
 
             GovLedgerTicketVO vo = new GovLedgerTicketVO();
@@ -123,15 +160,16 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             vo.setOwnerUid(ticket.getOwnerUid());
             vo.setGmtCreate(DateFormatType.s_yyyyMMdd_HHmmss.format(ticket.getGmtCreate()));
             vo.setExecStatus(EXEC_STATUS_SUCCESS);
-            // SQL summary: first 200 chars of first stmt's sql_content
-            String sqlContent = ticketStmts.get(0).getSqlContent();
+            String sqlContent = firstStmt.getSqlContent();
             if (sqlContent != null) {
                 vo.setSqlSummary(sqlContent.length() > 200 ? sqlContent.substring(0, 200) : sqlContent);
             }
+            vo.setServiceId(mo.getServiceId());
+            vo.setPreDbs(buildPreDbs(ticketStmts, dsNameMap));
+            vo.setProdDbs(buildProdDbs(ticketStmts, pairMap, dsNameMap));
             vo.setPromoted(promoted);
             if (promoted && releaseStmt != null) {
-                // Find release for status/no
-                var release = prodReleaseDal.releaseMapper().queryById(releaseStmt.getReleaseId());
+                DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseStmt.getReleaseId());
                 if (release != null) {
                     vo.setReleaseNo(release.getReleaseNo());
                     vo.setReleaseStatus(release.getStatus());
@@ -142,10 +180,95 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             result.add(vo);
         }
 
-        // Batch-fill serviceName from dm_db_service (serviceId from ticketInfo JSON)
+        // 7. Batch-fill serviceName from dm_db_service
         fillServiceNames(voServiceIds);
 
         return result;
+    }
+
+    /**
+     * Batch-load pairs by id; returns a map keyed by pair id.
+     */
+    private Map<Long, DmDbPairDO> batchLoadPairs(Set<Long> pairIds) {
+        if (pairIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<DmDbPairDO> pairs = dbPairDal.pairMapper().selectBatchIds(pairIds);
+        if (pairs == null || pairs.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return pairs.stream().collect(Collectors.toMap(DmDbPairDO::getId, p -> p, (a, b) -> a));
+    }
+
+    /**
+     * Resolve ds display names for a set of dsIds, caching each query.
+     * dsName = instanceDesc if present, else instanceId (same convention as DbPairServiceImpl.toDbPairVO).
+     */
+    private Map<Long, String> resolveDsNames(Set<Long> dsIds) {
+        if (dsIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        DmDsMapper dsMapper = dsDal.dsMapper();
+        Map<Long, String> map = new HashMap<>();
+        for (Long dsId : dsIds) {
+            if (dsId == null) {
+                continue;
+            }
+            DmDsDO ds = dsMapper.queryDsIdentityById(dsId);
+            if (ds != null) {
+                map.put(dsId, ds.getInstanceDesc() != null ? ds.getInstanceDesc() : ds.getInstanceId());
+            }
+        }
+        return map;
+    }
+
+    /**
+     * Build deduped, ordered list of pre-release database items from a ticket's statement groups.
+     */
+    private List<LedgerDbItemVO> buildPreDbs(List<DmTicketDbStmtDO> ticketStmts, Map<Long, String> dsNameMap) {
+        Set<String> seen = new LinkedHashSet<>();
+        List<LedgerDbItemVO> result = new ArrayList<>();
+        for (DmTicketDbStmtDO s : ticketStmts) {
+            String key = s.getDsId() + "|" + s.getDbName();
+            if (seen.add(key)) {
+                LedgerDbItemVO item = new LedgerDbItemVO();
+                item.setDsId(s.getDsId());
+                item.setDbName(s.getDbName());
+                item.setDsName(dsNameMap.get(s.getDsId()));
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Build deduped, ordered list of prod database display names ("dsName/dbName") from a ticket's pairs.
+     * Pairs that are missing or disabled are skipped with a warning log — the ledger is read-only;
+     * createRelease will hard-validate when the user actually submits.
+     */
+    private List<String> buildProdDbs(List<DmTicketDbStmtDO> ticketStmts, Map<Long, DmDbPairDO> pairMap, Map<Long, String> dsNameMap) {
+        Set<String> seen = new LinkedHashSet<>();
+        for (DmTicketDbStmtDO s : ticketStmts) {
+            if (s.getPairId() == null) {
+                continue;
+            }
+            DmDbPairDO pair = pairMap.get(s.getPairId());
+            if (pair == null) {
+                log.warn("Ledger: pair {} not found for ticket {} stmt {}, skipping prodDb", s.getPairId(), s.getTicketId(), s.getId());
+                continue;
+            }
+            if (!STATUS_ENABLED.equals(pair.getStatus())) {
+                log.warn("Ledger: pair {} status is {}, skipping prodDb for ticket {}", s.getPairId(), pair.getStatus(), s.getTicketId());
+                continue;
+            }
+            String prodDsName = dsNameMap.get(pair.getProdDsId());
+            if (prodDsName == null) {
+                prodDsName = String.valueOf(pair.getProdDsId());
+            }
+            String label = prodDsName + "/" + pair.getProdDbName();
+            seen.add(label);
+        }
+        return new ArrayList<>(seen);
     }
 
     /**
@@ -181,9 +304,8 @@ public class GovLedgerServiceImpl implements GovLedgerService {
 
     @Override
     public List<GovTicketV2GroupVO> detail(String puid, GovLedgerDetailFO fo) {
-        // Read-only: return statement groups for this (ticketId, dsId, dbName)
-        List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketIdAndDsAndDb(
-            fo.getTicketId(), fo.getDsId(), fo.getDbName());
+        // Read-only: return all statement groups for this ticket (every pre-release db)
+        List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(fo.getTicketId());
         if (stmts == null || stmts.isEmpty()) {
             return Collections.emptyList();
         }

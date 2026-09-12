@@ -1,6 +1,5 @@
 export const dbChangeApi = {
-  govLedgerDbs: '/api/entry/govledger/dbs',
-  govLedgerListByDb: '/api/entry/govledger/listByDb',
+  govLedgerList: '/api/entry/govledger/list',
   govLedgerDetail: '/api/entry/govledger/detail',
   govReleaseCreate: '/api/entry/govrelease/create',
   govReleaseList: '/api/entry/govrelease/list',

@@ -18,8 +18,6 @@ package com.clougence.clouddm.console.web.service.governance;
 import java.util.List;
 
 import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerDetailFO;
-import com.clougence.clouddm.console.web.model.fo.prodrelease.GovLedgerListByDbFO;
-import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2GroupVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
 
@@ -29,18 +27,13 @@ import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
 public interface GovLedgerService {
 
     /**
-     * List candidate databases for the ledger dropdown (pre-side dimension from ENABLED pairs).
+     * List all candidate pre-release tickets (FINISHED + PRE_DDL + all stmts SUCCESS),
+     * with preDbs / prodDbs aggregated for cross-db merge into a release.
      */
-    List<DbPairVO> dbs(String puid);
+    List<GovLedgerTicketVO> list(String puid);
 
     /**
-     * List executed PRE_DDL tickets for a specific (dsId, dbName).
-     * Four-condition check: ticket FINISHED + ticketType=PRE_DDL + stmt SUCCESS + promoted marker.
-     */
-    List<GovLedgerTicketVO> listByDb(String puid, GovLedgerListByDbFO fo);
-
-    /**
-     * Get statement group details for a specific ticket + dsId + dbName (read-only, no auth).
+     * Get all statement group details for a ticket across every pre-release db (read-only, no auth).
      */
     List<GovTicketV2GroupVO> detail(String puid, GovLedgerDetailFO fo);
 }

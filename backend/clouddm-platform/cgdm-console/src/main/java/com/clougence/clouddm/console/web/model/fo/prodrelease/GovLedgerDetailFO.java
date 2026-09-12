@@ -15,7 +15,6 @@
  */
 package com.clougence.clouddm.console.web.model.fo.prodrelease;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
@@ -26,10 +25,4 @@ public class GovLedgerDetailFO {
 
     @NotNull
     private long ticketId;
-
-    @NotNull
-    private long dsId;
-
-    @NotBlank
-    private String dbName;
 }

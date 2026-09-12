@@ -13,20 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.console.web.model.fo.prodrelease;
+package com.clougence.clouddm.console.web.model.vo.prodrelease;
 
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * Pre-release database item for the ledger "preDbs" field —
+ * one entry per distinct (dsId, dbName) across a ticket's statement groups.
+ */
 @Getter
 @Setter
-public class GovLedgerListByDbFO {
+public class LedgerDbItemVO {
 
-    @NotNull
-    private long dsId;
-
-    @NotBlank
+    private long   dsId;
     private String dbName;
+    private String dsName;
 }

@@ -12,10 +12,6 @@
               <span class="gov-overview-label">{{ $t('gov-ledger-ticket-id') }}</span>
               <span>{{ ticketId }}</span>
             </div>
-            <div class="gov-overview-item">
-              <span class="gov-overview-label">{{ $t('gov-ledger-db') }}</span>
-              <span>{{ dbName }}</span>
-            </div>
           </div>
         </section>
 
@@ -70,17 +66,13 @@ export default {
   data() {
     return {
       ticketId: null,
-      dsId: null,
-      dbName: '',
       groupList: [],
       loading: false
     };
   },
   mounted() {
     this.ticketId = Number(this.$route.query.ticketId);
-    this.dsId = Number(this.$route.query.dsId);
-    this.dbName = this.$route.query.dbName || '';
-    if (this.ticketId && this.dsId && this.dbName) {
+    if (this.ticketId) {
       this.loadDetail();
     }
   },
@@ -89,7 +81,7 @@ export default {
       this.loading = true;
       try {
         const res = await this.$services.govLedgerDetail({
-          data: { ticketId: this.ticketId, dsId: this.dsId, dbName: this.dbName }
+          data: { ticketId: this.ticketId }
         });
         if (res.success) {
           this.groupList = res.data || [];

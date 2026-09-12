@@ -4,18 +4,22 @@
       <section class="page-section">
         <div class="ledger-toolbar">
           <div class="ledger-toolbar__filters">
-            <Select
-              v-model="selectedPairId"
-              filterable
-              clearable
-              :placeholder="$t('gov-ledger-select-db')"
-              style="width: 320px"
-              :loading="dbsLoading"
-              @on-change="handleDbChange"
-            >
-              <Option v-for="db in dbOptions" :key="db.id" :value="db.id" :label="dbLabel(db)">
-                {{ dbLabel(db) }}
+            <Select v-model="serviceFilter" clearable :placeholder="$t('gov-ledger-filter-service')" style="width: 200px">
+              <Option value="" :label="$t('gov-ledger-filter-all')">{{ $t('gov-ledger-filter-all') }}</Option>
+              <Option v-for="svc in serviceOptions" :key="svc.serviceId" :value="svc.serviceId" :label="svc.serviceName">
+                {{ svc.serviceName }}
               </Option>
+            </Select>
+            <Select v-model="dbFilter" clearable :placeholder="$t('gov-ledger-filter-db')" style="width: 240px">
+              <Option value="" :label="$t('gov-ledger-filter-all')">{{ $t('gov-ledger-filter-all') }}</Option>
+              <Option v-for="db in dbOptions" :key="db.value" :value="db.value" :label="db.label">
+                {{ db.label }}
+              </Option>
+            </Select>
+            <Select v-model="promotedFilter" clearable :placeholder="$t('gov-ledger-filter-promoted')" style="width: 160px">
+              <Option value="" :label="$t('gov-ledger-filter-all')">{{ $t('gov-ledger-filter-all') }}</Option>
+              <Option value="NOT_PROMOTED" :label="$t('gov-ledger-not-promoted')">{{ $t('gov-ledger-not-promoted') }}</Option>
+              <Option value="PROMOTED" :label="$t('gov-ledger-promoted')">{{ $t('gov-ledger-promoted') }}</Option>
             </Select>
           </div>
           <div class="ledger-toolbar__actions">
@@ -32,9 +36,9 @@
             stripe
             :loading="listLoading"
             :columns="ledgerColumns"
-            :data="ledgerTickets"
-            @on-selection-change="handleSelectionChange"
-            @on-row-click="handleRowClick"
+            :data="filteredTickets"
+            :row-selection="rowSelection"
+            row-key="ticketId"
           >
             <template #promoted="{ row }">
               <Tag v-if="row.promoted" color="warning">{{ $t('gov-ledger-promoted') }}</Tag>
@@ -83,13 +87,13 @@ export default {
   name: 'DbChangeLedger',
   data() {
     return {
-      dbOptions: [],
-      dbsLoading: false,
-      selectedPairId: null,
-      selectedPair: null,
       ledgerTickets: [],
       listLoading: false,
       selectedTickets: [],
+      selectedRowKeys: [],
+      serviceFilter: null,
+      dbFilter: null,
+      promotedFilter: 'NOT_PROMOTED',
       createModalVisible: false,
       createTitle: '',
       creating: false
@@ -99,12 +103,88 @@ export default {
     canCreateRelease() {
       return this.selectedTickets.length > 0 && !this.creating;
     },
+    rowSelection() {
+      return {
+        // 筛选切换后已选行不在当前数据源,antd 默认会丢弃其 key;保留以支持跨筛选累积勾选
+        preserveSelectedRowKeys: true,
+        selectedRowKeys: this.selectedRowKeys,
+        onChange: (selectedRowKeys, selectedRows) => {
+          this.selectedRowKeys = selectedRowKeys;
+          this.selectedTickets = selectedRows;
+        },
+        getCheckboxProps: (record) => ({ disabled: record.promoted })
+      };
+    },
+    serviceOptions() {
+      const seen = new Map();
+      for (const t of this.ledgerTickets) {
+        if (t.serviceId != null && !seen.has(t.serviceId)) {
+          seen.set(t.serviceId, t.serviceName);
+        }
+      }
+      const result = [];
+      for (const [serviceId, serviceName] of seen) {
+        result.push({ serviceId, serviceName });
+      }
+      return result;
+    },
+    dbOptions() {
+      const seen = new Map();
+      for (const t of this.ledgerTickets) {
+        for (const db of t.preDbs || []) {
+          const value = `${db.dsId}|${db.dbName}`;
+          if (!seen.has(value)) {
+            seen.set(value, `${db.dsName}/${db.dbName}`);
+          }
+        }
+      }
+      const result = [];
+      for (const [value, label] of seen) {
+        result.push({ value, label });
+      }
+      return result;
+    },
+    filteredTickets() {
+      return this.ledgerTickets.filter((t) => {
+        if (this.serviceFilter && t.serviceId !== this.serviceFilter) return false;
+        if (this.dbFilter) {
+          const matched = (t.preDbs || []).some((db) => `${db.dsId}|${db.dbName}` === this.dbFilter);
+          if (!matched) return false;
+        }
+        if (this.promotedFilter === 'NOT_PROMOTED' && t.promoted) return false;
+        if (this.promotedFilter === 'PROMOTED' && !t.promoted) return false;
+        return true;
+      });
+    },
     ledgerColumns() {
       return [
-        { type: 'selection', width: 55, align: 'center' },
-        { title: this.$t('gov-ledger-ticket-id'), key: 'ticketId', width: 90 },
+        {
+          title: this.$t('gov-ledger-ticket-id'),
+          key: 'ticketId',
+          width: 90,
+          render: (h, params) =>
+            h(
+              'a',
+              {
+                onClick: () => this.goLedgerDetail(params.row),
+                style: { cursor: 'pointer' }
+              },
+              params.row.ticketId
+            )
+        },
         { title: this.$t('gov-ledger-ticket-title'), key: 'ticketTitle', minWidth: 160, ellipsis: true, tooltip: true },
         { title: this.$t('gov-ledger-service'), key: 'serviceName', width: 120 },
+        {
+          title: this.$t('gov-ledger-pre-db'),
+          key: 'preDbs',
+          minWidth: 160,
+          ellipsis: true,
+          render: (h, params) => {
+            const dbs = params.row.preDbs || [];
+            const text = dbs.map((db) => `${db.dsName}/${db.dbName}`).join(', ');
+            return h('span', text || '-');
+          }
+        },
         { title: this.$t('gov-ledger-executor'), key: 'ownerUid', width: 130 },
         { title: this.$t('gov-ledger-exec-time'), key: 'gmtCreate', width: 170, render: (h, params) => this.formatDateTime(params.row.gmtCreate) },
         { title: this.$t('gov-ledger-sql-summary'), key: 'sqlSummary', minWidth: 200, ellipsis: true, tooltip: true },
@@ -113,73 +193,44 @@ export default {
       ];
     },
     targetProdDbs() {
-      const pair = this.selectedPair;
-      if (!pair) {
-        return [];
+      const seen = new Set();
+      const result = [];
+      for (const t of this.selectedTickets) {
+        for (const db of t.prodDbs || []) {
+          if (!seen.has(db)) {
+            seen.add(db);
+            result.push(db);
+          }
+        }
       }
-      return [this.formatProdDb(pair)].filter(Boolean);
+      return result;
     }
   },
   mounted() {
-    this.loadDbs();
+    this.loadList();
   },
   methods: {
-    async loadDbs() {
-      this.dbsLoading = true;
-      try {
-        const res = await this.$services.govLedgerDbs({ data: {} });
-        if (res.success) {
-          this.dbOptions = res.data || [];
-        }
-      } finally {
-        this.dbsLoading = false;
-      }
-    },
-    async handleDbChange(pairId) {
-      this.selectedPair = this.dbOptions.find((db) => db.id === pairId) || null;
-      this.selectedTickets = [];
-      if (!pairId) {
-        this.ledgerTickets = [];
-        return;
-      }
-      await this.loadList();
-    },
     async loadList() {
-      const pair = this.selectedPair;
-      if (!pair) {
-        return;
-      }
       this.listLoading = true;
       try {
-        const res = await this.$services.govLedgerListByDb({
-          data: { dsId: pair.preDsId, dbName: pair.preDbName }
-        });
+        const res = await this.$services.govLedgerList({ data: {} });
         if (res.success) {
-          const tickets = res.data || [];
-          tickets.forEach((t) => {
-            if (t.promoted) {
-              t._disabled = true;
-            }
-          });
-          this.ledgerTickets = tickets;
+          this.ledgerTickets = res.data || [];
+          this.selectedRowKeys = [];
+          this.selectedTickets = [];
         }
       } finally {
         this.listLoading = false;
       }
     },
-    handleSelectionChange(selection) {
-      this.selectedTickets = selection || [];
-    },
-    handleRowClick(row) {
-      if (!row || !row.ticketId || !this.selectedPair) {
+    goLedgerDetail(row) {
+      if (!row || !row.ticketId) {
         return;
       }
       this.$router.push({
         path: '/dbChange/ledger/detail',
         query: {
-          ticketId: row.ticketId,
-          dsId: this.selectedPair.preDsId,
-          dbName: this.selectedPair.preDbName
+          ticketId: row.ticketId
         }
       });
     },
@@ -205,26 +256,13 @@ export default {
           this.$Message.success(this.$t('gov-ledger-create-success'));
           this.createModalVisible = false;
           this.selectedTickets = [];
+          this.selectedRowKeys = [];
           await this.loadList();
           this.$router.push(`/dbChange/release/${releaseId}`);
         }
       } finally {
         this.creating = false;
       }
-    },
-    dbLabel(db) {
-      const parts = [];
-      if (db.preDsName) parts.push(db.preDsName);
-      if (db.preDbName) parts.push(db.preDbName);
-      if (db.preEnvName) parts.push(`(${db.preEnvName})`);
-      return parts.join(' / ');
-    },
-    formatProdDb(pair) {
-      if (!pair) return '';
-      const parts = [];
-      if (pair.prodDsName) parts.push(pair.prodDsName);
-      if (pair.prodDbName) parts.push(pair.prodDbName);
-      return parts.join(' / ');
     },
     formatDateTime(dt) {
       if (!dt) return '-';
@@ -250,6 +288,12 @@ export default {
     align-items: center;
     margin-bottom: 16px;
     gap: 16px;
+
+    &__filters {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
 
     &__actions {
       display: flex;
