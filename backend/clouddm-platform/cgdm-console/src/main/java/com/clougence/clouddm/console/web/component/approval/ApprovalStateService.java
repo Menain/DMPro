@@ -60,6 +60,15 @@ public interface ApprovalStateService {
 
     void markExecutionRunning(String approvalBizId);
 
+    /**
+     * Activity-only variant of {@link #markExecutionRunning}: finishes DISPATCH and sets
+     * RUNNING to RUNNING without touching the ticket status. For v2 group jobs, whose
+     * worker-start report must not move the ticket to RUNNING (processRunningCheck is
+     * legacy-shaped); the ticket terminal transition stays owned by the completion
+     * aggregation (step-times fix, 2026-09-12).
+     */
+    void markExecutionRunningActivities(String approvalBizId);
+
     void completeExecution(String approvalBizId);
 
     void failExecution(String approvalBizId, String errorMessage);

@@ -184,6 +184,9 @@ public class GovAutoAdvanceServiceTest {
         assertTrue("DML should be transactional", config.isEnableTransactional());
         assertEquals("ErrorStrategy must be NONE", com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE, config.getErrorStrategy());
 
+        // Step-times fix: v2 dispatch closes PREPARATION at the real dispatch moment
+        verify(approvalStateService).markExecutionDispatched("biz-001");
+
         // Verify events
         ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
         verify(eventMapper, times(2)).insert(eventCaptor.capture());

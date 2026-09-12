@@ -120,6 +120,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @Resource
     private ApprovalDal         approvalDal;
     @Resource
+    private com.clougence.clouddm.console.web.component.approval.ApprovalStateService approvalStateService;
+    @Resource
     private DbChangeEventDal   dbChangeEventDal;
     @Resource
     private ApprovalFlowService approvalFlowService;
@@ -293,6 +295,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
         this.autoExecService.createGroupJob(group, jobBizId, transactional, errorStrategy, languageTag, uid);
         this.autoExecService.startJob(jobBizId, uid);
+
+        // Step-times fix (2026-09-12): v2 group jobs carry no dependOnBizId, so the legacy
+        // preparation hook never fires — close PREPARATION at the real (re)dispatch moment.
+        this.approvalStateService.markExecutionDispatched(ticket.getBizId());
     }
 
     // ==================== groupList ====================

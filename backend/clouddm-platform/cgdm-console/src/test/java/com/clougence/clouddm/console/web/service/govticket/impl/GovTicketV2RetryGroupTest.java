@@ -55,6 +55,7 @@ public class GovTicketV2RetryGroupTest {
     private ExecutionDal            execDal;
     private DmExecAutoJobMapper      autoJobMapper;
     private AutoExecService          autoExecService;
+    private com.clougence.clouddm.console.web.component.approval.ApprovalStateService approvalStateService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -90,10 +91,13 @@ public class GovTicketV2RetryGroupTest {
 
         autoExecService = mock(AutoExecService.class);
 
+        approvalStateService = mock(com.clougence.clouddm.console.web.component.approval.ApprovalStateService.class);
+
         ReflectionTestUtils.setField(service, "ticketDbStmtDal", ticketDbStmtDal);
         ReflectionTestUtils.setField(service, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(service, "execDal", execDal);
         ReflectionTestUtils.setField(service, "autoExecService", autoExecService);
+        ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
     }
 
     @Test
@@ -109,6 +113,8 @@ public class GovTicketV2RetryGroupTest {
 
         verify(stmtMapper).updateExecStatus(eq(groupId), eq("PENDING"), isNull());
         verify(autoExecService).createGroupJob(eq(group), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+        // Step-times fix: retry redispatch closes PREPARATION at the real dispatch moment
+        verify(approvalStateService).markExecutionDispatched("biz-200");
     }
 
     @Test

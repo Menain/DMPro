@@ -31,12 +31,16 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalStateService
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
+import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
 import com.clougence.clouddm.platform.dal.access.MonitorDal;
+import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecTaskStatus;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoTaskDO;
+import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.monitor.DmMonBizLogDO;
 import com.clougence.clouddm.platform.dal.model.monitor.LogDependBizType;
 import com.clougence.clouddm.platform.dal.model.monitor.Loglevel;
@@ -58,6 +62,10 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
     private ApprovalStateService approvalStateService;
     @Resource
     private AutoExecService      autoExecService;
+    @Resource
+    private TicketDbStmtDal      ticketDbStmtDal;
+    @Resource
+    private ApprovalDal          approvalDal;
 
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
@@ -336,10 +344,17 @@ public class ExecJobRServiceProvider extends AbstractBasicProvider implements Ex
                 // P3 release: stmt is already EXECUTING; no ticket-level RUNNING needed
                 // (release status aggregation is driven by handleReleaseJobCompletion)
             } else if (jobDO.getDependOnGroupId() != null) {
-                // V2: mark ticket RUNNING through group → ticket chain
-                // markExecutionRunning(dependOnBizId) is a no-op for v2 (null bizId);
-                // the ticket status is already WAIT_EXEC from confirm, and will transition
-                // to FINISHED/EXEC_FAIL via handleV2JobCompletion aggregation.
+                // V2: activity-only running mark through group → ticket chain. The ticket
+                // status must NOT move to RUNNING (processRunningCheck is legacy-shaped);
+                // the terminal transition stays owned by handleV2JobCompletion aggregation.
+                // Step-times fix (2026-09-12): closes DISPATCH at the real worker-start moment.
+                DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(jobDO.getDependOnGroupId());
+                if (group != null) {
+                    DmApprovalDO v2Ticket = this.approvalDal.approvalMapper().queryById(group.getTicketId());
+                    if (v2Ticket != null) {
+                        this.approvalStateService.markExecutionRunningActivities(v2Ticket.getBizId());
+                    }
+                }
             } else {
                 this.approvalStateService.markExecutionRunning(jobDO.getDependOnBizId());
             }

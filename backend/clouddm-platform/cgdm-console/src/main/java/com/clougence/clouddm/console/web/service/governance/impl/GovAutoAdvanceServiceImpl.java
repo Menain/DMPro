@@ -191,6 +191,12 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
                 log.error("[GovAutoAdvance] Failed to create group job for ticket {}, group {}", ticketId, group.getId(), e);
             }
         }
+
+        // Step-times fix (2026-09-12): v2 group jobs carry no dependOnBizId, so the legacy
+        // preparation hook never fires — close PREPARATION at the real dispatch moment so
+        // each execution step keeps its own finish time (DISPATCH/RUNNING follow via the
+        // worker-start hook and the terminal aggregation).
+        this.approvalStateService.markExecutionDispatched(ticket.getBizId());
     }
 
     // ------- D15 execution config routing (design D8 / B4) -------

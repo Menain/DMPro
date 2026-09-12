@@ -231,6 +231,17 @@ public class ApprovalStateServiceImpl implements ApprovalStateService {
         if (approval == null) {
             return;
         }
+        this.markExecutionRunningActivities(approvalBizId);
+        this.updateApprovalStatus(approval.getId(), ApprovalStatus.RUNNING, null);
+    }
+
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void markExecutionRunningActivities(String approvalBizId) {
+        DmApprovalDO approval = this.approval(approvalBizId);
+        if (approval == null) {
+            return;
+        }
         DmApprovalProcessDO process = this.ensureActivities(approval.getId());
         DmApprovalProcessActivityDO runningActivity = this.approvalDal.activityMapper().queryByProcessIdAndActivityId(process.getId(), ApprovalExecutionStateMO.TYPE_RUNNING);
         if (runningActivity != null && StringUtils.isNotBlank(runningActivity.getContext())) {
@@ -247,7 +258,6 @@ public class ApprovalStateServiceImpl implements ApprovalStateService {
             }
             state.setErrorMessage(null);
         });
-        this.updateApprovalStatus(approval.getId(), ApprovalStatus.RUNNING, null);
     }
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)

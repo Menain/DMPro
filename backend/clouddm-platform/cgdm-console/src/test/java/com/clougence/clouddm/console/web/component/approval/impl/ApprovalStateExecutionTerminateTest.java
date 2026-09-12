@@ -159,6 +159,42 @@ public class ApprovalStateExecutionTerminateTest {
         assertTrue(vo.getFinishTime().matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"));
     }
 
+    // ==================== step-times fix: activity-only running mark ====================
+
+    @Test
+    public void markExecutionRunningActivities_finishesDispatchWithoutTicketStatusChange() {
+        stubActivity(ApprovalExecutionStateMO.TYPE_PREPARATION, ApprovalExecutionStateMO.STATUS_FINISHED, 2L);
+        stubActivity(ApprovalExecutionStateMO.TYPE_DISPATCH, ApprovalExecutionStateMO.STATUS_RUNNING, null);
+        stubActivity(ApprovalExecutionStateMO.TYPE_RUNNING, ApprovalExecutionStateMO.STATUS_INIT, null);
+
+        service.markExecutionRunningActivities(BIZ_ID);
+
+        ArgumentCaptor<DmApprovalProcessActivityDO> captor = ArgumentCaptor.forClass(DmApprovalProcessActivityDO.class);
+        verify(activityMapper, times(2)).updateById(captor.capture());
+        ApprovalExecutionStateMO dispatch = JsonUtils.toObj(captor.getAllValues().get(0).getContext(), ApprovalExecutionStateMO.class);
+        ApprovalExecutionStateMO running = JsonUtils.toObj(captor.getAllValues().get(1).getContext(), ApprovalExecutionStateMO.class);
+        assertEquals(ApprovalExecutionStateMO.TYPE_DISPATCH, dispatch.getExecutionType());
+        assertEquals(ApprovalExecutionStateMO.STATUS_FINISHED, dispatch.getExecutionStatus());
+        assertNotNull("dispatch closes at the real worker-start moment", dispatch.getFinishTimeUtc());
+        assertEquals(ApprovalExecutionStateMO.STATUS_RUNNING, running.getExecutionStatus());
+        // v2 contract: the activity-only variant must NOT move the ticket to RUNNING
+        verify(approvalMapper, never()).updateStatusByEnum(anyLong(), any(), any());
+    }
+
+    @Test
+    public void markExecutionRunning_delegatesActivitiesAndMovesTicketToRunning() {
+        stubActivity(ApprovalExecutionStateMO.TYPE_PREPARATION, ApprovalExecutionStateMO.STATUS_FINISHED, 2L);
+        stubActivity(ApprovalExecutionStateMO.TYPE_DISPATCH, ApprovalExecutionStateMO.STATUS_RUNNING, null);
+        stubActivity(ApprovalExecutionStateMO.TYPE_RUNNING, ApprovalExecutionStateMO.STATUS_INIT, null);
+
+        service.markExecutionRunning(BIZ_ID);
+
+        verify(activityMapper, times(2)).updateById(any(DmApprovalProcessActivityDO.class));
+        // legacy behavior preserved: ticket transitions to RUNNING
+        verify(approvalMapper).updateStatusByEnum(eq(TICKET_ID),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus.RUNNING), isNull());
+    }
+
     // ==================== helpers ====================
 
     private void stubActivity(String type, String executionStatus, Long totalCount) {

@@ -479,7 +479,9 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (processVO.getTicketStage() == ApprovalStage.EXPLAIN) {
                 vos = this.convertAnalysisActivities(processVO, activities);
             } else if (processVO.getTicketStage() == ApprovalStage.EXECUTION) {
-                vos = this.convertExecutionActivities(processVO, activities, this.resolveExecutionOperators(approvalDO));
+                List<DmExecAutoJobDO> execJobs = this.resolveExecutionJobs(approvalDO);
+                vos = this.convertExecutionActivities(processVO, activities,
+                    this.resolveExecutionOperatorsFromJobs(execJobs), execJobs);
             } else if (approvalDO.getApproType() != ApprovalType.Internal && processVO.getTicketProcessStatus() != ApprovalProcessStatus.FAIL) {
                 vos = this.convertApprovalActivities(processVO, activities);
             } else {
@@ -526,7 +528,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     }
 
     private List<RdpTicketActivityVO> convertExecutionActivities(RdpTicketProcessVO processVO, List<DmApprovalProcessActivityDO> activities,
-                                                                 List<String> executionOperators) {
+                                                                 List<String> executionOperators, List<DmExecAutoJobDO> execJobs) {
+        Map<String, Long> derivedFinish = deriveLegacyStepFinishTimes(processVO, activities, execJobs);
         List<RdpTicketActivityVO> vos = new ArrayList<>();
         for (DmApprovalProcessActivityDO activity : activities) {
             if (!activity.getProcessId().equals(processVO.getTicketProcessId()) || !ApprovalExecutionStateMO.isExecutionType(activity.getActivityId())
@@ -534,6 +537,10 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                 continue;
             }
             ApprovalExecutionStateMO state = JsonUtils.toObj(activity.getContext(), ApprovalExecutionStateMO.class);
+            Long derived = derivedFinish.get(state.getExecutionType());
+            if (derived != null) {
+                state.setFinishTimeUtc(derived);
+            }
             RdpTicketActivityVO vo = RdpConvertUtils.convertToExecutionActivityVO(state);
             if (vo.getDisplayOrder() == null) {
                 vo.setDisplayOrder(activity.getOrderNumber());
@@ -574,10 +581,11 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     }
 
     /**
-     * Who actually executed the ticket: the legacy single job (dependOnBizId) or the v2 per-group
-     * jobs (dependOnGroupId). Uids are resolved to usernames; unknown uids (e.g. SYSTEM) pass through.
+     * The jobs that actually executed the ticket: the legacy single job (dependOnBizId) or
+     * the v2 per-group jobs (dependOnGroupId). Shared by operator resolution and the
+     * legacy step-finish-time derivation below.
      */
-    private List<String> resolveExecutionOperators(DmApprovalDO approvalDO) {
+    private List<DmExecAutoJobDO> resolveExecutionJobs(DmApprovalDO approvalDO) {
         List<DmExecAutoJobDO> jobs = new ArrayList<>();
         DmExecAutoJobDO legacyJob = this.executionDal.autoJobMapper().queryByDependOnBizId(approvalDO.getBizId());
         if (legacyJob != null) {
@@ -589,6 +597,14 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                 jobs.add(groupJob);
             }
         }
+        return jobs;
+    }
+
+    /**
+     * Who actually executed the ticket. Uids are resolved to usernames; unknown uids
+     * (e.g. SYSTEM) pass through.
+     */
+    private List<String> resolveExecutionOperatorsFromJobs(List<DmExecAutoJobDO> jobs) {
         Set<String> operators = new LinkedHashSet<>();
         for (DmExecAutoJobDO job : jobs) {
             if (StringUtils.isBlank(job.getUid())) {
@@ -598,6 +614,62 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             operators.add(user == null ? job.getUid() : user.getUsername());
         }
         return new ArrayList<>(operators);
+    }
+
+    /**
+     * Step-times fix (2026-09-12): tickets completed before the v2 per-step hooks carry a
+     * degenerate bulk stamp — PREPARATION/DISPATCH/RUNNING all finished at the terminal
+     * moment by completeExecution. For a terminal process whose three finish times are
+     * identical, re-derive per-step finish times from the job timeline: v2 dispatch is
+     * synchronous with job creation (min gmt_create closes PREPARATION and DISPATCH), and
+     * max end_time is the true execution end. Post-fix tickets have genuine per-step
+     * stamps (prep != running) and are left untouched.
+     */
+    private static Map<String, Long> deriveLegacyStepFinishTimes(RdpTicketProcessVO processVO,
+                                                                  List<DmApprovalProcessActivityDO> activities,
+                                                                  List<DmExecAutoJobDO> jobs) {
+        Map<String, Long> derived = new HashMap<>();
+        if (processVO.getTicketProcessStatus() != ApprovalProcessStatus.FINISH
+            && processVO.getTicketProcessStatus() != ApprovalProcessStatus.FAIL) {
+            return derived;
+        }
+        Map<String, Long> finish = new HashMap<>();
+        for (DmApprovalProcessActivityDO activity : activities) {
+            if (!activity.getProcessId().equals(processVO.getTicketProcessId())
+                || !ApprovalExecutionStateMO.isExecutionType(activity.getActivityId())
+                || StringUtils.isBlank(activity.getContext())) {
+                continue;
+            }
+            ApprovalExecutionStateMO state = JsonUtils.toObj(activity.getContext(), ApprovalExecutionStateMO.class);
+            if (state != null && state.getFinishTimeUtc() != null) {
+                finish.put(state.getExecutionType(), state.getFinishTimeUtc());
+            }
+        }
+        Long prep = finish.get(ApprovalExecutionStateMO.TYPE_PREPARATION);
+        Long disp = finish.get(ApprovalExecutionStateMO.TYPE_DISPATCH);
+        Long run = finish.get(ApprovalExecutionStateMO.TYPE_RUNNING);
+        if (prep == null || disp == null || run == null || !prep.equals(disp) || !disp.equals(run)) {
+            return derived; // genuine per-step stamps — nothing to derive
+        }
+        Long dispatchedAt = null;
+        Long finishedAt = null;
+        for (DmExecAutoJobDO job : jobs) {
+            if (job.getGmtCreate() != null && (dispatchedAt == null || job.getGmtCreate().getTime() < dispatchedAt)) {
+                dispatchedAt = job.getGmtCreate().getTime();
+            }
+            if (job.getEndTime() != null && (finishedAt == null || job.getEndTime().getTime() > finishedAt)) {
+                finishedAt = job.getEndTime().getTime();
+            }
+        }
+        if (dispatchedAt == null) {
+            return derived;
+        }
+        derived.put(ApprovalExecutionStateMO.TYPE_PREPARATION, dispatchedAt);
+        derived.put(ApprovalExecutionStateMO.TYPE_DISPATCH, dispatchedAt);
+        if (finishedAt != null) {
+            derived.put(ApprovalExecutionStateMO.TYPE_RUNNING, finishedAt);
+        }
+        return derived;
     }
 
     private List<RdpTicketActivityVO> convertApprovalActivities(RdpTicketProcessVO processVO, List<DmApprovalProcessActivityDO> activities) {
