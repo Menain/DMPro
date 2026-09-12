@@ -1092,3 +1092,19 @@
   gap: 8px;
   padding-right: 16px;
 }
+
+// ─── Page shell (global scroll container) ────────────────────────────────────
+
+.page-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.page-shell__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
