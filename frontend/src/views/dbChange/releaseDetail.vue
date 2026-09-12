@@ -47,14 +47,18 @@
           <div class="page-section__title">{{ $t('gov-release-stmt-groups') }}</div>
           <div class="gov-stmt-groups">
             <div v-for="group in detail.stmtGroups" :key="`${group.prodDsId}-${group.prodDbName}`" class="gov-stmt-group">
-              <div class="gov-stmt-group__header">
+              <div class="gov-stmt-group__header" @click="toggleGroup(group)">
                 <div class="gov-stmt-group__db">
                   <Icon type="ios-server-outline" />
                   <span>{{ group.prodDbName }}</span>
                 </div>
-                <span class="gov-stmt-group__ds-id">{{ $t('gov-release-ds-label') }}{{ group.prodDsId }}</span>
+                <div class="gov-stmt-group__meta">
+                  <span class="gov-stmt-group__ds-id">{{ $t('gov-release-ds-label') }}{{ group.prodDsId }}</span>
+                  <span class="gov-stmt-group__count">{{ group.stmts.length }}</span>
+                  <Icon class="gov-stmt-group__arrow" :type="isGroupCollapsed(group) ? 'ios-arrow-down' : 'ios-arrow-up'" />
+                </div>
               </div>
-              <div class="gov-stmt-group__body">
+              <div v-show="!isGroupCollapsed(group)" class="gov-stmt-group__body">
                 <div v-for="stmt in group.stmts" :key="stmt.id" class="gov-stmt-card">
                   <div class="gov-stmt-card__header">
                     <span class="gov-stmt-card__seq">{{ $t('gov-release-seq-label') }}{{ stmt.seq }}</span>
@@ -124,7 +128,8 @@ export default {
       releaseId: null,
       detail: null,
       loading: false,
-      retrying: false
+      retrying: false,
+      collapsedGroups: {}
     };
   },
   computed: {
@@ -165,6 +170,13 @@ export default {
       if (ticketId) {
         this.$router.push(`/ticket/${ticketId}`);
       }
+    },
+    isGroupCollapsed(group) {
+      return !!this.collapsedGroups[`${group.prodDsId}|${group.prodDbName}`];
+    },
+    toggleGroup(group) {
+      const key = `${group.prodDsId}|${group.prodDbName}`;
+      this.collapsedGroups = { ...this.collapsedGroups, [key]: !this.collapsedGroups[key] };
     },
     async handleRetryStmt(stmtId) {
       if (this.retrying) {
@@ -320,6 +332,7 @@ export default {
       background: var(--surface-soft, #f8fafc);
       border-radius: 6px;
       margin-bottom: 12px;
+      cursor: pointer;
     }
 
     &__db {
@@ -331,10 +344,26 @@ export default {
       color: #181d26;
     }
 
+    &__meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
     &__ds-id {
       font-size: 13px;
       color: var(--muted, #41454d);
       font-family: Menlo, Monaco, 'Courier New', monospace;
+    }
+
+    &__count {
+      font-size: 13px;
+      color: var(--muted, #41454d);
+    }
+
+    &__arrow {
+      font-size: 14px;
+      color: var(--muted, #41454d);
     }
 
     &__body {
