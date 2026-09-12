@@ -940,7 +940,12 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         ticket.setEnvName(envDO.getEnvName());
 
         ticket.setContentType(contentType);
-        ticket.setFeatures(List.of(ApprovalFeature.values()));
+        // Biz types without an EXPLAIN stage (DM_PROD_RELEASE: frozen-snapshot replay, no
+        // analysis) never get an EXPLAIN process row from createProcess; stamping PRE_INIT on
+        // them would make preparePreInit throw "EXPLAIN process not found" on the first sweep.
+        if (ApprovalStage.EXPLAIN.checkBiz(approBiz)) {
+            ticket.setFeatures(List.of(ApprovalFeature.values()));
+        }
         switch (contentType) {
             case INLINE -> ticket.setRawSql(fo.getRawSql());
             case ATTACHMENT -> ticket.setRawSql(null);

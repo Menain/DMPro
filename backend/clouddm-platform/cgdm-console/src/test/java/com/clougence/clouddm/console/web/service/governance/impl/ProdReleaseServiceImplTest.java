@@ -29,7 +29,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
-import com.clougence.clouddm.console.web.component.approval.ApprovalFlowService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
@@ -85,7 +84,6 @@ public class ProdReleaseServiceImplTest {
     private DmAuthServiceForBiz      dmAuthServiceForBiz;
     private AutoExecService          autoExecService;
     private ApprovalControlService   approvalControlService;
-    private ApprovalFlowService      approvalFlowService;
     private ApprovalStateService     approvalStateService;
     private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
@@ -136,7 +134,6 @@ public class ProdReleaseServiceImplTest {
         dmAuthServiceForBiz = mock(DmAuthServiceForBiz.class);
         autoExecService = mock(AutoExecService.class);
         approvalControlService = mock(ApprovalControlService.class);
-        approvalFlowService = mock(ApprovalFlowService.class);
         approvalStateService = mock(ApprovalStateService.class);
 
         dbChangeEventDal = mock(DbChangeEventDal.class);
@@ -156,7 +153,6 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
         ReflectionTestUtils.setField(service, "dbPairDal", dbPairDal);
         ReflectionTestUtils.setField(service, "approvalControlService", approvalControlService);
-        ReflectionTestUtils.setField(service, "approvalFlowService", approvalFlowService);
         ReflectionTestUtils.setField(service, "releaseStateMachine", releaseStateMachine);
         ReflectionTestUtils.setField(service, "dmAuthServiceForBiz", dmAuthServiceForBiz);
         ReflectionTestUtils.setField(service, "autoExecService", autoExecService);

@@ -31,7 +31,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.api.console.autoexec.ErrorStrategy;
-import com.clougence.clouddm.console.web.component.approval.ApprovalFlowService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
@@ -100,8 +99,6 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private DbPairDal              dbPairDal;
     @Resource
     private ApprovalControlService  approvalControlService;
-    @Resource
-    private ApprovalFlowService     approvalFlowService;
     @Resource
     private ProdReleaseStateMachine releaseStateMachine;
     @Resource
@@ -301,10 +298,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Step 9: Backfill release.approval_id
         prodReleaseDal.releaseMapper().updateApprovalId(release.getId(), ticketResult.getTicketId());
 
-        // Step 10: createProcess (APPROVAL + CONFIRM + EXECUTION stages)
-        approvalFlowService.createProcess(ticketResult.getTicketId(), ApprovalBiz.DM_PROD_RELEASE, true);
+        // createSqlTicket already ran createProcess for approBiz; a second call here would
+        // insert duplicate APPROVAL/CONFIRM/EXECUTION process rows (initializeProcess is
+        // non-idempotent) and ghost stage nodes in the ticket progress UI.
 
-        // Step 11: Event RELEASE_CREATED
+        // Step 10: Event RELEASE_CREATED
         appendReleaseEvent(release.getId(), GovEventType.RELEASE_CREATED, null, ProdReleaseStatus.APPROVING.name(), uid, null);
 
         return release.getId();
