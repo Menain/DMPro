@@ -28,6 +28,7 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
+import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseFormAssembler;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
@@ -94,6 +95,11 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
     @org.springframework.context.annotation.Lazy
     @Resource
     private ProdReleaseService        prodReleaseService;
+    // @Lazy breaks the bean cycle: AutoExecServiceImpl -> ApprovalControlService ->
+    //   this handler (handlers are constructor-collected into the flow services).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private AutoExecService           autoExecService;
 
     @Override
     public ApprovalBiz handleType() {
@@ -203,8 +209,15 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void executeTicket(long approvalId, ApprovalBiz bizType, ImSenderService sender) {
-        // Read release status for ticket display — no status mutation here.
-        // Execution status is driven by handleReleaseJobCompletion.
+        // WAIT_EXEC sweep entry: safety net for the release completion aggregation
+        // (race fix 2026-09-12, mirrors ChangeApprovalHandler.recoverV2CompletionIfDue).
+        // A release left EXECUTING with every stmt terminal means a completion callback
+        // skipped the aggregation — finish it here so the ticket leaves WAIT_EXEC.
+        DmApprovalDO ticket = this.approvalDal.approvalMapper().queryById(approvalId);
+        Long releaseId = extractReleaseId(ticket);
+        if (releaseId != null) {
+            this.autoExecService.recoverReleaseCompletionIfDue(releaseId);
+        }
     }
 
     @Override

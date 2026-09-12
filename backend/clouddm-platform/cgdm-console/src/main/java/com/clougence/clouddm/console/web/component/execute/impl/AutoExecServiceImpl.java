@@ -449,19 +449,22 @@ public class AutoExecServiceImpl implements AutoExecService {
             return; // not a release job
         }
 
-        // Update stmt exec_status
-        String stmtStatus = success ? "SUCCESS" : "FAILED";
-        this.prodReleaseDal.stmtMapper().updateExecStatus(job.getDependOnReleaseStmtId(), stmtStatus, errorDetail);
-
         DmProdReleaseStmtDO stmt = this.prodReleaseDal.stmtMapper().queryById(job.getDependOnReleaseStmtId());
         if (stmt == null) {
             return;
         }
 
-        DmProdReleaseDO release = this.prodReleaseDal.releaseMapper().queryById(stmt.getReleaseId());
+        // Serialize concurrent completion callbacks per release: take the release row
+        // lock BEFORE writing the stmt status (completion-aggregation race fix,
+        // 2026-09-12 — same convention as the v2 group path's ticket-row lock).
+        DmProdReleaseDO release = this.prodReleaseDal.releaseMapper().selectByIdForUpdate(stmt.getReleaseId());
         if (release == null) {
             return;
         }
+
+        // Update stmt exec_status
+        String stmtStatus = success ? "SUCCESS" : "FAILED";
+        this.prodReleaseDal.stmtMapper().updateExecStatus(job.getDependOnReleaseStmtId(), stmtStatus, errorDetail);
 
         // Append stmt event
         appendReleaseStmtEvent(release.getId(), stmt.getId(),
@@ -495,8 +498,14 @@ public class AutoExecServiceImpl implements AutoExecService {
             }
         }
 
-        // Aggregate: check if all stmts for this release are terminal
-        List<DmProdReleaseStmtDO> allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseId(release.getId());
+        // Aggregate: check if all stmts for this release are terminal. Locking read —
+        // bypasses this transaction's RR snapshot (established by the reads above), so a
+        // callback holding the release row lock sees every committed stmt status and the
+        // concurrent-completion double-skip cannot happen.
+        List<DmProdReleaseStmtDO> allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseIdForUpdate(release.getId());
+        if (allStmts.isEmpty()) {
+            return; // no stmts — nothing to aggregate (guards vacuous all-terminal)
+        }
         boolean allTerminal = allStmts.stream().allMatch(s ->
             "SUCCESS".equals(s.getExecStatus()) || "FAILED".equals(s.getExecStatus()));
 
@@ -504,6 +513,31 @@ public class AutoExecServiceImpl implements AutoExecService {
             boolean anyFailed = allStmts.stream().anyMatch(s -> "FAILED".equals(s.getExecStatus()));
             aggregateReleaseCompletion(release, !anyFailed);
         }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void recoverReleaseCompletionIfDue(long releaseId) {
+        // WAIT_EXEC sweep safety net (mirrors ChangeApprovalHandler.recoverV2CompletionIfDue):
+        // a release left EXECUTING with every stmt terminal means the aggregation was
+        // skipped (pre-fix binary, or an unforeseen callback loss) — finish it here.
+        DmProdReleaseDO release = this.prodReleaseDal.releaseMapper().selectByIdForUpdate(releaseId);
+        if (release == null
+            || !com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.EXECUTING.name()
+                .equals(release.getStatus())) {
+            return; // not executing: nothing to recover (end-status guard vs a concurrent callback)
+        }
+        List<DmProdReleaseStmtDO> allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseIdForUpdate(releaseId);
+        if (allStmts.isEmpty()) {
+            return;
+        }
+        boolean allTerminal = allStmts.stream().allMatch(s ->
+            "SUCCESS".equals(s.getExecStatus()) || "FAILED".equals(s.getExecStatus()));
+        if (!allTerminal) {
+            return; // still running jobs — the callbacks will aggregate
+        }
+        boolean anyFailed = allStmts.stream().anyMatch(s -> "FAILED".equals(s.getExecStatus()));
+        aggregateReleaseCompletion(release, !anyFailed);
     }
 
     private void aggregateReleaseCompletion(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release, boolean allSuccess) {

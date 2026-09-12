@@ -45,6 +45,12 @@ public interface DmProdReleaseMapper extends BaseMapper<DmProdReleaseDO> {
     DmProdReleaseDO queryById(@Param("id") long id);
 
     /**
+     * Locking read (FOR UPDATE) — serializes concurrent release-stmt job completion
+     * callbacks per release (completion-aggregation race fix, 2026-09-12).
+     */
+    DmProdReleaseDO selectByIdForUpdate(@Param("id") long id);
+
+    /**
      * Paginated list with tenant filter on primary_uid.
      */
     IPage<DmProdReleaseDO> listByConditionAndPage(

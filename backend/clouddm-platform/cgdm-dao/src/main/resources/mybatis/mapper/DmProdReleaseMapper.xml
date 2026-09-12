@@ -38,6 +38,18 @@
             id = #{id}
     </select>
 
+    <!-- Locking read: serializes concurrent release-stmt job completion callbacks
+         (same convention as dm_approval selectByIdForUpdate, race fix 2026-09-12). -->
+    <select id="selectByIdForUpdate" resultMap="dmProdReleaseDO">
+        SELECT
+            <include refid="dmProdRelease"/>
+        FROM
+            dm_prod_release
+        WHERE
+            id = #{id}
+        FOR UPDATE
+    </select>
+
     <update id="transitStatus">
         UPDATE
             dm_prod_release

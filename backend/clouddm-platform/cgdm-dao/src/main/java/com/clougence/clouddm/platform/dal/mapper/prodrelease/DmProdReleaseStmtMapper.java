@@ -29,6 +29,13 @@ public interface DmProdReleaseStmtMapper extends BaseMapper<DmProdReleaseStmtDO>
     List<DmProdReleaseStmtDO> queryByReleaseId(@Param("releaseId") long releaseId);
 
     /**
+     * Locking read (FOR UPDATE) for completion aggregation — bypasses the RR snapshot
+     * so a callback holding the release row lock sees every committed stmt status
+     * (completion-aggregation race fix, 2026-09-12).
+     */
+    List<DmProdReleaseStmtDO> queryByReleaseIdForUpdate(@Param("releaseId") long releaseId);
+
+    /**
      * Check if a source stmt has already been merged into any release (uk_source_stmt).
      */
     DmProdReleaseStmtDO queryBySourceStmtId(@Param("sourceStmtId") long sourceStmtId);

@@ -87,6 +87,15 @@ public interface AutoExecService {
      */
     void handleReleaseJobCompletion(long jobId, boolean success, String errorDetail);
 
+    /**
+     * Sweep safety net for the release completion aggregation (race fix 2026-09-12):
+     * if the release is EXECUTING and every stmt is terminal, run the same aggregation
+     * as handleReleaseJobCompletion (DONE / PARTIAL_FAILED + approval terminal update).
+     * No-op otherwise; idempotent via the release row lock + EXECUTING guard + CAS transit.
+     * Called from ProdReleaseApprovalHandler.executeTicket (WAIT_EXEC sweep entry).
+     */
+    void recoverReleaseCompletionIfDue(long releaseId);
+
     void startJob(String jobBizId, String operatorUid);
 
     void deleteJob(String jobBizId);

@@ -57,6 +57,21 @@
             prod_ds_id, prod_db_name, seq
     </select>
 
+    <!-- Locking read for completion aggregation: bypasses the RR snapshot so a
+         callback holding the release row lock sees every committed stmt status
+         (race fix 2026-09-12). -->
+    <select id="queryByReleaseIdForUpdate" resultMap="dmProdReleaseStmtDO">
+        SELECT
+            <include refid="dmProdReleaseStmt"/>
+        FROM
+            dm_prod_release_stmt
+        WHERE
+            release_id = #{releaseId}
+        ORDER BY
+            prod_ds_id, prod_db_name, seq
+        FOR UPDATE
+    </select>
+
     <select id="queryBySourceStmtId" resultMap="dmProdReleaseStmtDO">
         SELECT
             <include refid="dmProdReleaseStmt"/>

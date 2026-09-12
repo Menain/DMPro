@@ -133,13 +133,14 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
         release.setApprovalId(approvalId);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
 
         // No next pending (this was the only/last stmt)
         when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
 
         // All terminal (only 1 stmt, now SUCCESS)
         DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
-        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(successStmt));
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt));
 
         DmApprovalDO approval = mock(DmApprovalDO.class);
         when(approval.getBizId()).thenReturn(bizId);
@@ -173,10 +174,11 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
         release.setApprovalId(4001L);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
 
         // Another stmt in same DB still PENDING
         DmProdReleaseStmtDO otherStmt = buildStmt(2003L, releaseId, 10L, "prod_db", 2, "PENDING");
-        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt, otherStmt));
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(stmt, otherStmt));
 
         autoExecService.handleReleaseJobCompletion(jobId, false, "syntax error");
 
@@ -208,13 +210,14 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
         release.setApprovalId(approvalId);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
 
         // No next pending (this was the only stmt)
         when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
 
         // All terminal (only 1 stmt, now SUCCESS)
         DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
-        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(successStmt));
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt));
 
         DmApprovalDO approval = mock(DmApprovalDO.class);
         when(approval.getBizId()).thenReturn(bizId);
@@ -262,6 +265,7 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
         release.setApprovalId(approvalId);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
 
         // No next pending
         when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
@@ -269,7 +273,7 @@ public class AutoExecReleaseJobCompletionTest {
         // All terminal: this FAILED + another in different DB SUCCESS
         DmProdReleaseStmtDO failedStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "FAILED");
         DmProdReleaseStmtDO successStmt = buildStmt(2006L, releaseId, 11L, "other_db", 1, "SUCCESS");
-        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(failedStmt, successStmt));
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(failedStmt, successStmt));
 
         DmApprovalDO approval = mock(DmApprovalDO.class);
         when(approval.getBizId()).thenReturn(bizId);
@@ -305,6 +309,7 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
         release.setApprovalId(4004L);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
 
         // Next pending stmt with WRONG hash (drift)
         DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
@@ -314,7 +319,7 @@ public class AutoExecReleaseJobCompletionTest {
         // After drift marks next FAILED, all terminal: stmt SUCCESS + next FAILED
         DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
         DmProdReleaseStmtDO failedNext = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "FAILED");
-        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(successStmt, failedNext));
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt, failedNext));
 
         DmApprovalDO approval = mock(DmApprovalDO.class);
         when(approval.getBizId()).thenReturn("biz-4004");
@@ -342,6 +347,141 @@ public class AutoExecReleaseJobCompletionTest {
 
         // Verify no stmt updates
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    // ==================== Race fix: lock ordering + sweep recovery ====================
+
+    @Test
+    public void handleReleaseJobCompletion_locksReleaseBeforeStmtWrite() {
+        long releaseId = 1005L;
+        long stmtId = 2009L;
+        long jobId = 3006L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(stmt));
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        // The release row lock MUST serialize callbacks before any stmt status write
+        org.mockito.InOrder inOrder = inOrder(releaseMapper, stmtMapper);
+        inOrder.verify(releaseMapper).selectByIdForUpdate(releaseId);
+        inOrder.verify(stmtMapper).updateExecStatus(eq(stmtId), eq("SUCCESS"), isNull());
+        // Aggregation reads through the locking query (bypasses the RR snapshot)
+        verify(stmtMapper).queryByReleaseIdForUpdate(releaseId);
+    }
+
+    // Empty stmt list must NOT trigger a vacuous all-terminal aggregation
+    // (Stream.allMatch on an empty stream returns true, which would wrongly
+    // transit EXECUTING -> DONE for a release whose stmts are inconsistent/absent).
+    @Test
+    public void handleReleaseJobCompletion_emptyStmtList_skipsAggregation() {
+        long releaseId = 1010L;
+        long stmtId = 2016L;
+        long jobId = 3007L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        // No next pending + empty aggregation result
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of());
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        verify(releaseStateMachine, never()).transit(anyLong(), anySet(), any(ProdReleaseStatus.class));
+        verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    @Test
+    public void recoverReleaseCompletionIfDue_allSuccess_aggregatesToDone() {
+        long releaseId = 1006L;
+        long approvalId = 4006L;
+        String bizId = "biz-4006";
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(approvalId);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(
+            buildStmt(2010L, releaseId, 10L, "prod_db", 1, "SUCCESS"),
+            buildStmt(2011L, releaseId, 11L, "other_db", 1, "SUCCESS")));
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn(bizId);
+        when(approvalMapper.queryById(approvalId)).thenReturn(approval);
+
+        autoExecService.recoverReleaseCompletionIfDue(releaseId);
+
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.DONE));
+        verify(approvalStateService).completeExecution(bizId);
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_DONE".equals(e.getEventType())
+                && "SYSTEM".equals(e.getOperatorUid())));
+    }
+
+    @Test
+    public void recoverReleaseCompletionIfDue_anyFailed_aggregatesToPartialFailed() {
+        long releaseId = 1007L;
+        long approvalId = 4007L;
+        String bizId = "biz-4007";
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(approvalId);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(
+            buildStmt(2012L, releaseId, 10L, "prod_db", 1, "SUCCESS"),
+            buildStmt(2013L, releaseId, 11L, "other_db", 1, "FAILED")));
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn(bizId);
+        when(approvalMapper.queryById(approvalId)).thenReturn(approval);
+
+        autoExecService.recoverReleaseCompletionIfDue(releaseId);
+
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+        verify(approvalStateService).failExecution(eq(bizId), anyString());
+    }
+
+    @Test
+    public void recoverReleaseCompletionIfDue_releaseNotExecuting_noOp() {
+        long releaseId = 1008L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.DONE);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        autoExecService.recoverReleaseCompletionIfDue(releaseId);
+
+        verify(releaseStateMachine, never()).transit(anyLong(), anySet(), any(ProdReleaseStatus.class));
+        verify(stmtMapper, never()).queryByReleaseIdForUpdate(anyLong());
+    }
+
+    @Test
+    public void recoverReleaseCompletionIfDue_stmtsStillRunning_noOp() {
+        long releaseId = 1009L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(
+            buildStmt(2014L, releaseId, 10L, "prod_db", 1, "SUCCESS"),
+            buildStmt(2015L, releaseId, 11L, "other_db", 1, "EXECUTING")));
+
+        autoExecService.recoverReleaseCompletionIfDue(releaseId);
+
+        verify(releaseStateMachine, never()).transit(anyLong(), anySet(), any(ProdReleaseStatus.class));
+        verify(approvalStateService, never()).completeExecution(anyString());
     }
 
     // ==================== helpers ====================
