@@ -258,7 +258,15 @@ public class ApprovalStateServiceImpl implements ApprovalStateService {
             return;
         }
         DmApprovalProcessDO process = this.ensureActivities(approval.getId());
-        this.finish(process.getId(), ApprovalExecutionStateMO.TYPE_RUNNING);
+        // v2 group jobs never drive the PREPARATION/DISPATCH activities (their lifecycle hooks
+        // are keyed on the legacy dependOnBizId), so terminate every outstanding step here —
+        // legacy tickets already have these rows terminal and stay untouched.
+        for (String type : TYPES) {
+            if (this.isTerminalExecutionState(process.getId(), type)) {
+                continue;
+            }
+            this.finish(process.getId(), type);
+        }
         this.updateProcessStatus(approval.getId(), ApprovalStage.EXECUTION, ApprovalProcessStatus.FINISH, null);
         this.finalizeApproval(approval.getId(), ApprovalStatus.FINISHED, null);
     }
@@ -277,13 +285,21 @@ public class ApprovalStateServiceImpl implements ApprovalStateService {
                 continue;
             }
             ApprovalExecutionStateMO state = JsonUtils.toObj(activity.getContext(), ApprovalExecutionStateMO.class);
+            if (isTerminalExecutionStatus(state.getExecutionStatus())) {
+                continue;
+            }
             if (ApprovalExecutionStateMO.STATUS_RUNNING.equals(state.getExecutionStatus())) {
                 this.update(process.getId(), type, current -> {
                     current.setExecutionStatus(ApprovalExecutionStateMO.STATUS_FAILED);
                     current.setFinishTimeUtc(System.currentTimeMillis());
                     current.setErrorMessage(errorMessage);
                 });
-                break;
+            } else {
+                // never started (INIT): cancel instead of failing a step that never ran
+                this.update(process.getId(), type, current -> {
+                    current.setExecutionStatus(ApprovalExecutionStateMO.STATUS_CANCELED);
+                    current.setFinishTimeUtc(System.currentTimeMillis());
+                });
             }
         }
         this.updateProcessStatus(approval.getId(), ApprovalStage.EXECUTION, ApprovalProcessStatus.FAIL, null);
@@ -355,6 +371,21 @@ public class ApprovalStateServiceImpl implements ApprovalStateService {
             throw new IllegalStateException(stage + " process does not exist, ticketId: " + ticketId);
         }
         return process;
+    }
+
+    private boolean isTerminalExecutionState(long processId, String type) {
+        DmApprovalProcessActivityDO activity = this.approvalDal.activityMapper().queryByProcessIdAndActivityId(processId, type);
+        if (activity == null || StringUtils.isBlank(activity.getContext())) {
+            return true; // nothing to terminate
+        }
+        ApprovalExecutionStateMO state = JsonUtils.toObj(activity.getContext(), ApprovalExecutionStateMO.class);
+        return isTerminalExecutionStatus(state.getExecutionStatus());
+    }
+
+    private static boolean isTerminalExecutionStatus(String executionStatus) {
+        return ApprovalExecutionStateMO.STATUS_FINISHED.equals(executionStatus)
+            || ApprovalExecutionStateMO.STATUS_FAILED.equals(executionStatus)
+            || ApprovalExecutionStateMO.STATUS_CANCELED.equals(executionStatus);
     }
 
     private void finish(long processId, String type) {

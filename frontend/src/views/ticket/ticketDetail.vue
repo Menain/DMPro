@@ -481,7 +481,7 @@
               :key="activity.processActivityId || activity.activityTitle"
             >
               <div>
-                <span>{{ $t('shen-pi-jie-dian') }}</span>
+                <span>{{ stepNodeLabel(activity) }}</span>
                 <strong>{{ activity.activityTitle }}</strong>
               </div>
               <div>
@@ -493,7 +493,7 @@
                 <strong>{{ activity.finishTime || '-' }}</strong>
               </div>
               <span :class="['analysis-item-status', analysisStatusClass(activity.activityStatus)]">
-                {{ activityStatus[activity.activityStatus] }}
+                {{ stepStatusText(activity) }}
               </span>
             </div>
           </div>
@@ -1038,6 +1038,13 @@ export default {
         COMPLETED: this.$t('yi-tong-guo'),
         REFUSE: this.$t('yi-ju-jue')
       },
+      executionActivityStatus: {
+        NEW: this.$t('chu-shi-hua'),
+        RUNNING: this.$t('ticket-exec-step-running'),
+        CANCELED: this.$t('yi-qu-xiao'),
+        COMPLETED: this.$t('ticket-exec-step-completed'),
+        REFUSE: this.$t('ticket-exec-step-failed')
+      },
       thirdPartyName: {
         DingTalk: this.$t('ding-ding-shen-pi'),
         Feishu: this.$t('fei-shu-shen-pi'),
@@ -1337,6 +1344,16 @@ export default {
         REFUSE: 'ticket-analysis-failed'
       };
       return this.$t(keyMap[status] || status);
+    },
+    isExecutionActivity(activity) {
+      return String(activity.activityTitle || '').startsWith('EXECUTION_');
+    },
+    stepNodeLabel(activity) {
+      return this.isExecutionActivity(activity) ? this.$t('ticket-exec-step') : this.$t('shen-pi-jie-dian');
+    },
+    stepStatusText(activity) {
+      const statusMap = this.isExecutionActivity(activity) ? this.executionActivityStatus : this.activityStatus;
+      return statusMap[activity.activityStatus] || activity.activityStatus;
     },
     analysisStatusClass(status) {
       const classMap = {

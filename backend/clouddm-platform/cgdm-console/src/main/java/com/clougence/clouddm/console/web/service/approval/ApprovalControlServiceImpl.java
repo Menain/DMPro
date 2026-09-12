@@ -54,6 +54,7 @@ import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.execute.model.AutoExecCreateMO;
 import com.clougence.clouddm.console.web.constants.DmConfirmActionType;
+import com.clougence.clouddm.console.web.constants.RdpTicketProcessActivityStatus;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.global.i18n.I18nRdpLabelKeys;
@@ -78,6 +79,7 @@ import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.AutoExecType;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoTaskDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.monitor.DmMonBizLogDO;
 import com.clougence.clouddm.platform.dal.model.monitor.LogDependBizType;
 import com.clougence.clouddm.platform.dal.model.secrule.WarnLevel;
@@ -153,6 +155,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private ApprovalService             approvalService;
     @Resource
     private ApprovalStateService        approvalStateService;
+    @Resource
+    private TicketDbStmtDal             ticketDbStmtDal;
     @Resource
     private ApprovalProviderServiceImpl approvalProviderService;
     @Resource
@@ -475,7 +479,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (processVO.getTicketStage() == ApprovalStage.EXPLAIN) {
                 vos = this.convertAnalysisActivities(processVO, activities);
             } else if (processVO.getTicketStage() == ApprovalStage.EXECUTION) {
-                vos = this.convertExecutionActivities(processVO, activities);
+                vos = this.convertExecutionActivities(processVO, activities, this.resolveExecutionOperators(approvalDO));
             } else if (approvalDO.getApproType() != ApprovalType.Internal && processVO.getTicketProcessStatus() != ApprovalProcessStatus.FAIL) {
                 vos = this.convertApprovalActivities(processVO, activities);
             } else {
@@ -521,7 +525,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         return vos;
     }
 
-    private List<RdpTicketActivityVO> convertExecutionActivities(RdpTicketProcessVO processVO, List<DmApprovalProcessActivityDO> activities) {
+    private List<RdpTicketActivityVO> convertExecutionActivities(RdpTicketProcessVO processVO, List<DmApprovalProcessActivityDO> activities,
+                                                                 List<String> executionOperators) {
         List<RdpTicketActivityVO> vos = new ArrayList<>();
         for (DmApprovalProcessActivityDO activity : activities) {
             if (!activity.getProcessId().equals(processVO.getTicketProcessId()) || !ApprovalExecutionStateMO.isExecutionType(activity.getActivityId())
@@ -533,10 +538,66 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (vo.getDisplayOrder() == null) {
                 vo.setDisplayOrder(activity.getOrderNumber());
             }
+            normalizeStaleExecutionStatus(processVO, vo);
+            if (!executionOperators.isEmpty()) {
+                vo.setApprovalUserList(executionOperators);
+            }
             vos.add(vo);
         }
         vos.sort(Comparator.comparing(RdpTicketActivityVO::getDisplayOrder, Comparator.nullsLast(Integer::compareTo)));
         return vos;
+    }
+
+    /**
+     * Tickets completed/failed before the v2 lifecycle termination fix still carry stale
+     * PREPARATION=RUNNING / DISPATCH=INIT rows: once the execution process itself is terminal,
+     * present those rows as terminal too (the process status is the authoritative fact).
+     */
+    private static void normalizeStaleExecutionStatus(RdpTicketProcessVO processVO, RdpTicketActivityVO vo) {
+        boolean terminal = vo.getActivityStatus() == RdpTicketProcessActivityStatus.COMPLETED
+            || vo.getActivityStatus() == RdpTicketProcessActivityStatus.REFUSE
+            || vo.getActivityStatus() == RdpTicketProcessActivityStatus.CANCELED;
+        if (terminal) {
+            return;
+        }
+        if (processVO.getTicketProcessStatus() == ApprovalProcessStatus.FINISH) {
+            vo.setActivityStatus(RdpTicketProcessActivityStatus.COMPLETED);
+            if (vo.getFinishTime() == null) {
+                vo.setFinishTime(processVO.getFinishTime());
+            }
+        } else if (processVO.getTicketProcessStatus() == ApprovalProcessStatus.FAIL) {
+            vo.setActivityStatus(RdpTicketProcessActivityStatus.CANCELED);
+            if (vo.getFinishTime() == null) {
+                vo.setFinishTime(processVO.getFinishTime());
+            }
+        }
+    }
+
+    /**
+     * Who actually executed the ticket: the legacy single job (dependOnBizId) or the v2 per-group
+     * jobs (dependOnGroupId). Uids are resolved to usernames; unknown uids (e.g. SYSTEM) pass through.
+     */
+    private List<String> resolveExecutionOperators(DmApprovalDO approvalDO) {
+        List<DmExecAutoJobDO> jobs = new ArrayList<>();
+        DmExecAutoJobDO legacyJob = this.executionDal.autoJobMapper().queryByDependOnBizId(approvalDO.getBizId());
+        if (legacyJob != null) {
+            jobs.add(legacyJob);
+        }
+        for (DmTicketDbStmtDO group : this.ticketDbStmtDal.stmtMapper().queryByTicketId(approvalDO.getId())) {
+            DmExecAutoJobDO groupJob = this.executionDal.autoJobMapper().queryByDependOnGroupId(group.getId());
+            if (groupJob != null) {
+                jobs.add(groupJob);
+            }
+        }
+        Set<String> operators = new LinkedHashSet<>();
+        for (DmExecAutoJobDO job : jobs) {
+            if (StringUtils.isBlank(job.getUid())) {
+                continue;
+            }
+            DmAuthUserDO user = this.authDal.userMapper().queryByUid(job.getUid());
+            operators.add(user == null ? job.getUid() : user.getUsername());
+        }
+        return new ArrayList<>(operators);
     }
 
     private List<RdpTicketActivityVO> convertApprovalActivities(RdpTicketProcessVO processVO, List<DmApprovalProcessActivityDO> activities) {

@@ -653,6 +653,9 @@ public class RdpConvertUtils {
         });
         vo.setStartTimeUtc(item.getStartTimeUtc());
         vo.setFinishTimeUtc(item.getFinishTimeUtc());
+        if (item.getFinishTimeUtc() != null) {
+            vo.setFinishTime(DateFormatType.s_yyyyMMdd_HHmmss.format(new java.util.Date(item.getFinishTimeUtc())));
+        }
         vo.setProcessedCount(item.getProcessedCount());
         vo.setStatementCount(item.getTotalCount());
         vo.setRemark(item.getErrorMessage());
