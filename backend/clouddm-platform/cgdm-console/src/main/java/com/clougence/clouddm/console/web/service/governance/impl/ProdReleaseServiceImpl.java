@@ -36,7 +36,9 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
+import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
+import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
@@ -108,6 +110,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private AutoExecService         autoExecService;
     @Resource
     private ApprovalStateService    approvalStateService;
+    @Resource
+    private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
 
     // ==================== create (merge transaction) ====================
 
@@ -357,6 +361,20 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 continue;
             }
 
+            // Gate: schema precondition check (design §6 — mirrors hash-drift behavior)
+            PrecheckConclusion precheckResult = releaseSchemaPrecheckService.precheck(first);
+            if (precheckResult.isBlock()) {
+                prodReleaseDal.stmtMapper().updateExecStatus(first.getId(), EXEC_STATUS_FAILED,
+                    precheckResult.toDetailText());
+                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
+                    null, null, uid, precheckResult.toEventData(first.getId()));
+                continue;
+            }
+            if (precheckResult.isWarnSkip()) {
+                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
+                    null, null, uid, precheckResult.toEventData(first.getId()));
+            }
+
             // Create job for this stmt
             String jobBizId = DmTeamUtils.nextExecJobBizId();
             String languageTag = DmI18nUtils.getLocale().toLanguageTag();
@@ -450,6 +468,33 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nDmMsgKeys.GOV_RELEASE_STMT_JOB_ACTIVE.name()));
             }
+        }
+
+        // Gate: re-hash and compare (anti-drift — existing defect fix, same semantics as startExecution)
+        String recomputed = GovSqlHashUtils.hash(stmt.getSqlContent());
+        if (!recomputed.equals(stmt.getHash())) {
+            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
+                "Hash drift detected: stored=" + stmt.getHash() + " recomputed=" + recomputed);
+            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_HASH_DRIFT,
+                null, null, uid, JsonUtils.toJson(Map.of(
+                    "stmtId", stmt.getId(),
+                    "storedHash", stmt.getHash(),
+                    "recomputedHash", recomputed)));
+            return;
+        }
+
+        // Gate: schema precondition check (design §6)
+        PrecheckConclusion precheckResult = releaseSchemaPrecheckService.precheck(stmt);
+        if (precheckResult.isBlock()) {
+            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
+                precheckResult.toDetailText());
+            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
+                null, null, uid, precheckResult.toEventData(stmt.getId()));
+            return;
+        }
+        if (precheckResult.isWarnSkip()) {
+            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
+                null, null, uid, precheckResult.toEventData(stmt.getId()));
         }
 
         // Reset stmt to PENDING

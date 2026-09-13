@@ -143,6 +143,8 @@ public class AutoExecServiceImpl implements AutoExecService {
     private com.clougence.clouddm.platform.dal.access.DbChangeEventDal dbChangeEventDal;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine releaseStateMachine;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
@@ -489,6 +491,25 @@ public class AutoExecServiceImpl implements AutoExecService {
                     aggregateReleaseCompletion(release, false);
                     return;
                 }
+
+                // Gate: schema precondition check (design §6 — mirrors chain hash-drift behavior)
+                com.clougence.clouddm.console.web.component.governance.PrecheckConclusion precheckResult
+                    = this.releaseSchemaPrecheckService.precheck(next);
+                if (precheckResult.isBlock()) {
+                    this.prodReleaseDal.stmtMapper().updateExecStatus(next.getId(), "FAILED",
+                        precheckResult.toDetailText());
+                    appendReleaseEvent(release.getId(),
+                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
+                        null, "FAILED", null, precheckResult.toEventData(next.getId()));
+                    aggregateReleaseCompletion(release, false);
+                    return;
+                }
+                if (precheckResult.isWarnSkip()) {
+                    appendReleaseEvent(release.getId(),
+                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
+                        null, null, null, precheckResult.toEventData(next.getId()));
+                }
+
                 String nextJobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
                 String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
                 this.createReleaseStmtJob(next, nextJobBizId, false,

@@ -26,7 +26,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
+import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
+import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
@@ -64,6 +66,7 @@ public class AutoExecReleaseJobCompletionTest {
     private DmApprovalMapper          approvalMapper;
     private ProdReleaseStateMachine  releaseStateMachine;
     private ApprovalStateService     approvalStateService;
+    private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
 
     private static final String UID = "uid-operator";
 
@@ -92,6 +95,8 @@ public class AutoExecReleaseJobCompletionTest {
 
         releaseStateMachine = mock(ProdReleaseStateMachine.class);
         approvalStateService = mock(ApprovalStateService.class);
+        releaseSchemaPrecheckService = mock(ReleaseSchemaPrecheckService.class);
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(PrecheckConclusion.pass());
 
         TicketDbStmtDal ticketDbStmtDal = mock(TicketDbStmtDal.class);
         com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper ticketStmtMapper
@@ -103,6 +108,7 @@ public class AutoExecReleaseJobCompletionTest {
         ReflectionTestUtils.setField(autoExecService, "releaseStateMachine", releaseStateMachine);
         ReflectionTestUtils.setField(autoExecService, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(autoExecService, "approvalStateService", approvalStateService);
+        ReflectionTestUtils.setField(autoExecService, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
         ReflectionTestUtils.setField(autoExecService, "execDal", execDal);
         ReflectionTestUtils.setField(autoExecService, "ticketDbStmtDal", ticketDbStmtDal);
     }
@@ -482,6 +488,107 @@ public class AutoExecReleaseJobCompletionTest {
 
         verify(releaseStateMachine, never()).transit(anyLong(), anySet(), any(ProdReleaseStatus.class));
         verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    // ==================== Chain precheck wiring ====================
+
+    @Test
+    public void handleReleaseJobCompletion_chainedPrecheckBlock_marksFailedStopsChain() {
+        long releaseId = 1020L;
+        long stmtId = 2020L;
+        long nextId = 2021L;
+        long jobId = 3020L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(4020L);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        // Next pending stmt with CORRECT hash (passes hash gate, reaches precheck)
+        DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
+
+        // Precheck returns BLOCK
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.block(List.of(
+                new com.clougence.clouddm.console.web.component.governance.SchemaViolation(
+                    1, "ALTER TABLE t ADD COLUMN c", "t", "column c", "column to not exist", "exists"))));
+
+        // After BLOCK marks next FAILED, all terminal: stmt SUCCESS + next FAILED
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        DmProdReleaseStmtDO failedNext = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "FAILED");
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt, failedNext));
+
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-4020");
+        when(approvalMapper.queryById(4020L)).thenReturn(approval);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        // Verify next stmt marked FAILED with precheck detail
+        verify(stmtMapper).updateExecStatus(eq(nextId), eq("FAILED"), contains("column"));
+        // Verify precheck failed event
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_FAILED".equals(e.getEventType())));
+        // Verify transit to PARTIAL_FAILED
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+        // Verify no createReleaseStmtJob called (chain stopped)
+        // Note: createReleaseStmtJob is on the same service instance, but it requires heavy
+        // dependencies (dsDal, configService, analysisService) that aren't mocked here.
+        // The BLOCK return before reaching it is verified by the PARTIAL_FAILED transit.
+    }
+
+    @Test
+    public void handleReleaseJobCompletion_chainedPrecheckWarnSkip_writesEvent() {
+        long releaseId = 1021L;
+        long stmtId = 2022L;
+        long nextId = 2023L;
+        long jobId = 3021L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(4021L);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        // Next pending stmt with CORRECT hash
+        DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
+
+        // Precheck returns WARN_SKIP — but createReleaseStmtJob requires heavy deps.
+        // We can't fully test the proceed path without mocking dsDal/configService/analysisService.
+        // Instead, verify the WARN_SKIP event is written before the createReleaseStmtJob call.
+        // createReleaseStmtJob will throw (null deps) — the event is already written by then.
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.warnSkip("worker unreachable"));
+
+        try {
+            autoExecService.handleReleaseJobCompletion(jobId, true, null);
+        } catch (Exception e) {
+            // Expected: createReleaseStmtJob will fail due to unmocked deps
+        }
+
+        // Verify WARN_SKIP event was written (before createReleaseStmtJob failed)
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_SKIPPED".equals(e.getEventType())));
     }
 
     // ==================== helpers ====================

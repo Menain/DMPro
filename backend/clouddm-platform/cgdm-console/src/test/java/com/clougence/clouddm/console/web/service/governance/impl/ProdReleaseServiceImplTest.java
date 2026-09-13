@@ -33,7 +33,9 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
+import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
+import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
 import com.clougence.clouddm.console.web.util.DmTeamUtils;
@@ -87,6 +89,7 @@ public class ProdReleaseServiceImplTest {
     private ApprovalStateService     approvalStateService;
     private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
+    private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -135,6 +138,9 @@ public class ProdReleaseServiceImplTest {
         autoExecService = mock(AutoExecService.class);
         approvalControlService = mock(ApprovalControlService.class);
         approvalStateService = mock(ApprovalStateService.class);
+        releaseSchemaPrecheckService = mock(ReleaseSchemaPrecheckService.class);
+        // Default: precheck passes
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(PrecheckConclusion.pass());
 
         dbChangeEventDal = mock(DbChangeEventDal.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
@@ -157,6 +163,7 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "dmAuthServiceForBiz", dmAuthServiceForBiz);
         ReflectionTestUtils.setField(service, "autoExecService", autoExecService);
         ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
+        ReflectionTestUtils.setField(service, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
     }
 
@@ -505,6 +512,185 @@ public class ProdReleaseServiceImplTest {
         verify(stmtMapper).updateExecStatus(eq(stmtId), eq("PENDING"), isNull());
         verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
         verify(autoExecService).startJob(anyString(), eq(UID));
+    }
+
+    // ==================== Schema precheck wiring tests ====================
+
+    @Test
+    public void startExecution_precheckBlock_marksStmtFailedNoJob() {
+        long releaseId = 550L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(650L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        // Precheck returns BLOCK
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.block(List.of(
+                new com.clougence.clouddm.console.web.component.governance.SchemaViolation(
+                    1, "CREATE TABLE t(id int)", "t", null, "table to not exist", "exists"))));
+
+        // All terminal after BLOCK
+        DmProdReleaseStmtDO failedStmt = buildReleaseStmt(650L, releaseId, "FAILED");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt), List.of(failedStmt));
+
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-550");
+        when(approvalMapper.queryById(anyLong())).thenReturn(approval);
+
+        service.startExecution(releaseId, UID);
+
+        // Verify stmt marked FAILED with precheck detail
+        verify(stmtMapper).updateExecStatus(eq(650L), eq("FAILED"), contains("table"));
+        // Verify precheck failed event written
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_FAILED".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())));
+        // Verify no job created
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    @Test
+    public void startExecution_precheckWarnSkip_proceedsWithJobAndEvent() {
+        long releaseId = 551L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(651L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        // Precheck returns WARN_SKIP
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.warnSkip("worker unreachable"));
+
+        service.startExecution(releaseId, UID);
+
+        // Verify skipped event written
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_SKIPPED".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())));
+        // Verify job created (proceeded despite warning)
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+    }
+
+    @Test
+    public void startExecution_precheckPass_noEvent() {
+        long releaseId = 552L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(652L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        // Precheck returns PASS (default mock)
+        service.startExecution(releaseId, UID);
+
+        // No precheck events
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && e.getEventType() != null
+                && e.getEventType().contains("PRECHECK")));
+        // Job created
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+    }
+
+    // ==================== retryReleaseStmt hash gate + precheck wiring ====================
+
+    @Test
+    public void retryReleaseStmt_hashDrift_marksFailedNoJob() {
+        long stmtId = 920L;
+        long releaseId = 921L;
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(stmtId, releaseId, "FAILED");
+        // Corrupt the hash to trigger drift
+        stmt.setHash("WRONG_HASH");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setPrimaryUid(PUID);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = mock(com.clougence.clouddm.platform.dal.model.datasource.DmDsDO.class);
+        when(prodDs.getInstanceId()).thenReturn("inst-1");
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(prodDs);
+
+        service.retryReleaseStmt(PUID, UID, stmtId);
+
+        // Verify stmt marked FAILED with hash drift detail
+        verify(stmtMapper).updateExecStatus(eq(stmtId), eq("FAILED"), contains("Hash drift"));
+        // Verify hash drift event
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_HASH_DRIFT".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())));
+        // Verify no PENDING reset and no job
+        verify(stmtMapper, never()).updateExecStatus(eq(stmtId), eq("PENDING"), any());
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    @Test
+    public void retryReleaseStmt_precheckBlock_doesNotRebuild() {
+        long stmtId = 922L;
+        long releaseId = 923L;
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(stmtId, releaseId, "FAILED");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setPrimaryUid(PUID);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = mock(com.clougence.clouddm.platform.dal.model.datasource.DmDsDO.class);
+        when(prodDs.getInstanceId()).thenReturn("inst-1");
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(prodDs);
+
+        // Precheck returns BLOCK
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.block(List.of(
+                new com.clougence.clouddm.console.web.component.governance.SchemaViolation(
+                    1, "CREATE TABLE t(id int)", "t", null, "table to not exist", "exists"))));
+
+        service.retryReleaseStmt(PUID, UID, stmtId);
+
+        // Verify stmt marked FAILED with precheck detail (not PENDING)
+        verify(stmtMapper).updateExecStatus(eq(stmtId), eq("FAILED"), contains("table"));
+        // Verify precheck failed event
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_FAILED".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())));
+        // Verify no PENDING reset and no job
+        verify(stmtMapper, never()).updateExecStatus(eq(stmtId), eq("PENDING"), any());
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    @Test
+    public void retryReleaseStmt_precheckPass_rebuildsJob() {
+        long stmtId = 924L;
+        long releaseId = 925L;
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(stmtId, releaseId, "FAILED");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setPrimaryUid(PUID);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = mock(com.clougence.clouddm.platform.dal.model.datasource.DmDsDO.class);
+        when(prodDs.getInstanceId()).thenReturn("inst-1");
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(prodDs);
+
+        // Precheck returns PASS (default mock)
+        service.retryReleaseStmt(PUID, UID, stmtId);
+
+        // Verify PENDING reset happened
+        verify(stmtMapper).updateExecStatus(eq(stmtId), eq("PENDING"), isNull());
+        // Verify job created
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
     }
 
     // ==================== helpers ====================
