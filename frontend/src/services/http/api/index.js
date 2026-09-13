@@ -26,6 +26,7 @@ import { sshConfigApi } from '@/services/http/api/sshConfig';
 import { permGroupApi } from '@/services/http/api/permGroup';
 import { dbChangeApi } from '@/services/http/api/dbChange';
 import { dbPairApi } from '@/services/http/api/dbPair';
+import { schemaPatrolApi } from '@/services/http/api/schemaPatrol';
 import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
 
 export const api = {
@@ -57,5 +58,6 @@ export const api = {
   ...permGroupApi,
   ...dbChangeApi,
   ...dbPairApi,
+  ...schemaPatrolApi,
   ...dbChangeV2Api
 };

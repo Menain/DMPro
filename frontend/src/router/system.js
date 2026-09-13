@@ -181,6 +181,12 @@ export default [
     meta: { requiredAuth: 'GOV_DB_PAIR_MANAGE' }
   },
   {
+    path: '/manager/schemaPatrol',
+    name: 'Management_SchemaPatrol',
+    component: () => import(/* webpackChunkName: "system-schema-patrol" */ '@/views/system/schemaPatrol/index'),
+    meta: { requiredAuth: 'GOV_DB_PAIR_MANAGE' }
+  },
+  {
     path: 'management/logs',
     redirect: '/manager/logs'
   },

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.govpatrol.DmGovSchemaPatrolRunMapper">
+
+    <resultMap id="dmGovSchemaPatrolRunDO" type="com.clougence.clouddm.platform.dal.model.govpatrol.DmGovSchemaPatrolRunDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="trigger_type" property="triggerType"/>
+        <result column="status" property="status"/>
+        <result column="pairs_total" property="pairsTotal"/>
+        <result column="pairs_done" property="pairsDone"/>
+        <result column="unexplained_count" property="unexplainedCount"/>
+        <result column="error" property="error"/>
+        <result column="started_by" property="startedBy"/>
+    </resultMap>
+
+    <sql id="dmGovSchemaPatrolRun">
+        id,
+        gmt_create,
+        gmt_modified,
+        trigger_type,
+        status,
+        pairs_total,
+        pairs_done,
+        unexplained_count,
+        error,
+        started_by
+    </sql>
+
+    <insert id="insertRun" parameterType="com.clougence.clouddm.platform.dal.model.govpatrol.DmGovSchemaPatrolRunDO"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO dm_gov_schema_patrol_run
+            (trigger_type, status, pairs_total, pairs_done, unexplained_count, error, started_by)
+        VALUES
+            (#{triggerType}, #{status}, #{pairsTotal}, #{pairsDone}, #{unexplainedCount}, #{error}, #{startedBy})
+    </insert>
+
+    <select id="queryById" resultMap="dmGovSchemaPatrolRunDO">
+        SELECT
+            <include refid="dmGovSchemaPatrolRun"/>
+        FROM
+            dm_gov_schema_patrol_run
+        WHERE
+            id = #{id}
+    </select>
+
+    <select id="listRuns" resultMap="dmGovSchemaPatrolRunDO">
+        SELECT
+            <include refid="dmGovSchemaPatrolRun"/>
+        FROM
+            dm_gov_schema_patrol_run
+        ORDER BY
+            gmt_create DESC
+    </select>
+
+    <select id="queryRunning" resultMap="dmGovSchemaPatrolRunDO">
+        SELECT
+            <include refid="dmGovSchemaPatrolRun"/>
+        FROM
+            dm_gov_schema_patrol_run
+        WHERE
+            status = 'RUNNING'
+        LIMIT 1
+    </select>
+
+    <select id="queryLatestAuto" resultMap="dmGovSchemaPatrolRunDO">
+        SELECT
+            <include refid="dmGovSchemaPatrolRun"/>
+        FROM
+            dm_gov_schema_patrol_run
+        WHERE
+            trigger_type = 'AUTO'
+        ORDER BY
+            gmt_create DESC
+        LIMIT 1
+    </select>
+
+    <update id="updateStatus">
+        UPDATE
+            dm_gov_schema_patrol_run
+        SET
+            status            = #{status},
+            pairs_done        = #{pairsDone},
+            unexplained_count = #{unexplainedCount},
+            error             = #{error}
+        WHERE
+            id = #{id}
+    </update>
+
+    <update id="incrementPairsDone">
+        UPDATE
+            dm_gov_schema_patrol_run
+        SET
+            pairs_done = pairs_done + 1
+        WHERE
+            id = #{id}
+    </update>
+
+    <delete id="deleteOldRuns">
+        DELETE FROM
+            dm_gov_schema_patrol_run
+        WHERE
+            id NOT IN (
+                SELECT id FROM (
+                    SELECT id FROM dm_gov_schema_patrol_run
+                    ORDER BY gmt_create DESC
+                    LIMIT #{keepCount}
+                ) AS keep_ids
+            )
+    </delete>
+
+</mapper>

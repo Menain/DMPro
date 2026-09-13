@@ -110,4 +110,13 @@
             AND r.status NOT IN ('DONE', 'REJECTED', 'CANCELLED')
     </select>
 
+    <select id="listActive" resultMap="dmProdReleaseDO">
+        SELECT
+            <include refid="dmProdRelease"/>
+        FROM
+            dm_prod_release
+        WHERE
+            status NOT IN ('DONE', 'REJECTED', 'CANCELLED')
+    </select>
+
 </mapper>

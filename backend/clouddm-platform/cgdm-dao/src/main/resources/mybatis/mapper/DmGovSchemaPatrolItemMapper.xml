@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.govpatrol.DmGovSchemaPatrolItemMapper">
+
+    <resultMap id="dmGovSchemaPatrolItemDO" type="com.clougence.clouddm.platform.dal.model.govpatrol.DmGovSchemaPatrolItemDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="run_id" property="runId"/>
+        <result column="pair_id" property="pairId"/>
+        <result column="pre_ds_id" property="preDsId"/>
+        <result column="pre_db_name" property="preDbName"/>
+        <result column="prod_ds_id" property="prodDsId"/>
+        <result column="prod_db_name" property="prodDbName"/>
+        <result column="table_name" property="tableName"/>
+        <result column="diff_class" property="diffClass"/>
+        <result column="explain_class" property="explainClass"/>
+        <result column="explain_ref" property="explainRef"/>
+        <result column="detail_json" property="detailJson"/>
+    </resultMap>
+
+    <sql id="dmGovSchemaPatrolItem">
+        id,
+        gmt_create,
+        gmt_modified,
+        run_id,
+        pair_id,
+        pre_ds_id,
+        pre_db_name,
+        prod_ds_id,
+        prod_db_name,
+        table_name,
+        diff_class,
+        explain_class,
+        explain_ref,
+        detail_json
+    </sql>
+
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO dm_gov_schema_patrol_item
+            (run_id, pair_id, pre_ds_id, pre_db_name, prod_ds_id, prod_db_name,
+             table_name, diff_class, explain_class, explain_ref, detail_json)
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (#{row.runId}, #{row.pairId}, #{row.preDsId}, #{row.preDbName}, #{row.prodDsId}, #{row.prodDbName},
+             #{row.tableName}, #{row.diffClass}, #{row.explainClass}, #{row.explainRef}, #{row.detailJson})
+        </foreach>
+    </insert>
+
+    <select id="queryByRunId" resultMap="dmGovSchemaPatrolItemDO">
+        SELECT
+            <include refid="dmGovSchemaPatrolItem"/>
+        FROM
+            dm_gov_schema_patrol_item
+        WHERE
+            run_id = #{runId}
+        ORDER BY
+            pair_id, table_name
+    </select>
+
+    <delete id="deleteItemsByOldRuns">
+        DELETE FROM
+            dm_gov_schema_patrol_item
+        WHERE
+            run_id NOT IN (
+                SELECT id FROM (
+                    SELECT id FROM dm_gov_schema_patrol_run
+                    ORDER BY gmt_create DESC
+                    LIMIT #{keepCount}
+                ) AS keep_ids
+            )
+    </delete>
+
+</mapper>

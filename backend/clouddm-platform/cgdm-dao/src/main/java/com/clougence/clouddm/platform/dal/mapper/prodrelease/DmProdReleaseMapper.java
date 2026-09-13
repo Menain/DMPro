@@ -63,4 +63,10 @@ public interface DmProdReleaseMapper extends BaseMapper<DmProdReleaseDO> {
      * Used for the library-level lock (service-layer check, design §6).
      */
     int countActiveByProdDb(@Param("prodDsId") long prodDsId, @Param("prodDbName") String prodDbName);
+
+    /**
+     * List all non-terminal (active) releases. Used by schema drift patrol (sub-task C)
+     * to build the EXEMPT_ACTIVE table set.
+     */
+    List<DmProdReleaseDO> listActive();
 }

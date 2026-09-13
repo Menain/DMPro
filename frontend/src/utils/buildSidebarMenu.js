@@ -52,6 +52,7 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   if (myCatLog.includes('CAT_RDP_DB_CHANGE_GOVERN')) {
     managementChildren.push(linkItem('/manager/permGroup', '/#/manager/permGroup', 'quan-xian-zu', 'icon-v2-MyAuth'));
     managementChildren.push(linkItem('/manager/dbPair', '/#/manager/dbPair', 'ku-ying-she', 'icon-v2-DataBase2'));
+    managementChildren.push(linkItem('/manager/schemaPatrol', '/#/manager/schemaPatrol', 'xun-jian-bao-gao', 'icon-v2-DataBase2'));
   }
   if (hasLogSection) {
     managementChildren.push(linkItem('/manager/logs', '/#/manager/logs', 'nav-ri-zhi', 'icon-v2-audit'));
