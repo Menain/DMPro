@@ -42,6 +42,7 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.detectrule.SecRulesCheckResult;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
+import com.clougence.clouddm.console.web.component.governance.FullWidthSqlLint;
 import com.clougence.clouddm.console.web.component.governance.impl.GovStmtSplitServiceImpl;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -100,6 +101,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private static final String TICKET_TYPE_PRE_DDL  = "PRE_DDL";
     private static final String TICKET_TYPE_PROD_DML = "PROD_DML";
     private static final String ENGINE_V2           = "v2";
+    private static final String CONFIG_FULL_WIDTH_LINT_BLOCK = "govTicketFullWidthLintBlock";
 
     private static final RuleLevel[] BLOCK_LEVELS = { RuleLevel.FAILURE, RuleLevel.TICKET };
 
@@ -362,6 +364,27 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             return result;
         }
 
+        // Full-width character lint (fail-open; switch-controlled)
+        try {
+            List<FullWidthSqlLint.Hit> fwHits = FullWidthSqlLint.scan(sqlContent);
+            if (!fwHits.isEmpty()) {
+                if (isFullWidthLintBlock()) {
+                    result.setCheckStatus("FAIL");
+                    int limit = Math.min(fwHits.size(), 5);
+                    List<String> msgs = new ArrayList<>();
+                    for (int k = 0; k < limit; k++) {
+                        msgs.add(FullWidthSqlLint.formatHit(fwHits.get(k)));
+                    }
+                    result.setErrorMessage(String.join("\n", msgs));
+                    return result;
+                } else {
+                    log.debug("[GovTicketV2] Full-width lint hit but switch off (pairId={}, hits={})", pairId, fwHits.size());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[GovTicketV2] Full-width lint scan error for pair {}, fail-open", pairId, e);
+        }
+
         // Resolve pair and target DS
         DmDbPairDO pair = resolvePair(pairId);
         if (pair == null || !STATUS_ENABLED.equals(pair.getStatus())) {
@@ -567,6 +590,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     }
 
     // ==================== helpers ====================
+
+    private boolean isFullWidthLintBlock() {
+        try {
+            Boolean block = systemDal.fetchSystemConf(CONFIG_FULL_WIDTH_LINT_BLOCK, Boolean.class);
+            return block == null || block;
+        } catch (Exception e) {
+            return true; // default BLOCK
+        }
+    }
 
     private void validateTicketType(String ticketType) {
         if (!TICKET_TYPE_PRE_DDL.equals(ticketType) && !TICKET_TYPE_PROD_DML.equals(ticketType)) {
