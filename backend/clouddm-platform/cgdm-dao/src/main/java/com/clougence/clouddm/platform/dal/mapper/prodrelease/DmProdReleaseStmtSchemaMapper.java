@@ -38,4 +38,10 @@ public interface DmProdReleaseStmtSchemaMapper extends BaseMapper<DmProdReleaseS
      * Batch-insert frozen snapshot rows.
      */
     int batchInsert(@Param("rows") List<DmProdReleaseStmtSchemaDO> rows);
+
+    /**
+     * Delete all schema snapshot rows for a specific release stmt (used by returnStmt
+     * to clean up orphaned rows when the parent stmt row is deleted).
+     */
+    int deleteByReleaseStmtId(@Param("releaseStmtId") long releaseStmtId);
 }

@@ -32,6 +32,8 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovPairSideFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2CheckFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2GroupIdFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ReturnTicketFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2TicketIdFO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
@@ -116,5 +118,23 @@ public class GovTicketV2Controller {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         List<GovTicketV2GroupVO> data = govTicketV2Service.groupList(puid, uid, fo.getTicketId());
         return ResWebDataUtils.buildSuccess(data);
+    }
+
+    @RequestAuth(RDP_WORKER_ORDER_REQUEST)
+    @RequestMapping(value = "/dbChangeV2/returnTicket", method = RequestMethod.POST)
+    public ResWebData<?> returnTicket(@Valid @RequestBody GovTicketV2ReturnTicketFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        govTicketV2Service.returnTicket(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(RDP_WORKER_ORDER_REQUEST)
+    @RequestMapping(value = "/dbChangeV2/resubmit", method = RequestMethod.POST)
+    public ResWebData<?> resubmit(@Valid @RequestBody GovTicketV2ResubmitFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        govTicketV2Service.resubmit(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess();
     }
 }

@@ -156,6 +156,10 @@
             <Icon type="ios-alert-outline" />
             <span>{{ ticketDetail.statusMessage }}</span>
           </div>
+          <div v-if="ticketDetail.ticketStatus === 'REVISION'" class="ticket-overview__revision">
+            <Icon type="ios-create-outline" />
+            <span>{{ $t('gov-v2-revision-notice') }}</span>
+          </div>
         </div>
       </section>
 
@@ -566,6 +570,9 @@
                   {{ parsePrecheckResult(group.precheckResult).changeType }}
                 </span>
               </div>
+              <div v-if="ticketDetail.ticketStatus === 'REVISION' && group.execStatus === 'FAILED'" class="gov-v2-group-row__edit">
+                <Input v-model="v2ResubmitSqlMap[group.groupId]" type="textarea" :rows="6" :placeholder="$t('gov-v2-resubmit-placeholder')" />
+              </div>
               <div class="gov-v2-group-row__actions">
                 <Button
                   v-if="group.execStatus === 'FAILED' && ticketDetail.canExecute"
@@ -575,6 +582,18 @@
                   @click="handleRetryGroup(group.groupId)"
                 >
                   {{ $t('gov-v2-retry') }}
+                </Button>
+                <Button v-if="canReturnTicket" size="small" :loading="v2ReturnLoading" @click="showReturnTicketModal = true">
+                  {{ $t('gov-v2-return-for-revision') }}
+                </Button>
+                <Button
+                  v-if="ticketDetail.ticketStatus === 'REVISION' && group.execStatus === 'FAILED'"
+                  type="primary"
+                  size="small"
+                  :loading="v2ResubmitLoading"
+                  @click="handleResubmit(group.groupId)"
+                >
+                  {{ $t('gov-v2-resubmit') }}
                 </Button>
               </div>
             </div>
@@ -776,6 +795,20 @@
     </CCModal>
     <CCModal v-model="showContinueSkipAutoExecTaskModal" :title="$t('qu-xiao-tiao-guo')" @ok="handleContinueAutoExecTask">
       {{ $t('qu-xiao-tiao-guo-hou-xia-ci-zhong-shi-ren-wu-shi-jiang-zhi-hang-gai-sql') }}
+    </CCModal>
+    <CCModal
+      v-model="showReturnTicketModal"
+      :title="$t('gov-v2-return-for-revision')"
+      @on-ok="handleReturnTicket"
+      @on-cancel="
+        () => {
+          showReturnTicketModal = false;
+          v2ReturnReason = '';
+        }
+      "
+    >
+      <div style="margin-bottom: 12px">{{ $t('gov-v2-return-notice') }}</div>
+      <Input v-model="v2ReturnReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-return-reason-placeholder')" />
     </CCModal>
   </div>
 </template>
@@ -1055,6 +1088,11 @@ export default {
       v2GroupList: [],
       v2GroupLoading: false,
       v2RetryLoading: false,
+      v2ReturnLoading: false,
+      v2ResubmitLoading: false,
+      v2ReturnReason: '',
+      showReturnTicketModal: false,
+      v2ResubmitSqlMap: {},
       releaseSummary: null
     };
   },
@@ -1233,6 +1271,12 @@ export default {
       if (!items.some((item) => item.activityTitle === this.analysisResultTab)) {
         this.analysisResultTab = items[0]?.activityTitle || '';
       }
+    },
+    canReturnTicket() {
+      const status = this.ticketDetail.ticketStatus;
+      const hasFailedGroup = this.v2GroupList.some((g) => g.execStatus === 'FAILED');
+      const isOwner = this.userInfo && this.ticketDetail.ownerUid && this.userInfo.uid === this.ticketDetail.ownerUid;
+      return (status === 'EXEC_FAIL' || status === 'WAIT_EXEC') && hasFailedGroup && isOwner;
     }
   },
   methods: {
@@ -1981,6 +2025,14 @@ export default {
         });
         if (res.success) {
           this.v2GroupList = res.data || [];
+          // Pre-populate the resubmit SQL map with current group SQL for REVISION editing
+          const sqlMap = {};
+          for (const g of this.v2GroupList) {
+            if (g.execStatus === 'FAILED') {
+              sqlMap[g.groupId] = g.sqlContent || '';
+            }
+          }
+          this.v2ResubmitSqlMap = sqlMap;
         }
       } finally {
         this.v2GroupLoading = false;
@@ -2002,6 +2054,53 @@ export default {
         }
       } finally {
         this.v2RetryLoading = false;
+      }
+    },
+    async handleReturnTicket() {
+      if (this.v2ReturnLoading) {
+        return;
+      }
+      this.v2ReturnLoading = true;
+      try {
+        const res = await this.$services.dbChangeV2ReturnTicket({
+          data: { ticketId: this.ticketId, reason: this.v2ReturnReason || undefined }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-v2-return-success'));
+          this.showReturnTicketModal = false;
+          this.v2ReturnReason = '';
+          await this.getTicketDetail();
+          await this.loadV2GroupList();
+        }
+      } finally {
+        this.v2ReturnLoading = false;
+      }
+    },
+    async handleResubmit(groupId) {
+      if (this.v2ResubmitLoading) {
+        return;
+      }
+      const sqlContent = this.v2ResubmitSqlMap[groupId];
+      if (!sqlContent || !sqlContent.trim()) {
+        this.$Message.warning(this.$t('gov-v2-resubmit-empty'));
+        return;
+      }
+      this.v2ResubmitLoading = true;
+      try {
+        const res = await this.$services.dbChangeV2Resubmit({
+          data: {
+            ticketId: this.ticketId,
+            groups: [{ groupId, sqlContent }],
+            reason: 'Frontend resubmit'
+          }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-v2-resubmit-success'));
+          await this.getTicketDetail();
+          await this.loadV2GroupList();
+        }
+      } finally {
+        this.v2ResubmitLoading = false;
       }
     },
     parsePrecheckResult(json) {

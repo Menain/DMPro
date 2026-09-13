@@ -31,4 +31,12 @@ public interface DmTicketDbStmtMapper extends BaseMapper<DmTicketDbStmtDO> {
     List<DmTicketDbStmtDO> queryByDsAndDb(@Param("dsId") long dsId, @Param("dbName") String dbName);
 
     int updateExecStatus(@Param("id") long id, @Param("execStatus") String execStatus, @Param("execDetail") String execDetail);
+
+    /**
+     * Update sql_content + precheck_result + reset exec_status to PENDING + clear exec_detail
+     * for a stmt group during resubmit (REVISION -> WAIT_APPROVAL). The stmt id stays the same
+     * (in-place edit) so snapshot rows and release source pointers remain valid.
+     */
+    int updateSqlForRevision(@Param("id") long id, @Param("sqlContent") String sqlContent,
+                             @Param("precheckResult") String precheckResult);
 }

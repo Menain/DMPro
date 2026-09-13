@@ -66,4 +66,11 @@
         </foreach>
     </insert>
 
+    <delete id="deleteByReleaseStmtId">
+        DELETE FROM
+            dm_prod_release_stmt_schema
+        WHERE
+            release_stmt_id = #{releaseStmtId}
+    </delete>
+
 </mapper>

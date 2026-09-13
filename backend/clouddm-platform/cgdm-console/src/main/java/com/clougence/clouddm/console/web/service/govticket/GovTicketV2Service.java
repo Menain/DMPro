@@ -18,6 +18,8 @@ package com.clougence.clouddm.console.web.service.govticket;
 import java.util.List;
 
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2CheckFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ReturnTicketFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbServiceVO;
@@ -38,6 +40,20 @@ public interface GovTicketV2Service {
 
     /** List statement groups for a ticket (detail page). */
     List<GovTicketV2GroupVO> groupList(String puid, String uid, long ticketId);
+
+    /**
+     * Return a ticket (EXEC_FAIL/WAIT_EXEC with FAILED groups) to REVISION for SQL editing.
+     * Only the submitter (uid == ownerUid) can return their own ticket.
+     */
+    void returnTicket(String puid, String uid, GovTicketV2ReturnTicketFO fo);
+
+    /**
+     * Resubmit a REVISION ticket with modified SQL per FAILED group.
+     * Re-runs authoritative precheck, writes version audit, updates sql_content in-place
+     * (stmt id unchanged), resets groups to PENDING, transitions ticket back to WAIT_APPROVAL
+     * where the existing scheduler auto-advance chain picks up.
+     */
+    void resubmit(String puid, String uid, GovTicketV2ResubmitFO fo);
 
     /** Available pairs for the ticket creation dropdown. */
     List<DbPairVO> availablePairs(String puid, String side);

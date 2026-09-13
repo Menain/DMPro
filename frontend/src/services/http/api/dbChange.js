@@ -4,5 +4,6 @@ export const dbChangeApi = {
   govReleaseCreate: '/api/entry/govrelease/create',
   govReleaseList: '/api/entry/govrelease/list',
   govReleaseDetail: '/api/entry/govrelease/detail',
-  govReleaseRetryStmt: '/api/entry/govrelease/retryStmt'
+  govReleaseRetryStmt: '/api/entry/govrelease/retryStmt',
+  govReleaseReturnStmt: '/api/entry/govrelease/returnStmt'
 };

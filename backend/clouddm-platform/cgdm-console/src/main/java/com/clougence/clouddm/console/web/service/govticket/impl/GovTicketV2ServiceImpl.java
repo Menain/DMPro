@@ -47,6 +47,8 @@ import com.clougence.clouddm.console.web.component.governance.impl.GovStmtSplitS
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2CheckFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ReturnTicketFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbPairVO;
 import com.clougence.clouddm.console.web.model.vo.dbpair.DbServiceVO;
@@ -74,6 +76,7 @@ import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtRevisionDO;
 import com.clougence.clouddm.platform.dal.model.secrule.WarnLevel;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
 import com.clougence.clouddm.sdk.execute.session.QueryArg;
@@ -137,6 +140,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private com.clougence.clouddm.platform.dal.access.ExecutionDal execDal;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
+    @Resource
+    private com.clougence.clouddm.platform.dal.access.ProdReleaseDal prodReleaseDal;
 
     // ==================== check ====================
 
@@ -173,7 +178,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nDmMsgKeys.GOV_TICKET_V2_PRECHECK_FAILED.name(), gr.getDbName(), gr.getErrorMessage()));
             }
-            prechecks.add(new GroupPrecheck(gi.getPairId(), gi.getSqlContent(), gr, buildPrecheckResultJson(gr)));
+            prechecks.add(new GroupPrecheck(0L, gi.getPairId(), gi.getSqlContent(), gr, buildPrecheckResultJson(gr)));
         }
 
         // Resolve first group for display-compat fields
@@ -283,6 +288,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), group.getTicketId()));
         }
 
+        // REVISION guard: a ticket in REVISION must be resubmitted (with modified SQL),
+        // not retried as-is — retryGroup would replay the frozen (possibly broken) text.
+        if (ticket.getTicketStatus() == ApprovalStatus.REVISION) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_RETURNABLE.name()));
+        }
+
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
 
@@ -309,6 +320,181 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Step-times fix (2026-09-12): v2 group jobs carry no dependOnBizId, so the legacy
         // preparation hook never fires — close PREPARATION at the real (re)dispatch moment.
         this.approvalStateService.markExecutionDispatched(ticket.getBizId());
+    }
+
+    // ==================== returnTicket ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void returnTicket(String puid, String uid, GovTicketV2ReturnTicketFO fo) {
+        long ticketId = fo.getTicketId();
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), ticketId));
+        }
+        // Only the submitter (ownerUid) can return their own ticket (design §9.1: applicant-only v1)
+        if (!uid.equals(ticket.getOwnerUid())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_OWNER.name()));
+        }
+        // Guard 1: ticket_status must be EXEC_FAIL or WAIT_EXEC (WAIT_EXEC + FAILED groups = race window)
+        ApprovalStatus currentStatus = ticket.getTicketStatus();
+        if (currentStatus != ApprovalStatus.EXEC_FAIL && currentStatus != ApprovalStatus.WAIT_EXEC) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_RETURNABLE.name()));
+        }
+        // Guard 4: approBiz==DM_CHANGE and ticketType is v2 (PRE_DDL / PROD_DML)
+        if (ticket.getApproBiz() != ApprovalBiz.DM_CHANGE) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_RETURNABLE.name()));
+        }
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        String ticketType = mo != null ? mo.getTicketType() : null;
+        if (!TICKET_TYPE_PRE_DDL.equals(ticketType) && !TICKET_TYPE_PROD_DML.equals(ticketType)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_RETURNABLE.name()));
+        }
+
+        // Guard 2: at least one group exec_status=FAILED
+        List<DmTicketDbStmtDO> groups = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+        List<Long> failedGroupIds = groups.stream()
+            .filter(g -> EXEC_STATUS_FAILED.equals(g.getExecStatus()))
+            .map(DmTicketDbStmtDO::getId)
+            .collect(Collectors.toList());
+        if (failedGroupIds.isEmpty()) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NO_FAILED_GROUPS.name()));
+        }
+
+        // Guard 3: no stmt is already merged into a release (countBySourceStmtIds must be 0)
+        List<Long> stmtIds = groups.stream().map(DmTicketDbStmtDO::getId).collect(Collectors.toList());
+        int mergedCount = prodReleaseDal.stmtMapper().countBySourceStmtIds(stmtIds);
+        if (mergedCount > 0) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_ALREADY_MERGED.name()));
+        }
+
+        // Action: ticket_status -> REVISION (updateStatusByEnum, NOT transitionTicketToTerminal)
+        approvalStateService.updateApprovalStatus(ticketId, ApprovalStatus.REVISION, "Returned for revision");
+
+        // Event TICKET_RETURNED (real uid, NOT SYSTEM — NOT NULL contract)
+        appendTicketReturnedEvent(ticketId, uid, currentStatus.name(), ApprovalStatus.REVISION.name(),
+            fo.getReason(), failedGroupIds);
+    }
+
+    // ==================== resubmit ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void resubmit(String puid, String uid, GovTicketV2ResubmitFO fo) {
+        long ticketId = fo.getTicketId();
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), ticketId));
+        }
+        if (!uid.equals(ticket.getOwnerUid())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_OWNER.name()));
+        }
+        // Guard: ticket_status must be REVISION
+        if (ticket.getTicketStatus() != ApprovalStatus.REVISION) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_REVISION.name()));
+        }
+
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        String ticketType = mo != null ? mo.getTicketType() : null;
+
+        // Load all groups and build a lookup by id
+        List<DmTicketDbStmtDO> allGroups = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+        Map<Long, DmTicketDbStmtDO> groupMap = allGroups.stream()
+            .collect(Collectors.toMap(DmTicketDbStmtDO::getId, g -> g));
+
+        // Validate: every requested groupId belongs to this ticket and is FAILED
+        // (SUCCESS groups in the request -> reject entire submission)
+        for (GovTicketV2ResubmitFO.GroupInput gi : fo.getGroups()) {
+            DmTicketDbStmtDO group = groupMap.get(gi.getGroupId());
+            if (group == null) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_IN_TICKET.name(), gi.getGroupId()));
+            }
+            if (!EXEC_STATUS_FAILED.equals(group.getExecStatus())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_SUCCESS_GROUP_NOT_EDITABLE.name(), gi.getGroupId()));
+            }
+        }
+
+        // Step 1: run authoritative precheck for each modified group (blocking — any FAIL rejects whole ticket)
+        List<GroupPrecheck> prechecks = new ArrayList<>();
+        for (GovTicketV2ResubmitFO.GroupInput gi : fo.getGroups()) {
+            DmTicketDbStmtDO group = groupMap.get(gi.getGroupId());
+            // Resolve pairId from the group row (pair set is frozen during REVISION)
+            GovTicketV2CheckVO.GroupResult gr = runPrecheck(puid, uid, ticketType, group.getPairId(), gi.getSqlContent());
+            if ("FAIL".equals(gr.getCheckStatus())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_PRECHECK_FAILED.name(), gr.getDbName(), gr.getErrorMessage()));
+            }
+            prechecks.add(new GroupPrecheck(group.getId(), group.getPairId(), gi.getSqlContent(), gr, buildPrecheckResultJson(gr)));
+        }
+
+        // Step 2: write version audit rows (old sql_content full text, version = max+1)
+        for (GovTicketV2ResubmitFO.GroupInput gi : fo.getGroups()) {
+            DmTicketDbStmtDO group = groupMap.get(gi.getGroupId());
+            int maxVersion = ticketDbStmtDal.revisionMapper().maxVersionByStmtId(group.getId());
+            DmTicketStmtRevisionDO revision = new DmTicketStmtRevisionDO();
+            revision.setTicketId(ticketId);
+            revision.setStmtId(group.getId());
+            revision.setVersion(maxVersion + 1);
+            revision.setSqlContent(group.getSqlContent());
+            revision.setOperatorUid(uid);
+            revision.setReason(fo.getReason());
+            ticketDbStmtDal.revisionMapper().insertRevision(revision);
+        }
+
+        // Step 3: in-place update sql_content + precheck_result + reset exec_status to PENDING (stmt id unchanged)
+        for (GroupPrecheck pc : prechecks) {
+            ticketDbStmtDal.stmtMapper().updateSqlForRevision(pc.groupId, pc.sqlContent, pc.precheckResultJson);
+        }
+
+        // Step 4: update dm_approval: ticket_status -> WAIT_APPROVAL; rawSql (first modified group's new text)
+        GroupPrecheck first = prechecks.get(0);
+        approvalStateService.updateApprovalStatus(ticketId, ApprovalStatus.WAIT_APPROVAL, "Resubmitted after revision");
+        // Update rawSql to the first modified group's SQL (display-compat; levels/ticketInfo frozen — pair set unchanged)
+        DmApprovalDO ticketUpdate = new DmApprovalDO();
+        ticketUpdate.setId(ticketId);
+        ticketUpdate.setRawSql(first.sqlContent);
+        approvalDal.approvalMapper().updateById(ticketUpdate);
+
+        // Step 5: process face — NO recreation needed. The auto-advance chain's
+        // confirmTicketBySystemForV2 -> confirmTicketBySystemInTransaction at L1306-1308
+        // explicitly resets the EXECUTION process to INIT and calls initializeExecutionProgress
+        // which resets all execution activities, regardless of their current status
+        // (FAIL/FINISH). APPROVAL and CONFIRM process rows are updated to FINISH via
+        // updateProcessStatus which does not check the current status. So the existing
+        // auto-advance chain handles the full process face reset when it re-confirms the
+        // ticket at WAIT_APPROVAL -> WAIT_CONFIRM -> WAIT_EXEC.
+        // (design §8 implementation selection record — see below)
+
+        // Step 6: append new SUBMIT event with recomputed changeType
+        // For SUCCESS groups (not modified), use the stored precheck_result changeType;
+        // for modified groups, use the fresh precheck changeType.
+        List<ChangeType> allChangeTypes = new ArrayList<>();
+        // Build a map from groupId to precheck for direct lookup (avoids fragile pairId matching)
+        Map<Long, GroupPrecheck> precheckByGroupId = prechecks.stream()
+            .collect(Collectors.toMap(pc -> pc.groupId, pc -> pc));
+        for (DmTicketDbStmtDO g : allGroups) {
+            GroupPrecheck pc = precheckByGroupId.get(g.getId());
+            if (pc != null) {
+                // Modified group — use fresh precheck result
+                allChangeTypes.add(ChangeType.valueOf(pc.result.getChangeType()));
+            } else {
+                // Unmodified group (SUCCESS) — use stored precheck_result changeType
+                Map<String, Object> storedPrecheck = JsonUtils.toObj(g.getPrecheckResult(), HashMap.class);
+                Object ct = storedPrecheck == null ? null : storedPrecheck.get("changeType");
+                if (ct != null) {
+                    allChangeTypes.add(ChangeType.valueOf(String.valueOf(ct)));
+                }
+            }
+        }
+        ChangeType ticketChangeType = ChangeType.merge(allChangeTypes);
+        appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType);
+
+        // Step 7: resolveChangeType now reads the LATEST SUBMIT event (GovAutoAdvanceServiceImpl
+        // change) — the scheduler will pick up the new changeType on the next cycle.
+        // Step 8: PRE_DDL auto-advance will fire (ticket is WAIT_APPROVAL, PRE_DDL, in IN set);
+        // PROD_DML goes to human re-approval. No manual dispatch needed.
     }
 
     // ==================== groupList ====================
@@ -644,14 +830,33 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         dbChangeEventDal.eventMapper().insert(event);
     }
 
+    private void appendTicketReturnedEvent(long ticketId, String uid, String fromStatus, String toStatus,
+                                           String reason, List<Long> failedGroupIds) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.TICKET_RETURNED.name());
+        event.setFromStatus(fromStatus);
+        event.setToStatus(toStatus);
+        event.setOperatorUid(uid);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("reason", reason);
+        data.put("failedGroupIds", failedGroupIds);
+        event.setEventData(JsonUtils.toJson(data));
+
+        dbChangeEventDal.eventMapper().insert(event);
+    }
+
     // Internal precheck result holder for submit
     private static class GroupPrecheck {
+        final long   groupId;   // 0 for submit (stmt not yet inserted); actual id for resubmit
         final long   pairId;
         final String sqlContent;
         final GovTicketV2CheckVO.GroupResult result;
         final String precheckResultJson;
 
-        GroupPrecheck(long pairId, String sqlContent, GovTicketV2CheckVO.GroupResult result, String precheckResultJson) {
+        GroupPrecheck(long groupId, long pairId, String sqlContent, GovTicketV2CheckVO.GroupResult result, String precheckResultJson) {
+            this.groupId = groupId;
             this.pairId = pairId;
             this.sqlContent = sqlContent;
             this.result = result;

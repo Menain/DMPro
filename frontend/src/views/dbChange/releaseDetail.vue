@@ -81,6 +81,9 @@
                     >
                       {{ $t('gov-v2-retry') }}
                     </Button>
+                    <Button v-if="stmt.execStatus === 'FAILED' && canRetry" size="small" :loading="returning" @click="handleReturnStmt(stmt.id)">
+                      {{ $t('gov-release-return-stmt') }}
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -129,6 +132,7 @@ export default {
       detail: null,
       loading: false,
       retrying: false,
+      returning: false,
       collapsedGroups: {}
     };
   },
@@ -193,6 +197,23 @@ export default {
         }
       } finally {
         this.retrying = false;
+      }
+    },
+    async handleReturnStmt(stmtId) {
+      if (this.returning) {
+        return;
+      }
+      this.returning = true;
+      try {
+        const res = await this.$services.govReleaseReturnStmt({
+          data: { stmtId, reason: 'Return for revision' }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-release-return-success'));
+          await this.loadDetail();
+        }
+      } finally {
+        this.returning = false;
       }
     },
     govEventTypeText(eventType) {

@@ -44,6 +44,7 @@ import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrech
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAddTicketFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
@@ -554,6 +555,96 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         this.autoExecService.createReleaseStmtJob(stmt, jobBizId,
             false, ErrorStrategy.NONE, languageTag, uid);
         this.autoExecService.startJob(jobBizId, uid);
+    }
+
+    // ==================== returnStmt (layer 2 return-for-revision) ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void returnStmt(String puid, String uid, ProdReleaseReturnStmtFO fo) {
+        long stmtId = fo.getStmtId();
+        DmProdReleaseStmtDO stmt = prodReleaseDal.stmtMapper().queryById(stmtId);
+        if (stmt == null) {
+            throw new ErrorMessageException("Release statement not found: " + stmtId);
+        }
+
+        // Take release row lock for the entire operation (serializes against concurrent
+        // completion callbacks and chain advances — design §3 / R#9).
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().selectByIdForUpdate(stmt.getReleaseId());
+        if (release == null || !puid.equals(release.getPrimaryUid())) {
+            throw new ErrorMessageException("Release not found: " + stmt.getReleaseId());
+        }
+
+        // Guard 1: stmt.exec_status must be FAILED only (SUCCESS/EXECUTING/PENDING all rejected)
+        if (!EXEC_STATUS_FAILED.equals(stmt.getExecStatus())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_RETURNABLE.name(), stmt.getExecStatus()));
+        }
+
+        // Guard 2: release must be EXECUTING or PARTIAL_FAILED (mirrors retryReleaseStmt entry)
+        if (!ProdReleaseStatus.EXECUTING.name().equals(release.getStatus())
+            && !ProdReleaseStatus.PARTIAL_FAILED.name().equals(release.getStatus())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_NOT_RETRYABLE.name(), release.getStatus()));
+        }
+
+        // Guard 3: no active job for this stmt
+        var existingJob = execDal.autoJobMapper().queryByDependOnReleaseStmtId(stmt.getId());
+        if (existingJob != null
+            && existingJob.getStatus() != com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus.FAILED
+            && existingJob.getStatus() != com.clougence.clouddm.platform.dal.model.execution.AutoExecJobStatus.TERMINATION) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_STMT_JOB_ACTIVE.name()));
+        }
+
+        // Step 1: delete residual FAILED job (prevent dangling depend_on_release_stmt_id reference)
+        if (existingJob != null) {
+            autoExecService.deleteJob(existingJob.getBizId());
+        }
+
+        // Step 2: delete the release stmt row (frees uk_source_stmt + uk_execution_key)
+        prodReleaseDal.stmtMapper().deleteByStmtId(stmtId);
+
+        // Step 3: delete release_stmt_schema rows for this stmt (orphan cleanup)
+        prodReleaseDal.schemaMapper().deleteByReleaseStmtId(stmtId);
+
+        // Step 4: source ticket side — set group FAILED + ticket REVISION (idempotent for multi-stmt returns)
+        DmTicketDbStmtDO sourceStmt = ticketDbStmtDal.stmtMapper().queryById(stmt.getSourceStmtId());
+        if (sourceStmt != null) {
+            // Set group exec_status -> FAILED with return detail
+            String execDetail = "Returned from release " + release.getReleaseNo()
+                + (fo.getReason() != null ? ": " + fo.getReason() : "");
+            ticketDbStmtDal.stmtMapper().updateExecStatus(sourceStmt.getId(), EXEC_STATUS_FAILED, execDetail);
+
+            // Set source ticket to REVISION (if not already — idempotent for multi-stmt same-ticket returns)
+            DmApprovalDO sourceTicket = approvalDal.approvalMapper().queryById(sourceStmt.getTicketId());
+            if (sourceTicket != null && sourceTicket.getTicketStatus() != ApprovalStatus.REVISION) {
+                // Source ticket must be FINISHED (it was merged) — transition to REVISION
+                approvalStateService.updateApprovalStatus(
+                    sourceTicket.getId(), ApprovalStatus.REVISION, "Release stmt returned for revision");
+            }
+        }
+
+        // Step 5: event RELEASE_STMT_RETURNED (real uid, NOT SYSTEM — NOT NULL contract)
+        appendReleaseEvent(release.getId(), GovEventType.RELEASE_STMT_RETURNED,
+            null, null, uid, JsonUtils.toJson(Map.of(
+                "stmtId", stmtId,
+                "sourceTicketId", stmt.getSourceTicketId(),
+                "sourceStmtId", stmt.getSourceStmtId(),
+                "executionKey", stmt.getExecutionKey() != null ? stmt.getExecutionKey() : "",
+                "reason", fo.getReason() != null ? fo.getReason() : "")));
+
+        // Step 6: trigger aggregation check — if all remaining stmts are terminal, complete the release.
+        // (remaining all SUCCESS -> DONE is correct: the returned stmt goes back to the ticket side
+        // and will be re-merged into a new release; R#8.)
+        // If the release was PARTIAL_FAILED, transit back to EXECUTING first so that
+        // aggregateIfAllTerminal (which only transits from EXECUTING) can fire correctly.
+        // This mirrors the retryReleaseStmt entry pattern (L484-486).
+        if (ProdReleaseStatus.PARTIAL_FAILED.name().equals(release.getStatus())) {
+            releaseStateMachine.transit(release.getId(),
+                Set.of(ProdReleaseStatus.PARTIAL_FAILED), ProdReleaseStatus.EXECUTING);
+        }
+        aggregateIfAllTerminal(release.getId());
     }
 
     // ==================== handleApproved / handleRejected / handleCancelled ====================

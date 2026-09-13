@@ -47,5 +47,9 @@ public enum GovEventType {
     RELEASE_SCHEMA_DRIFT,
     RELEASE_SCHEMA_DRIFT_WARN,
     RELEASE_SCHEMA_SNAPSHOT_MISSING,
-    RELEASE_DONE
+    RELEASE_DONE,
+    /** Layer 1: ticket returned to REVISION for SQL editing (operator_uid = real user). */
+    TICKET_RETURNED,
+    /** Layer 2: release stmt returned to source ticket for revision (operator_uid = real user). */
+    RELEASE_STMT_RETURNED
 }

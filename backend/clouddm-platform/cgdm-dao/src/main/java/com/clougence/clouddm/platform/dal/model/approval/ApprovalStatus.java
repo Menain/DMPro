@@ -45,6 +45,11 @@ public enum ApprovalStatus {
     /** If the relate sql exec pause with lead ticket to this status **/
     EXEC_PAUSE,
 
+    /** (non-terminal) Ticket returned for SQL revision — only FAILED groups are editable.
+     *  Not in isEndStatus, not in listUnFinishTicketIdList IN set, not advanced by the scheduler.
+     *  Resubmit transitions back to WAIT_APPROVAL where the existing auto-advance chain picks up. */
+    REVISION,
+
     /** (end status) The db owner can reject exec the sql in the last stage */
     REJECTED,
 

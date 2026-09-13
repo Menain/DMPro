@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
+import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtRevisionMapper;
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper;
 
 import jakarta.annotation.Resource;
@@ -32,6 +33,8 @@ public class TicketDbStmtDalImpl implements TicketDbStmtDal {
     private DmTicketDbStmtMapper stmtMapper;
     @Resource
     private DmTicketStmtSchemaMapper schemaMapper;
+    @Resource
+    private DmTicketStmtRevisionMapper revisionMapper;
 
     @Override
     public DmTicketDbStmtMapper stmtMapper() {
@@ -41,5 +44,10 @@ public class TicketDbStmtDalImpl implements TicketDbStmtDal {
     @Override
     public DmTicketStmtSchemaMapper schemaMapper() {
         return schemaMapper;
+    }
+
+    @Override
+    public DmTicketStmtRevisionMapper revisionMapper() {
+        return revisionMapper;
     }
 }

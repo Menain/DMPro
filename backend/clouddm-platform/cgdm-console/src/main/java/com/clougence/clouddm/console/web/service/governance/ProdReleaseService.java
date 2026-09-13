@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
@@ -47,6 +48,14 @@ public interface ProdReleaseService {
      * Release must be EXECUTING or PARTIAL_FAILED.
      */
     void retryReleaseStmt(String puid, String uid, long stmtId);
+
+    /**
+     * Return a FAILED release stmt to its source ticket for revision.
+     * Releases uk_source_stmt + uk_execution_key (physical delete), sets the source ticket
+     * to REVISION and the corresponding group to FAILED. Triggers aggregation on the release.
+     * Only FAILED stmts that never executed successfully are accepted.
+     */
+    void returnStmt(String puid, String uid, ProdReleaseReturnStmtFO fo);
 
     /**
      * Handle approval: transit release APPROVING→APPROVED + event (called by ProdReleaseApprovalHandler).

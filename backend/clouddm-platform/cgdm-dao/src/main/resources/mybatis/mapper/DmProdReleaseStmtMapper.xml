@@ -130,4 +130,23 @@
             release_id = #{releaseId}
     </delete>
 
+    <select id="countBySourceStmtIds" resultType="java.lang.Integer">
+        SELECT
+            COUNT(*)
+        FROM
+            dm_prod_release_stmt
+        WHERE
+            source_stmt_id IN
+            <foreach collection="sourceStmtIds" item="stmtId" separator="," open="(" close=")">
+                #{stmtId}
+            </foreach>
+    </select>
+
+    <delete id="deleteByStmtId">
+        DELETE FROM
+            dm_prod_release_stmt
+        WHERE
+            id = #{id}
+    </delete>
+
 </mapper>

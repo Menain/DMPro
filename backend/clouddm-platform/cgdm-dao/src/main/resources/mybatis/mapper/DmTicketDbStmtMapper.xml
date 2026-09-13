@@ -64,4 +64,16 @@
             id = #{id}
     </update>
 
+    <update id="updateSqlForRevision">
+        UPDATE
+            dm_ticket_db_stmt
+        SET
+            sql_content     = #{sqlContent},
+            precheck_result = #{precheckResult},
+            exec_status     = 'PENDING',
+            exec_detail     = NULL
+        WHERE
+            id = #{id}
+    </update>
+
 </mapper>

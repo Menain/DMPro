@@ -228,16 +228,26 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
 
     private ChangeType resolveChangeType(long ticketId) {
         List<DmDbChangeEventDO> events = this.dbChangeEventDal.eventMapper().queryByTicketId(ticketId);
-        for (DmDbChangeEventDO event : events) {
+        // Latest-first: a resubmit appends a new SUBMIT event with the recomputed changeType.
+        // The original (first) SUBMIT event is kept for audit; the latest reflects the current
+        // SQL content and drives the correct execution config (e.g. DDL -> autocommit=false).
+        // Legacy fallback: if no SUBMIT event carries changeType, derive from per-group precheck.
+        DmDbChangeEventDO latestSubmit = null;
+        for (int i = events.size() - 1; i >= 0; i--) {
+            DmDbChangeEventDO event = events.get(i);
             if (GovEventType.SUBMIT.name().equals(event.getEventType())) {
-                Map<String, Object> data = JsonUtils.toObj(event.getEventData(), HashMap.class);
-                Object ct = data == null ? null : data.get("changeType");
-                if (ct != null) {
-                    return ChangeType.valueOf(String.valueOf(ct));
-                }
+                latestSubmit = event;
+                break;
             }
         }
-        // SUBMIT events written before the changeType contract: derive it from per-group precheck results.
+        if (latestSubmit != null) {
+            Map<String, Object> data = JsonUtils.toObj(latestSubmit.getEventData(), HashMap.class);
+            Object ct = data == null ? null : data.get("changeType");
+            if (ct != null) {
+                return ChangeType.valueOf(String.valueOf(ct));
+            }
+        }
+        // Legacy fallback: SUBMIT events written before the changeType contract — derive from precheck results.
         List<ChangeType> groupTypes = new ArrayList<>();
         for (DmTicketDbStmtDO stmt : this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId)) {
             Map<String, Object> precheck = JsonUtils.toObj(stmt.getPrecheckResult(), HashMap.class);

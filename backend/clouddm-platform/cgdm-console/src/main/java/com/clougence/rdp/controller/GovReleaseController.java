@@ -31,6 +31,7 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseListFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseRetryStmtFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
@@ -87,6 +88,15 @@ public class GovReleaseController {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
         prodReleaseService.retryReleaseStmt(puid, uid, fo.getStmtId());
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(DM_DAUTH_TICKET)
+    @RequestMapping(value = "/govrelease/returnStmt", method = RequestMethod.POST)
+    public ResWebData<?> returnStmt(@Valid @RequestBody ProdReleaseReturnStmtFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        prodReleaseService.returnStmt(puid, uid, fo);
         return ResWebDataUtils.buildSuccess();
     }
 }

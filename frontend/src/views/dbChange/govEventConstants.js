@@ -40,7 +40,9 @@ export const GOV_EVENT_TYPE_I18N_KEYS = {
   RELEASE_SCHEMA_DRIFT: 'gov-event-type-RELEASE_SCHEMA_DRIFT',
   RELEASE_SCHEMA_DRIFT_WARN: 'gov-event-type-RELEASE_SCHEMA_DRIFT_WARN',
   RELEASE_SCHEMA_SNAPSHOT_MISSING: 'gov-event-type-RELEASE_SCHEMA_SNAPSHOT_MISSING',
-  RELEASE_DONE: 'gov-event-type-RELEASE_DONE'
+  RELEASE_DONE: 'gov-event-type-RELEASE_DONE',
+  TICKET_RETURNED: 'gov-event-type-TICKET_RETURNED',
+  RELEASE_STMT_RETURNED: 'gov-event-type-RELEASE_STMT_RETURNED'
 };
 
 export const GOV_EVENT_ICONS = {
@@ -72,7 +74,9 @@ export const GOV_EVENT_ICONS = {
   RELEASE_SCHEMA_DRIFT: 'ios-alert-outline',
   RELEASE_SCHEMA_DRIFT_WARN: 'ios-warning-outline',
   RELEASE_SCHEMA_SNAPSHOT_MISSING: 'ios-eye-off-outline',
-  RELEASE_DONE: 'ios-checkbox-outline'
+  RELEASE_DONE: 'ios-checkbox-outline',
+  TICKET_RETURNED: 'ios-undo-outline',
+  RELEASE_STMT_RETURNED: 'ios-arrow-back-outline'
 };
 
 /**

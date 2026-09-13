@@ -66,4 +66,16 @@ public interface DmProdReleaseStmtMapper extends BaseMapper<DmProdReleaseStmtDO>
      * Delete all stmt rows for a release (used on REJECTED/CANCELLED to release UK locks).
      */
     int deleteByReleaseId(@Param("releaseId") long releaseId);
+
+    /**
+     * Count how many of the given source stmt ids have been merged into any release.
+     * Used by returnTicket guard to reject tickets whose stmts are already merged.
+     */
+    int countBySourceStmtIds(@Param("sourceStmtIds") List<Long> sourceStmtIds);
+
+    /**
+     * Delete a single stmt row by id (used by returnStmt to release uk_source_stmt +
+     * uk_execution_key for one FAILED stmt without affecting the rest of the release).
+     */
+    int deleteByStmtId(@Param("id") long id);
 }
