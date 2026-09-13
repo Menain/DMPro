@@ -224,6 +224,8 @@ public class SecValueProcessServiceProvider implements ValueProcessService {
 
         if (StringUtils.startsWith(str, "ORIGINAL")) {
             return SenAlgorithm.doOriginalAlgorithm(str, cv);
+        } else if (StringUtils.startsWith(str, "HALF_MASK")) {
+            return SenAlgorithm.doHalfMaskAlgorithm(str, cv);
         } else if (StringUtils.equalsIgnoreCase(str, "FULL_MASK")) {
             return SenAlgorithm.doFullMaskAlgorithm(str, cv);
         } else {

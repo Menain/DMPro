@@ -1899,5 +1899,20 @@ else
   return "algorithm::ORIGINAL"
 end
 ]]></ruleDef>
+        <ruleDef id="rule_sensitive_006" ruleName="i18n::SEN_N_CHINA_PHONE_HALF" ruleDesc="i18n::SEN_D_CHINA_PHONE_HALF"
+                 senMode="VALUE" scriptType="DetectRules"><![CDATA[
+#define "match" as string
+        default "130,131,132,140,145,146,155,156,166,167,170,171,175,176,185,186,196,134,135,136,137,138,139,144,147,148,150,151,152,157,158,159,165,172,178,182,183,184,187,188,195,197,198,133,141,149,153,162,173,174,177,180,181,189,190,191,193,199,192"
+        hint "匹配出现的号段，多个请按逗号分割"
+
+if
+  @func.string.length(@domain.value) == 11 and
+  @func.string.substring(@domain.value, 0, 3) in @func.string.split(#{match}, ',')
+then
+  return "algorithm::HALF_MASK(4,7)"
+else
+  return "algorithm::ORIGINAL"
+end
+]]></ruleDef>
     </sensitiveRules>
 </ruleSet>

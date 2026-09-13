@@ -24,14 +24,15 @@ import java.util.List;
 public class SenAlgorithm {
 
     public static final String        SEN_ORIGINAL  = "algorithm::ORIGINAL";
+    public static final String        SEN_HALF_MASK = "algorithm::HALF_MASK";
     public static final String        SEN_FULL_MASK = "algorithm::FULL_MASK";
 
     //the bigger the index, the better,
-    private static final List<String> algorithmPool = Arrays.asList(SEN_ORIGINAL, SEN_FULL_MASK);
+    private static final List<String> algorithmPool = Arrays.asList(SEN_ORIGINAL, SEN_HALF_MASK, SEN_FULL_MASK);
 
     public static String chooseAlgorithm(String current, String newone) {
-        int a = algorithmPool.indexOf(current);
-        int b = algorithmPool.indexOf(newone);
+        int a = poolIndexOf(current);
+        int b = poolIndexOf(newone);
         if (a < 0 || b < 0) {
             throw new IllegalStateException(current + " or " + newone + " not in algorithmPool.");
         }
@@ -45,6 +46,31 @@ public class SenAlgorithm {
         }
     }
 
+    /**
+     * Resolve the strength index of an algorithm command against {@link #algorithmPool}.
+     * <p>
+     * Algorithms may carry arguments in the command string, e.g.
+     * {@code "algorithm::HALF_MASK(4,7)"}; the parenthesised arguments are
+     * stripped before lookup so the base name ({@code "algorithm::HALF_MASK"})
+     * is matched against the pool. This keeps the "stronger algorithm wins"
+     * semantics of {@link #chooseAlgorithm} working for parameterised commands
+     * while leaving ORIGINAL / FULL_MASK (which carry no arguments) untouched.
+     */
+    private static int poolIndexOf(String algorithm) {
+        if (algorithm == null) {
+            return -1;
+        }
+        int idx = algorithmPool.indexOf(algorithm);
+        if (idx >= 0) {
+            return idx;
+        }
+        int paren = algorithm.indexOf('(');
+        if (paren > 0) {
+            return algorithmPool.indexOf(algorithm.substring(0, paren));
+        }
+        return -1;
+    }
+
     // algorithm::original
     public static String doOriginalAlgorithm(String command, String cv) {
         return cv;
@@ -55,20 +81,41 @@ public class SenAlgorithm {
         return "******";
     }
 
-    // algorithm::half_mask(3,7,11)
+    // algorithm::half_mask(start,end)  — 1-based closed interval; fail-closed to FULL_MASK
     public static String doHalfMaskAlgorithm(String command, String cv) {
         int lbtIndex = command.indexOf("(");
         int rbtIndex = command.indexOf(")");
-        if (lbtIndex < 0 || rbtIndex < 0) {
-            return "algorithm::half_mask ERROR: Bad args.";
+        if (lbtIndex < 0 || rbtIndex < 0 || rbtIndex < lbtIndex) {
+            return doFullMaskAlgorithm(command, cv);
         }
 
-        String args = command.substring(lbtIndex + 1, rbtIndex);
-        String[] splitArg = args.split(",");
-        if (splitArg.length < 3) {
-            return "algorithm::half_mask ERROR: Bad args.";
+        String[] splitArg = command.substring(lbtIndex + 1, rbtIndex).split(",");
+        if (splitArg.length < 2) {
+            return doFullMaskAlgorithm(command, cv);
         }
 
-        return "***";
+        int start;
+        int end;
+        try {
+            start = Integer.parseInt(splitArg[0].trim());
+            end = Integer.parseInt(splitArg[1].trim());
+        } catch (NumberFormatException e) {
+            return doFullMaskAlgorithm(command, cv);
+        }
+
+        // fail-closed: null value, inverted/invalid range, or value shorter than the end offset
+        if (cv == null || start < 1 || start > end || cv.length() < end) {
+            return doFullMaskAlgorithm(command, cv);
+        }
+
+        int from = start - 1;
+        int to = end;
+        StringBuilder sb = new StringBuilder(cv.length());
+        sb.append(cv, 0, from);
+        for (int i = from; i < to; i++) {
+            sb.append('*');
+        }
+        sb.append(cv, to, cv.length());
+        return sb.toString();
     }
 }
