@@ -1,6 +1,7 @@
 <template>
   <div class="security-rule-page">
     <AppPageTabs :model-value="activeSection" :tabs="sectionTabs" @change="handleSectionClick" />
+    <div class="entry-note">{{ entryNote }}</div>
     <div class="security-rule-content">
       <SpecList v-if="activeSection === 'security'" />
       <RuleList v-if="activeSection === 'template'" />
@@ -46,6 +47,12 @@ export default {
         { name: 'security', label: this.$t('an-quan-gui-fan') },
         { name: 'template', label: this.$t('gui-ze-mo-ban') }
       ];
+    },
+    entryNote() {
+      if (this.effectiveRuleKind === 'SENSITIVE') {
+        return this.$t('tuo-min-guan-li-shuo-ming');
+      }
+      return this.$t('an-quan-gui-ze-shuo-ming');
     }
   },
   watch: {
@@ -86,6 +93,16 @@ export default {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.entry-note {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 6px;
+  color: #5b667a;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 .security-rule-content {
