@@ -427,7 +427,7 @@ public class DmSecRulesController {
             RuleFormatVO vo = new RuleFormatVO();
             vo.setSuccess(true);
             vo.setContent(writer.toString());
-            return ResWebDataUtils.buildSuccess();
+            return ResWebDataUtils.buildSuccess(vo);
         } catch (ErrorMessageException e) {
             RuleFormatVO vo = new RuleFormatVO();
             vo.setSuccess(false);
