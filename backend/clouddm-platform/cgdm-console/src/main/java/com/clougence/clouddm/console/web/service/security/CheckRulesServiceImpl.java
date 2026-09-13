@@ -268,10 +268,10 @@ public class CheckRulesServiceImpl implements CheckRulesService, UnifiedPostCons
     }
 
     @Override
-    public List<DmSecSpecDO> querySpecList(String ownerUid, String search) {
+    public List<DmSecSpecDO> querySpecList(String ownerUid, String search, RuleKind ruleKind) {
         //Page<?> page = PageUtil.startPage(pageInfo);
         search = StringUtils.isBlank(search) ? null : search.trim();
-        return this.secRuleDal.specMapper().searchSpec(ownerUid, search);
+        return this.secRuleDal.specMapper().searchSpec(ownerUid, search, ruleKind);
     }
 
     @Override
@@ -281,38 +281,66 @@ public class CheckRulesServiceImpl implements CheckRulesService, UnifiedPostCons
 
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
-    public DmSecSpecDO createSpec(String ownerUid, String specName, String specDesc, boolean initSpec) {
+    public DmSecSpecDO createSpec(String ownerUid, String specName, String specDesc, boolean initSpec, RuleKind ruleKind) {
         DmSecSpecDO specDO = new DmSecSpecDO();
         specDO.setOwnerUid(ownerUid);
         specDO.setName(specName);
         specDO.setDescription(specDesc);
         specDO.setEnable(true);
+        specDO.setRuleKind(ruleKind);
 
         this.secRuleDal.specMapper().insert(specDO);
 
         if (initSpec) {
-            List<DmSecRuleDO> ruleList = this.listQueryRuleByUid(ownerUid);
-            for (DmSecRuleDO r : ruleList) {
-                if (r.isDeprecated()) {
-                    continue;
-                }
-
-                DmSecRefererDO refDO = new DmSecRefererDO();
-                refDO.setOwnerUid(ownerUid);
-                refDO.setRefSpec(specDO.getId());
-                refDO.setRefRule(r.getId());
-                refDO.setRefRuleKind(RuleKind.QUERY);
-                refDO.setEnable(false);
-                refDO.setWarnLevel(WarnLevel.FAILURE);
-                refDO.setRuleParam(new HashMap<>());
-                refDO.setRefMD5(r.getScriptMD5());
-
-                if (StringUtils.isNotBlank(r.getScriptDef())) {
-                    for (SecParam paramVO : DmConvertUtils.jsonConvertToSecRuleParamVO(r.getScriptDef())) {
-                        refDO.getRuleParam().put(paramVO.getName(), paramVO.getDefaultValue());
+            if (ruleKind == RuleKind.QUERY) {
+                List<DmSecRuleDO> ruleList = this.listQueryRuleByUid(ownerUid);
+                for (DmSecRuleDO r : ruleList) {
+                    if (r.isDeprecated()) {
+                        continue;
                     }
+
+                    DmSecRefererDO refDO = new DmSecRefererDO();
+                    refDO.setOwnerUid(ownerUid);
+                    refDO.setRefSpec(specDO.getId());
+                    refDO.setRefRule(r.getId());
+                    refDO.setRefRuleKind(RuleKind.QUERY);
+                    refDO.setEnable(false);
+                    refDO.setWarnLevel(WarnLevel.FAILURE);
+                    refDO.setRuleParam(new HashMap<>());
+                    refDO.setRefMD5(r.getScriptMD5());
+
+                    if (StringUtils.isNotBlank(r.getScriptDef())) {
+                        for (SecParam paramVO : DmConvertUtils.jsonConvertToSecRuleParamVO(r.getScriptDef())) {
+                            refDO.getRuleParam().put(paramVO.getName(), paramVO.getDefaultValue());
+                        }
+                    }
+                    this.secRuleDal.refererMapper().insert(refDO);
                 }
-                this.secRuleDal.refererMapper().insert(refDO);
+            } else if (ruleKind == RuleKind.SENSITIVE) {
+                List<DmSecSensitiveDO> senList = this.secRuleDal.sensitiveMapper().listByUid(ownerUid);
+                for (DmSecSensitiveDO r : senList) {
+                    if (r.isDeprecated()) {
+                        continue;
+                    }
+
+                    DmSecRefererDO refDO = new DmSecRefererDO();
+                    refDO.setOwnerUid(ownerUid);
+                    refDO.setRefSpec(specDO.getId());
+                    refDO.setRefRule(r.getId());
+                    refDO.setRefRuleKind(RuleKind.SENSITIVE);
+                    refDO.setEnable(false);
+                    refDO.setWarnLevel(WarnLevel.FAILURE);
+                    refDO.setRuleParam(new HashMap<>());
+                    refDO.setRefMD5(r.getScriptMD5());
+                    refDO.setSenMode(r.getSenMode());
+
+                    if (StringUtils.isNotBlank(r.getScriptDef())) {
+                        for (SecParam paramVO : DmConvertUtils.jsonConvertToSecRuleParamVO(r.getScriptDef())) {
+                            refDO.getRuleParam().put(paramVO.getName(), paramVO.getDefaultValue());
+                        }
+                    }
+                    this.secRuleDal.refererMapper().insert(refDO);
+                }
             }
         }
 
@@ -363,7 +391,7 @@ public class CheckRulesServiceImpl implements CheckRulesService, UnifiedPostCons
             for (SpecRulesFO rule : fo.getRules()) {
                 DmSecRefererDO refDO = this.querySpecRefererById(ownerUid, specId, rule.getRuleId(), rule.getRuleKind());
                 if (refDO != null && refDO.isEnable()) {
-                    List<DmSysEnvDO> envs = this.rdpDsEnvService.queryListByParamKeyValue(ownerUid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(specId));
+                    List<DmSysEnvDO> envs = this.querySpecBindingEnvs(ownerUid, specId);
                     if (!envs.isEmpty()) {
                         vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
                         vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));
@@ -389,6 +417,16 @@ public class CheckRulesServiceImpl implements CheckRulesService, UnifiedPostCons
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void saveSpecRules(String ownerUid, long specId, List<SpecRulesFO> rules) {
+        DmSecSpecDO specDO = this.querySpecById(ownerUid, specId);
+        if (specDO == null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_NOT_EXIST_ERROR.name()));
+        }
+        for (SpecRulesFO fo : rules) {
+            if (fo.getRuleKind() != specDO.getRuleKind()) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_RULE_KIND_MISMATCH.name()));
+            }
+        }
+
         List<Long> queryRuleIds = new ArrayList<>();
         List<Long> senRuleIds = new ArrayList<>();
         rules.forEach(fo -> {
@@ -905,5 +943,17 @@ public class CheckRulesServiceImpl implements CheckRulesService, UnifiedPostCons
         }
 
         this.secRuleDal.rangeMapper().deleteRange(ownerUid, fo.getRangeId());
+    }
+
+    @Override
+    public List<DmSysEnvDO> querySpecBindingEnvs(String ownerUid, long specId) {
+        DmSecSpecDO specDO = this.querySpecById(ownerUid, specId);
+        if (specDO == null) {
+            return Collections.emptyList();
+        }
+        String paramKey = specDO.getRuleKind() == RuleKind.SENSITIVE
+                ? EnvParamKeys.DM_BIND_SENSITIVE_SPEC
+                : EnvParamKeys.DM_BIND_CHECK_SPEC;
+        return this.rdpDsEnvService.queryListByParamKeyValue(ownerUid, paramKey, String.valueOf(specId));
     }
 }

@@ -144,6 +144,7 @@ public class DmEnvParamServiceImpl implements DmEnvParamService {
             vo.setEnvName(envDO.getEnvName());
             vo.setEnvDesc(envDO.getDescription());
             vo.setSecDesVO(DmEnvParamSecDesVO.builder().build());
+            vo.setSensitiveSecDesVO(DmEnvParamSecDesVO.builder().build());
             vo.setSqlTicketInfo(innerTicket());
             vo.setChangeTicketInfo(innerTicket());
             vo.setAuthTicketInfo(innerTicket());
@@ -156,6 +157,10 @@ public class DmEnvParamServiceImpl implements DmEnvParamService {
 
                 if (paramDO.getConfigKey().equals(EnvParamKeys.DM_BIND_CHECK_SPEC)) {
                     processCheckSpec(puid, paramDO, vo);
+                }
+
+                if (paramDO.getConfigKey().equals(EnvParamKeys.DM_BIND_SENSITIVE_SPEC)) {
+                    processSensitiveSpec(puid, paramDO, vo);
                 }
 
                 if (paramDO.getConfigKey().equals(EnvParamKeys.SQL_TICKET_INFO)) {
@@ -190,6 +195,31 @@ public class DmEnvParamServiceImpl implements DmEnvParamService {
                 .id(id)
                 .name(specDO.getName())
                 .desc(specDO.getDescription())
+                .build());
+        } else {
+            vo.setSecDesVO(DmEnvParamSecDesVO.builder()//
+                .openSec(true)
+                .id(id)
+                .invalid(true)
+                .build());
+        }
+    }
+
+    private void processSensitiveSpec(String puid, DmSysEnvParamDO paramDO, DmEnvParamOpenVO vo) {
+        long id = Long.parseLong(paramDO.getConfigValue());
+        DmSecSpecDO specDO = this.secRuleDal.specMapper().queryByIdAndUid(puid, id);
+        if (specDO != null) {
+            vo.setSensitiveSecDesVO(DmEnvParamSecDesVO.builder()//
+                .openSec(true)
+                .id(id)
+                .name(specDO.getName())
+                .desc(specDO.getDescription())
+                .build());
+        } else {
+            vo.setSensitiveSecDesVO(DmEnvParamSecDesVO.builder()//
+                .openSec(true)
+                .id(id)
+                .invalid(true)
                 .build());
         }
     }

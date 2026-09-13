@@ -25,6 +25,7 @@ import com.clougence.clouddm.console.web.model.vo.checkrules.SecSettingDef;
 import com.clougence.clouddm.console.web.model.vo.checkrules.SpecUpdateVO;
 import com.clougence.clouddm.console.web.service.security.mode.DmSecRuleMO;
 import com.clougence.clouddm.platform.dal.model.secrule.*;
+import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
 import com.clougence.clouddm.sdk.service.secrules.SecParam;
 
 /**
@@ -35,11 +36,11 @@ public interface CheckRulesService {
 
     SecSettingDef ruleSettingDef();
 
-    List<DmSecSpecDO> querySpecList(String ownerUid, String search);
+    List<DmSecSpecDO> querySpecList(String ownerUid, String search, RuleKind ruleKind);
 
     DmSecSpecDO querySpecById(String ownerUid, long specId);
 
-    DmSecSpecDO createSpec(String ownerUid, String specName, String specDesc, boolean initSpec);
+    DmSecSpecDO createSpec(String ownerUid, String specName, String specDesc, boolean initSpec, RuleKind ruleKind);
 
     void updateSpec(String ownerUid, long specId, String newName, String newDesc);
 
@@ -86,4 +87,6 @@ public interface CheckRulesService {
     void deleteSpecRules(String ownerUid, long specId, List<SpecRulesFO> rules);
 
     boolean isSupportRangeType(SecRangeType rangeType, SecMatchMode matchType, RuleKind ruleKind, DataSourceType dsType);
+
+    List<DmSysEnvDO> querySpecBindingEnvs(String ownerUid, long specId);
 }

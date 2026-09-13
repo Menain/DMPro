@@ -32,4 +32,5 @@ public class DmEnvParamSecDesVO {
     private long    id;
     private String  name;
     private String  desc;
+    private boolean invalid;
 }

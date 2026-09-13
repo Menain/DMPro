@@ -41,14 +41,12 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.checkrules.*;
 import com.clougence.clouddm.console.web.model.vo.checkrules.*;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.security.CheckRulesService;
 import com.clougence.clouddm.console.web.service.security.mode.DmSecRuleMO;
 import com.clougence.clouddm.console.web.util.DmConvertUtils;
 import com.clougence.clouddm.platform.dal.model.secrule.DmSecRefererDO;
 import com.clougence.clouddm.platform.dal.model.secrule.DmSecSpecDO;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
-import com.clougence.clouddm.sdk.model.env.EnvParamKeys;
 import com.clougence.clouddm.sdk.service.secrules.SecParam;
 import com.clougence.detectrule.parser.DetectRuleDslProvider;
 import com.clougence.dslpaser.antlr.AntlerSyntaxException;
@@ -72,15 +70,13 @@ public class DmSecRulesController {
 
     @Resource
     private CheckRulesService checkRulesService;
-    @Resource
-    private DmEnvParamService rdpDsEnvService;
 
     @RequestAuth(value = DM_SECRULES_READ)
     @RequestMapping(value = "/specList", method = RequestMethod.POST)
     public ResWebData<?> specList(@RequestBody @Valid SpecListFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
 
-        List<DmSecSpecDO> specPage = this.checkRulesService.querySpecList(puid, fo.getSearch());
+        List<DmSecSpecDO> specPage = this.checkRulesService.querySpecList(puid, fo.getSearch(), fo.getRuleKind());
         List<SpecVO> collect = specPage.stream().map(DmConvertUtils::convertToDmSecSpecVO).collect(Collectors.toList());
 
         return ResWebDataUtils.buildSuccess(collect);
@@ -163,7 +159,7 @@ public class DmSecRulesController {
         }
 
         SpecUpdateVO vo = new SpecUpdateVO();
-        List<DmSysEnvDO> envs = this.rdpDsEnvService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+        List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
         if (!envs.isEmpty()) {
             vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
             vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));
@@ -193,7 +189,7 @@ public class DmSecRulesController {
         }
 
         SpecDeleteVO vo = new SpecDeleteVO();
-        List<DmSysEnvDO> envs = this.rdpDsEnvService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+        List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
         if (!envs.isEmpty()) {
             vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
             vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));
@@ -215,7 +211,7 @@ public class DmSecRulesController {
     public ResWebData<?> specCreate(@RequestBody @Valid SpecCreateFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
 
-        DmSecSpecDO specDO = this.checkRulesService.createSpec(puid, fo.getSpecName(), fo.getSpecDesc(), true);
+        DmSecSpecDO specDO = this.checkRulesService.createSpec(puid, fo.getSpecName(), fo.getSpecDesc(), true, fo.getRuleKind());
         return ResWebDataUtils.buildSuccess(specDO.getId());
     }
 
@@ -232,7 +228,7 @@ public class DmSecRulesController {
         DmSecRefererDO refDO = checkRulesService.querySpecRefererById(puid, fo.getSpecId(), fo.getRule().getRuleId(), fo.getRule().getRuleKind());
         SpecUpdateVO vo = new SpecUpdateVO();
         if (refDO != null && refDO.isEnable()) {
-            List<DmSysEnvDO> envs = this.rdpDsEnvService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+            List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
             if (!envs.isEmpty()) {
                 vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
                 vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));
@@ -269,7 +265,7 @@ public class DmSecRulesController {
         }
 
         SpecUpdateVO vo = new SpecUpdateVO();
-        List<DmSysEnvDO> envs = this.rdpDsEnvService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+        List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
         if (!envs.isEmpty()) {
             vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
             vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));

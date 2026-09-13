@@ -21,6 +21,7 @@ package com.clougence.clouddm.sdk.model.env;
 public interface EnvParamKeys {
 
     String DM_BIND_CHECK_SPEC      = "check_spec_id";
+    String DM_BIND_SENSITIVE_SPEC  = "sensitive_spec_id";
     String AUTH_TICKET_INFO        = "ticket_info_of_auth";
     String SQL_TICKET_INFO         = "ticket_info";
     String CHANGE_TICKET_INFO      = "ticket_info_of_change";

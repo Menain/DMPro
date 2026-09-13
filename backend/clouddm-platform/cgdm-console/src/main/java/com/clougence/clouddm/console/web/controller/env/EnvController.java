@@ -86,7 +86,7 @@ public class EnvController {
     public ResWebData<?> listSpec(@RequestBody @Valid SpecListFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
 
-        List<DmSecSpecDO> specPage = this.checkRulesService.querySpecList(puid, fo.getSearch());
+        List<DmSecSpecDO> specPage = this.checkRulesService.querySpecList(puid, fo.getSearch(), fo.getRuleKind());
         List<SpecVO> collect = specPage.stream().map(DmConvertUtils::convertToDmSecSpecVO).collect(Collectors.toList());
 
         return ResWebDataUtils.buildSuccess(collect);

@@ -22,13 +22,14 @@ import org.apache.ibatis.annotations.Param;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.clougence.clouddm.platform.dal.model.secrule.DmSecSpecDO;
+import com.clougence.clouddm.platform.dal.model.secrule.RuleKind;
 
 /**
  * @author mode create time is 2023/05/21 13:27
  **/
 public interface DmSecSpecMapper extends BaseMapper<DmSecSpecDO> {
 
-    List<DmSecSpecDO> searchSpec(String ownerUid, String searchKeywords);
+    List<DmSecSpecDO> searchSpec(String ownerUid, String searchKeywords, RuleKind ruleKind);
 
     List<DmSecSpecDO> queryByUid(String ownerUid);
 

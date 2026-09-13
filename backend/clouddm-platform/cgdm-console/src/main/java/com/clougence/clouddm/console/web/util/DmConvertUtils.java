@@ -1421,6 +1421,7 @@ public class DmConvertUtils {
         vo.setName(specDO.getName());
         vo.setDescription(specDO.getDescription());
         vo.setEnable(specDO.isEnable());
+        vo.setRuleKind(specDO.getRuleKind());
         return vo;
     }
 

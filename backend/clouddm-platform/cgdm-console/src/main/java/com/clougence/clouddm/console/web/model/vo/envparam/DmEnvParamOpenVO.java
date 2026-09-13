@@ -30,6 +30,7 @@ public class DmEnvParamOpenVO {
     private String                envName;
     private String                envDesc;
     private DmEnvParamSecDesVO    secDesVO;
+    private DmEnvParamSecDesVO    sensitiveSecDesVO;
     private DmEnvParamTicketDesVO sqlTicketInfo;
     private DmEnvParamTicketDesVO changeTicketInfo;
     private DmEnvParamTicketDesVO authTicketInfo;

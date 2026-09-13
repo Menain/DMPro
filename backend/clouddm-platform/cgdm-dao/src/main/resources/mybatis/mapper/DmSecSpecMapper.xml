@@ -10,6 +10,8 @@
         <result column="spec_name" property="name"/>
         <result column="description" property="description"/>
         <result column="enable" property="enable"/>
+        <result column="rule_kind" property="ruleKind"
+                javaType="com.clougence.clouddm.platform.dal.model.secrule.RuleKind"/>
     </resultMap>
 
     <sql id="allColumns">
@@ -19,7 +21,8 @@
         owner_uid,
         spec_name,
         description,
-        enable
+        enable,
+        rule_kind
     </sql>
 
     <select id="searchSpec" resultMap="dmSecSpecDO">
@@ -29,6 +32,7 @@
             dm_sec_spec
         WHERE
             owner_uid = #{ownerUid}
+            AND rule_kind = #{ruleKind, javaType=com.clougence.clouddm.platform.dal.model.secrule.RuleKind}
             <if test="searchKeywords != null">
                 AND
                 (spec_name LIKE CONCAT('%', #{searchKeywords}, '%') OR description LIKE CONCAT('%', #{searchKeywords}, '%'))

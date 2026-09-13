@@ -15,7 +15,10 @@
  */
 package com.clougence.clouddm.console.web.model.fo.checkrules;
 
+import com.clougence.clouddm.platform.dal.model.secrule.RuleKind;
+
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -30,4 +33,7 @@ public class SpecCreateFO {
     private String specName;
 
     private String specDesc;
+
+    @NotNull
+    private RuleKind ruleKind;
 }

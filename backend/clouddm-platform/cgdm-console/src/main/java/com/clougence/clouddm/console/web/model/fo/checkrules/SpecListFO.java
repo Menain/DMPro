@@ -15,6 +15,9 @@
  */
 package com.clougence.clouddm.console.web.model.fo.checkrules;
 
+import com.clougence.clouddm.platform.dal.model.secrule.RuleKind;
+
+import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -26,4 +29,7 @@ import lombok.Setter;
 public class SpecListFO {
 
     private String search;
+
+    @NotNull
+    private RuleKind ruleKind;
 }

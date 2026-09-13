@@ -15,6 +15,8 @@
  */
 package com.clougence.clouddm.console.web.model.vo.checkrules;
 
+import com.clougence.clouddm.platform.dal.model.secrule.RuleKind;
+
 import lombok.Getter;
 import lombok.Setter;
 
@@ -30,4 +32,5 @@ public class SpecVO {
     private String  name;
     private String  description;
     private boolean enable;
+    private RuleKind ruleKind;
 }

@@ -134,7 +134,7 @@ public class ConfigRServiceProvider extends AbstractBasicProvider implements Con
             config.setDsId(rules.getDsId());
             config.setDsName(rules.getDsName());
             config.setDsType(rules.getDsType());
-            config.setDsUseSpecName(rules.getDsUseSpecName());
+            config.setDsUseSpecName(rules.getDsUseSensitiveSpecName());
             config.setSenRuleList(rules.getSenRuleList());
             return config;
         }

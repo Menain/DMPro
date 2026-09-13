@@ -47,4 +47,7 @@ public class DmSecSpecDO {
     private String  description;
 
     private boolean enable;
+
+    @TableField("rule_kind")
+    private RuleKind ruleKind;
 }

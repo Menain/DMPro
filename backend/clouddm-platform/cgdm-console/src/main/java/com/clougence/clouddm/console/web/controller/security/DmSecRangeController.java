@@ -50,7 +50,6 @@ import com.clougence.clouddm.console.web.model.vo.checkrules.SpecUpdateVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.browse.BrowseService;
 import com.clougence.clouddm.console.web.service.browse.model.rdb.BrowseColumnMO;
-import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
 import com.clougence.clouddm.console.web.service.security.CheckRulesService;
 import com.clougence.clouddm.console.web.service.security.mode.DmSecRuleMO;
 import com.clougence.clouddm.console.web.util.DmConvertUtils;
@@ -61,7 +60,6 @@ import com.clougence.clouddm.platform.dal.model.secrule.DmSecSpecDO;
 import com.clougence.clouddm.platform.dal.model.secrule.RuleKind;
 import com.clougence.clouddm.platform.dal.model.secrule.SecRangeType;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
-import com.clougence.clouddm.sdk.model.env.EnvParamKeys;
 import com.clougence.rdp.service.RdpDsEnvService;
 import com.clougence.schema.umi.struts.UmiTypes;
 import com.clougence.utils.CollectionUtils;
@@ -81,8 +79,6 @@ public class DmSecRangeController {
 
     @Resource
     private CheckRulesService checkRulesService;
-    @Resource
-    private DmEnvParamService dmEnvParamService;
     @Resource
     private RdpDsEnvService   rdpDsEnvService;
     @Resource
@@ -123,7 +119,7 @@ public class DmSecRangeController {
         }
 
         SpecUpdateVO vo = new SpecUpdateVO();
-        List<DmSysEnvDO> envs = this.dmEnvParamService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+        List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
         if (!envs.isEmpty()) {
             vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
             vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));
@@ -151,7 +147,7 @@ public class DmSecRangeController {
         }
 
         SpecUpdateVO vo = new SpecUpdateVO();
-        List<DmSysEnvDO> envs = this.dmEnvParamService.queryListByParamKeyValue(puid, EnvParamKeys.DM_BIND_CHECK_SPEC, String.valueOf(fo.getSpecId()));
+        List<DmSysEnvDO> envs = this.checkRulesService.querySpecBindingEnvs(puid, fo.getSpecId());
         if (!envs.isEmpty()) {
             vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.CHECKRULES_SPEC_INUSE_MESSAGE.name(), specDO.getName()));
             vo.setReferer(envs.stream().map(DmConvertUtils::convertToRefEnvVO).collect(Collectors.toList()));

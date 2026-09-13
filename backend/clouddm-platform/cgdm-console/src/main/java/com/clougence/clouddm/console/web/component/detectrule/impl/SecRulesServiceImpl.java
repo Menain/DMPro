@@ -125,37 +125,61 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
         DataSourceType dsType = dsCache.getDsType();
         long envId = dsCache.getEnvId();
 
-        String usingSpec = this.dmEnvParamService.queryParam(ownerUid, envId, EnvParamKeys.DM_BIND_CHECK_SPEC);
-        if (StringUtils.isBlank(usingSpec) || !NumberUtils.isNumber(usingSpec)) {
+        // QUERY chain: read DM_BIND_CHECK_SPEC (behavior unchanged from original)
+        DmSecSpecDO querySpec = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_CHECK_SPEC);
+        Map<Long, SecRefererWrap> ruleOfQuery = querySpec == null
+                ? Collections.emptyMap()
+                : groupRefererByKind(resolveSecRefererList(ownerUid, querySpec.getId()), RuleKind.QUERY);
+
+        // SENSITIVE chain: read DM_BIND_SENSITIVE_SPEC;
+        // only when new key is unbound / spec invalid, fall back to old key spec's SENSITIVE referers
+        DmSecSpecDO senSpec = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_SENSITIVE_SPEC);
+        Map<Long, SecRefererWrap> ruleOfSen;
+        if (senSpec != null) {
+            ruleOfSen = groupRefererByKind(resolveSecRefererList(ownerUid, senSpec.getId()), RuleKind.SENSITIVE);
+        } else {
+            ruleOfSen = querySpec == null
+                    ? Collections.emptyMap()
+                    : groupRefererByKind(resolveSecRefererList(ownerUid, querySpec.getId()), RuleKind.SENSITIVE);
+        }
+
+        if (ruleOfQuery.isEmpty() && ruleOfSen.isEmpty()) {
             return new SecCheckerRules();
+        }
+
+        // result
+        List<CheckerRule> resultOfQuery = this.convertQueryRulesToCheckerRule(ownerUid, dsType, ruleOfQuery);
+        List<CheckerRule> resultOfSen = this.convertSenRulesToCheckerRule(ownerUid, ruleOfSen);
+
+        String querySpecName = querySpec == null ? null : querySpec.getName();
+        String senSpecName = senSpec != null ? senSpec.getName()
+                : (querySpec == null ? null : querySpec.getName());
+        return new SecCheckerRules(envId, dsId, dsCache.getDsInstId(), dsType,
+                querySpecName, senSpecName, resultOfQuery, resultOfSen);
+    }
+
+    private DmSecSpecDO resolveBoundSpec(String ownerUid, long envId, String paramKey) {
+        String usingSpec = this.dmEnvParamService.queryParam(ownerUid, envId, paramKey);
+        if (StringUtils.isBlank(usingSpec) || !NumberUtils.isNumber(usingSpec)) {
+            return null;
         }
 
         long specId = Long.parseLong(usingSpec);
         DmSecSpecDO specDO = this.secRuleDal.specMapper().queryByIdAndUid(ownerUid, specId);
         if (specDO == null || !specDO.isEnable()) {
-            return new SecCheckerRules();
+            return null;
         }
+        return specDO;
+    }
 
-        // fetch all rule of ds.
-        Collection<SecRefererWrap> refererWraps = resolveSecRefererList(ownerUid, specId);
-        if (refererWraps.isEmpty()) {
-            return new SecCheckerRules();
-        }
-
-        Map<Long, SecRefererWrap> ruleOfQuery = new HashMap<>();
-        Map<Long, SecRefererWrap> ruleOfSen = new HashMap<>();
+    private static Map<Long, SecRefererWrap> groupRefererByKind(Collection<SecRefererWrap> refererWraps, RuleKind kind) {
+        Map<Long, SecRefererWrap> result = new HashMap<>();
         refererWraps.forEach(r -> {
-            if (r.getReferer().getRefRuleKind() == RuleKind.QUERY) {
-                ruleOfQuery.put(r.getReferer().getRefRule(), r);
-            } else if (r.getReferer().getRefRuleKind() == RuleKind.SENSITIVE) {
-                ruleOfSen.put(r.getReferer().getRefRule(), r);
+            if (r.getReferer().getRefRuleKind() == kind) {
+                result.put(r.getReferer().getRefRule(), r);
             }
         });
-
-        // result
-        List<CheckerRule> resultOfQuery = this.convertQueryRulesToCheckerRule(ownerUid, dsType, ruleOfQuery);
-        List<CheckerRule> resultOfSen = this.convertSenRulesToCheckerRule(ownerUid, ruleOfSen);
-        return new SecCheckerRules(envId, dsId, dsCache.getDsInstId(), dsType, specDO.getName(), resultOfQuery, resultOfSen);
+        return result;
     }
 
     private Collection<SecRefererWrap> resolveSecRefererList(String ownerUid, long specId) {

@@ -35,6 +35,7 @@ public class SecCheckerRules {
     private final DataSourceType    dsType;
 
     private final String            dsUseSpecName;
+    private final String            dsUseSensitiveSpecName;
 
     private final List<CheckerRule> queryRuleList;
     private final List<CheckerRule> senRuleList;
@@ -46,18 +47,22 @@ public class SecCheckerRules {
         this.dsName = null;
         this.dsType = null;
         this.dsUseSpecName = "";
+        this.dsUseSensitiveSpecName = "";
         this.queryRuleList = Collections.emptyList();
         this.senRuleList = Collections.emptyList();
 
     }
 
-    public SecCheckerRules(long envId, long dsId, String dsName, DataSourceType dsType, String dsUseSpecName, List<CheckerRule> queryRuleList, List<CheckerRule> senRuleList){
+    public SecCheckerRules(long envId, long dsId, String dsName, DataSourceType dsType,
+                           String dsUseSpecName, String dsUseSensitiveSpecName,
+                           List<CheckerRule> queryRuleList, List<CheckerRule> senRuleList){
         this.valid = true;
         this.envId = envId;
         this.dsId = dsId;
         this.dsName = dsName;
         this.dsType = dsType;
         this.dsUseSpecName = dsUseSpecName;
+        this.dsUseSensitiveSpecName = dsUseSensitiveSpecName;
         this.queryRuleList = (queryRuleList == null) ? Collections.emptyList() : queryRuleList;
         this.senRuleList = (senRuleList == null) ? Collections.emptyList() : senRuleList;
     }
