@@ -647,10 +647,12 @@ export default {
             chooseAll: false
           };
           if (this.rangeForm.environment) {
+            // 与下拉展开路径(handleSelectOpenChange)保持一致:listIns 列的是实例级候选,
+            // 支持性校验应按 Instance 级;传目标 rangeType 会把不支持目标级别的 dsType 整列置灰
             this.handleListIns(nextKey, {
               envId: this.rangeForm.environment,
               refId: this.refId,
-              rangeType: this.rangeForm.rangeType,
+              rangeType: 'Instance',
               matchType: this.rangeForm.matchMode,
               ruleKind: this.ruleKind
             });
