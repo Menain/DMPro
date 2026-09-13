@@ -468,7 +468,8 @@ export default {
       this.applySpecLoading = true;
       const res = await this.$services.dmSecurityRulesSpecList({
         data: {
-          search: ''
+          search: '',
+          ruleKind: this.activeTab
         }
       });
       this.applySpecLoading = false;

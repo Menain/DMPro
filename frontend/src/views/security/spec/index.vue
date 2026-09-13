@@ -295,7 +295,10 @@ export default {
     },
     async handleCreateSpec() {
       const res = await this.$services.dmSecurityRulesSpecCreate({
-        data: this.newSpec
+        data: {
+          ...this.newSpec,
+          ruleKind: this.effectiveRuleKind
+        }
       });
 
       if (res.success) {
@@ -332,7 +335,8 @@ export default {
       this.specListLoading = true;
       const res = await this.$services.dmSecurityRulesSpecList({
         data: {
-          search: this.search
+          search: this.search,
+          ruleKind: this.effectiveRuleKind
         }
       });
 

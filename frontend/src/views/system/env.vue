@@ -36,15 +36,15 @@
                 <div class="ticket-text-container">
                   <div v-if="!row.secDesVO.openSec" class="ticket-info">
                     <span class="ticket-status-text-error">{{ $t('wei-qi-yong') }}</span>
-                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleSwitchSpecChange(row)">
+                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleSwitchSpecChange(row, 'QUERY')">
                       {{ $t('pei-zhi') }}
                     </a-button>
                   </div>
                   <div v-else class="ticket-info">
-                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleDisableSecuritySpec(row)">
+                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleDisableSecuritySpec(row, 'QUERY')">
                       {{ $t('jin-yong') }}
                     </a-button>
-                    <a-popover placement="top" trigger="hover" :overlay-style="{ maxWidth: '300px' }">
+                    <a-popover v-if="!row.secDesVO.invalid" placement="top" trigger="hover" :overlay-style="{ maxWidth: '300px' }">
                       <template #content>
                         <div class="ticket-popover-content">
                           <div class="ticket-popover-item">
@@ -59,6 +59,43 @@
                       </template>
                       <span class="ticket-status-text cursor-pointer">{{ $t('yi-qi-yong') }}</span>
                     </a-popover>
+                    <span v-else class="ticket-status-text-error cursor-pointer" @click="handleSwitchSpecChange(row, 'QUERY')">
+                      {{ $t('gui-ze-ji-yi-shi-xiao') }}
+                    </span>
+                  </div>
+                </div>
+              </template>
+
+              <template #sensitiveSpec="{ row }">
+                <div class="ticket-text-container">
+                  <div v-if="!row.sensitiveSecDesVO.openSec" class="ticket-info">
+                    <span class="ticket-status-text-error">{{ $t('wei-qi-yong') }}</span>
+                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleSwitchSpecChange(row, 'SENSITIVE')">
+                      {{ $t('pei-zhi') }}
+                    </a-button>
+                  </div>
+                  <div v-else class="ticket-info">
+                    <a-button type="link" size="small" class="ticket-config-btn" @click="handleDisableSecuritySpec(row, 'SENSITIVE')">
+                      {{ $t('jin-yong') }}
+                    </a-button>
+                    <a-popover v-if="!row.sensitiveSecDesVO.invalid" placement="top" trigger="hover" :overlay-style="{ maxWidth: '300px' }">
+                      <template #content>
+                        <div class="ticket-popover-content">
+                          <div class="ticket-popover-item">
+                            <span class="ticket-popover-label">{{ $t('gui-fan-ming-cheng') }}：</span>
+                            <span class="ticket-popover-value">{{ row.sensitiveSecDesVO.name }}</span>
+                          </div>
+                          <div v-if="row.sensitiveSecDesVO.desc" class="ticket-popover-item">
+                            <span class="ticket-popover-label">{{ $t('gui-fan-miao-shu') }}：</span>
+                            <span class="ticket-popover-value">{{ row.sensitiveSecDesVO.desc }}</span>
+                          </div>
+                        </div>
+                      </template>
+                      <span class="ticket-status-text cursor-pointer">{{ $t('yi-qi-yong') }}</span>
+                    </a-popover>
+                    <span v-else class="ticket-status-text-error cursor-pointer" @click="handleSwitchSpecChange(row, 'SENSITIVE')">
+                      {{ $t('gui-ze-ji-yi-shi-xiao') }}
+                    </span>
                   </div>
                 </div>
               </template>
@@ -309,13 +346,17 @@
 
     <CCModal
       v-model="showEnableSpecModal"
-      :title="$t('qi-yong-an-quan-gui-fan-qing-xuan-ze')"
+      :title="currentSpecKind === 'SENSITIVE' ? $t('qi-yong-tuo-min-gui-ze-ji-qing-xuan-ze') : $t('qi-yong-an-quan-gui-fan-qing-xuan-ze')"
       @onOk="handleBindSpec"
       @onCancel="handleCloseEnableSpecModal"
     >
       <Alert type="warning" v-if="!specList.length">
         {{ $t('dang-qian-mei-you-ke-yong-de-an-quan-gui-fan-qing-xian-qu') }}
-        <router-link to="/data-access/rules?tab=security&type=create">{{ $t('an-quan-gui-fan-ye-mian') }}</router-link>
+        <router-link
+          :to="currentSpecKind === 'SENSITIVE' ? '/data-access/desens?tab=security&type=create' : '/data-access/rules?tab=security&type=create'"
+        >
+          {{ $t('an-quan-gui-fan-ye-mian') }}
+        </router-link>
         {{ $t('chuang-jian') }}
       </Alert>
       <Form ref="specForm" :model="specData" :rules="specDataValidate">
@@ -335,13 +376,13 @@
 
     <CCModal
       v-model="showDisableSpecModal"
-      :title="$t('an-quan-gui-fan-guan-bi-ti-shi')"
+      :title="currentSpecKind === 'SENSITIVE' ? $t('tuo-min-gui-ze-ji-guan-bi-ti-shi') : $t('an-quan-gui-fan-guan-bi-ti-shi')"
       @onOk="handleDisableSpec"
       @onCancel="handleCloseDisableSpecModal"
     >
       {{ $t('que-ren-ting-yong') }}
       <b>{{ currentEnv?.envName }}</b>
-      {{ $t('shang-de-an-quan-gui-fan') }}
+      {{ currentSpecKind === 'SENSITIVE' ? $t('shang-de-tuo-min-gui-ze-ji') : $t('shang-de-an-quan-gui-fan') }}
     </CCModal>
   </div>
 </template>
@@ -411,11 +452,12 @@ export default {
       pageNum: 1,
       addEnv: deepClone(EMPTY_ENV),
       currentEnv: {},
+      currentSpecKind: 'QUERY',
       specData: {
         check_spec_id: ''
       },
       specDataValidate: {
-        check_spec_id: [{ required: true, message: '安全规则不能为空' }]
+        check_spec_id: [{ required: true, message: this.$t('gui-ze-ji-bu-neng-wei-kong') }]
       },
       specList: [],
       showEnableSpecModal: false,
@@ -450,8 +492,14 @@ export default {
           slot: 'envDesc'
         },
         {
-          title: this.$t('an-quan-gui-fan'),
+          title: this.$t('cha-xun-gui-ze-ji'),
           slot: 'securitySpec',
+          width: 140,
+          align: 'left'
+        },
+        {
+          title: this.$t('tuo-min-gui-ze-ji'),
+          slot: 'sensitiveSpec',
           width: 140,
           align: 'left'
         },
@@ -605,7 +653,8 @@ export default {
       this.ticketData = { ...EMPTY_TICKET_DATA };
       this.ticketDataSelected = { ...EMPTY_TICKET_SELECTED };
       this.specData = {
-        check_spec_id: ''
+        check_spec_id: '',
+        sensitive_spec_id: ''
       };
       this.$nextTick(() => {
         this.$refs.addEnv?.resetFields();
@@ -651,14 +700,18 @@ export default {
         row.allowAllStatements = !row.allowAllStatements;
       }
     },
-    async handleSwitchSpecChange(row) {
+    async handleSwitchSpecChange(row, kind) {
       this.currentEnv = row;
-      if (!row.secDesVO.openSec) {
+      this.currentSpecKind = kind;
+      const desVO = kind === 'SENSITIVE' ? row.sensitiveSecDesVO : row.secDesVO;
+      if (!desVO.openSec || desVO.invalid) {
+        const paramKey = kind === 'SENSITIVE' ? 'sensitive_spec_id' : 'check_spec_id';
         const res = await this.$services.rdpDsEnvListSpec({
-          data: {}
+          data: { ruleKind: kind }
         });
         if (res.success) {
           this.specList = res.data;
+          this.specData.check_spec_id = '';
           this.showEnableSpecModal = true;
           if (this.specList && this.specList.length) {
             for (let i = 0; i < this.specList.length; i++) {
@@ -676,51 +729,57 @@ export default {
     },
     async handleDisableSpec() {
       if (!this.currentEnv || !this.currentEnv.envId) {
-        this.$Message.error('环境信息不存在');
+        this.$Message.error(this.$t('huan-jing-xin-xi-bu-cun-zai'));
         return;
       }
+      const paramKey = this.currentSpecKind === 'SENSITIVE' ? 'sensitive_spec_id' : 'check_spec_id';
       const res = await this.$services.dmEnvParamUnbindEnvParam({
         data: {
           envId: this.currentEnv.envId,
-          paramKey: 'check_spec_id'
+          paramKey: paramKey
         }
       });
 
       if (res.success) {
-        this.$Message.success(`环境 ${this.currentEnv.envName} 上的安全规则已停用`);
+        const msgKey = this.currentSpecKind === 'SENSITIVE' ? 'huan-jing-tuo-min-gui-ze-ji-yi-ting-yong' : 'huan-jing-an-quan-gui-fan-yi-ting-yong';
+        this.$Message.success(this.$t(msgKey, [this.currentEnv.envName]));
         this.handleCloseModal();
         await this.listEnv();
       } else {
         this.handleCloseDisableSpecModal();
       }
     },
-    async handleDisableSecuritySpec(row) {
+    async handleDisableSecuritySpec(row, kind) {
       this.currentEnv = row;
+      this.currentSpecKind = kind;
       await this.handleDisableSpec();
     },
     handleCloseEnableSpecModal() {
-      if (this.currentEnv && this.currentEnv.secDesVO) {
-        this.currentEnv.secDesVO.openSec = false;
+      const desVO = this.currentSpecKind === 'SENSITIVE' ? this.currentEnv?.sensitiveSecDesVO : this.currentEnv?.secDesVO;
+      if (this.currentEnv && desVO && !desVO.invalid) {
+        desVO.openSec = false;
       }
       this.handleCloseModal();
     },
     handleCloseDisableSpecModal() {
-      if (this.currentEnv && this.currentEnv.secDesVO) {
-        this.currentEnv.secDesVO.openSec = true;
+      const desVO = this.currentSpecKind === 'SENSITIVE' ? this.currentEnv?.sensitiveSecDesVO : this.currentEnv?.secDesVO;
+      if (this.currentEnv && desVO && !desVO.invalid) {
+        desVO.openSec = true;
       }
       this.handleCloseModal();
     },
     async handleBindSpec() {
       if (!this.currentEnv || !this.currentEnv.envId) {
-        this.$Message.error('环境信息不存在');
+        this.$Message.error(this.$t('huan-jing-xin-xi-bu-cun-zai'));
         return;
       }
       this.$refs.specForm.validate(async (valid) => {
         if (valid) {
+          const paramKey = this.currentSpecKind === 'SENSITIVE' ? 'sensitive_spec_id' : 'check_spec_id';
           const res = await this.$services.dmEnvParamBindEnvParam({
             data: {
               envId: this.currentEnv.envId,
-              paramKey: 'check_spec_id',
+              paramKey: paramKey,
               paramValue: this.specData.check_spec_id
             }
           });
@@ -732,7 +791,8 @@ export default {
                 specName = spec.name;
               }
             });
-            this.$Message.success(`环境 ${this.currentEnv.envName} 上已启用 ${specName} 作为安全规则`);
+            const msgKey = this.currentSpecKind === 'SENSITIVE' ? 'huan-jing-yi-qi-yong-tuo-min-gui-ze-ji' : 'huan-jing-yi-qi-yong-an-quan-gui-fan';
+            this.$Message.success(this.$t(msgKey, [this.currentEnv.envName, specName]));
             this.handleCloseModal();
             await this.listEnv();
           } else {
