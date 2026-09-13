@@ -104,6 +104,9 @@ export default {
       if (path.indexOf('/data-access/cluster') === 0 || path.indexOf('/system/dmmachine') > -1) {
         return this.$t('nav-cha-xun-ji-qi-lie-biao');
       }
+      if (path.indexOf('/data-access/desens') === 0) {
+        return this.$t('tuo-min-guan-li');
+      }
       if (path.indexOf('/data-access/rules') === 0 || path.indexOf('/system/dmrule') > -1 || path.indexOf('/system/dmspec') > -1) {
         return this.$t('an-quan-gui-fan');
       }
@@ -151,17 +154,18 @@ export default {
     },
     pageBreadcrumbs() {
       const path = this.$route.path;
+      const isSensitiveEntry = this.$route.query.ruleKind === 'SENSITIVE' || path.indexOf('/data-access/desens') === 0;
       const securityRoot = {
-        label: this.$t('an-quan-gui-fan'),
+        label: isSensitiveEntry ? this.$t('tuo-min-gui-fan-ji') : this.$t('an-quan-gui-fan'),
         to: {
-          path: '/data-access/rules',
+          path: isSensitiveEntry ? '/data-access/desens' : '/data-access/rules',
           query: { tab: 'security' }
         }
       };
       const securityTemplateRoot = {
         ...securityRoot,
         to: {
-          path: '/data-access/rules',
+          path: isSensitiveEntry ? '/data-access/desens' : '/data-access/rules',
           query: { tab: 'template' }
         }
       };
@@ -214,7 +218,7 @@ export default {
       if (path === '/system/authdm' || /^\/system\/account\/authdm\/[^/]+$/.test(path)) {
         return [accountRoot, { label: this.$t('shou-quan'), to: this.$route.fullPath }];
       }
-      if (path === '/data-access/rules' || path === '/data-access/rules/') {
+      if (path === '/data-access/rules' || path === '/data-access/rules/' || path === '/data-access/desens' || path === '/data-access/desens/') {
         return [{ ...securityRoot, to: this.$route.fullPath }];
       }
       if (path === '/data-access/rules/create') {

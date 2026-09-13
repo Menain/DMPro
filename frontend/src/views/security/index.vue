@@ -20,14 +20,33 @@ export default {
     SpecList,
     RuleList
   },
+  created() {
+    this.handleLegacyRedirect();
+  },
   data() {
     return {
-      activeSection: 'security',
-      sectionTabs: [
+      activeSection: 'security'
+    };
+  },
+  computed: {
+    effectiveRuleKind() {
+      return this.$route.meta.fixedRuleKind || this.$route.query.ruleKind || null;
+    },
+    entryPath() {
+      return this.effectiveRuleKind === 'SENSITIVE' ? '/data-access/desens' : '/data-access/rules';
+    },
+    sectionTabs() {
+      if (this.effectiveRuleKind === 'SENSITIVE') {
+        return [
+          { name: 'security', label: this.$t('tuo-min-gui-fan-ji') },
+          { name: 'template', label: this.$t('tuo-min-gui-ze') }
+        ];
+      }
+      return [
         { name: 'security', label: this.$t('an-quan-gui-fan') },
         { name: 'template', label: this.$t('gui-ze-mo-ban') }
-      ]
-    };
+      ];
+    }
   },
   watch: {
     '$route.query': {
@@ -38,17 +57,22 @@ export default {
     }
   },
   methods: {
+    handleLegacyRedirect() {
+      if (this.$route.path === '/data-access/rules' && this.$route.query.ruleKind === 'SENSITIVE') {
+        const query = { ...this.$route.query };
+        delete query.ruleKind;
+        this.$router.replace({ path: '/data-access/desens', query });
+      }
+    },
     syncActiveSection() {
       const { tab, ruleKind } = this.$route.query || {};
       this.activeSection = tab === 'template' || ruleKind ? 'template' : 'security';
     },
     handleSectionClick(name) {
       const query = { ...(this.$route.query || {}), tab: name };
-      if (name === 'security') {
-        delete query.ruleKind;
-      }
+      delete query.ruleKind;
       this.$router.replace({
-        path: '/data-access/rules',
+        path: this.entryPath,
         query
       });
     }

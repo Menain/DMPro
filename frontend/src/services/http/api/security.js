@@ -4,7 +4,6 @@ export const securityApi = {
   dmSecurityRulesRuleSave: '/api/entry/security/rules/ruleSave',
   dmSecurityRulesRuleDelete: '/api/entry/security/rules/ruleDelete',
   dmSecurityRulesRuleExtract: '/api/entry/security/rules/ruleExtract',
-  dmSecurityRulesRuleSupportDs: '/api/entry/security/rules/ruleSupportDs',
   dmSecurityRulesRuleSettingDef: '/api/entry/security/support/ruleSettingDef',
   dmSecurityRulesSpecRuleDetail: '/api/entry/security/rules/specRuleDetail',
   dmSecurityRulesSpecFetchRange: '/api/entry/security/range/specFetchRange',

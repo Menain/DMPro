@@ -31,7 +31,7 @@
           </template>
           <template #action="{ row }">
             <div>
-              <router-link :to="`/system/dmspec/${row.specId}`" style="margin-right: 10px">
+              <router-link :to="{ path: `/system/dmspec/${row.specId}`, query: specDetailQuery }" style="margin-right: 10px">
                 {{ $t('xiang-qing') }}
               </router-link>
               <Poptip
@@ -176,7 +176,13 @@ export default {
     };
   },
   computed: {
-    ...mapState(['myAuth'])
+    ...mapState(['myAuth']),
+    effectiveRuleKind() {
+      return this.$route.meta.fixedRuleKind || this.$route.query.ruleKind || null;
+    },
+    specDetailQuery() {
+      return this.effectiveRuleKind ? { ruleKind: this.effectiveRuleKind } : {};
+    }
   },
   methods: {
     handleEditSpecName(row) {

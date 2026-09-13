@@ -66,6 +66,7 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   }
   if (myCatLog.includes('CAT_DM_SYS') && myCatLog.includes('CAT_DM_SECRULES')) {
     dataAccessChildren.push(linkItem('/data-access/rules', '/#/data-access/rules', 'an-quan-gui-fan', 'icon-v2-audit'));
+    dataAccessChildren.push(linkItem('/data-access/desens', '/#/data-access/desens', 'nav-tuo-min-guan-li', 'icon-v2-audit'));
   }
   if (dataAccessChildren.length) {
     groups.push(group('data-access', 'nav-shu-ju-fang-wen', 'icon-v2-MyAuth', dataAccessChildren));

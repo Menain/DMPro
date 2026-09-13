@@ -5,7 +5,7 @@
         <div class="content" v-if="isQuery">
           <div class="option">
             <div class="left">
-              <Select v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
+              <Select v-if="!effectiveRuleKind" v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
                 <Option v-for="item in ruleKindOptions" :value="item.value" :key="item.value">
                   {{ item.label }}
                 </Option>
@@ -70,7 +70,7 @@
         <div class="content" v-else>
           <div class="option">
             <div class="left">
-              <Select v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
+              <Select v-if="!effectiveRuleKind" v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
                 <Option v-for="item in ruleKindOptions" :value="item.value" :key="item.value">
                   {{ item.label }}
                 </Option>
@@ -217,7 +217,7 @@ export default {
   name: 'RuleList',
   components: { DataSourceRangeTags },
   mounted() {
-    this.activeTab = this.normalizeRuleKind(this.$route.query.ruleKind);
+    this.activeTab = this.effectiveRuleKind || this.normalizeRuleKind(this.$route.query.ruleKind);
     this.getRuleList();
     this.getRuleSetting();
   },
@@ -290,6 +290,12 @@ export default {
   computed: {
     ...mapGetters(['getTargetType', 'getSenMode']),
     ...mapState(['myAuth']),
+    effectiveRuleKind() {
+      return this.$route.meta.fixedRuleKind || this.$route.query.ruleKind || null;
+    },
+    entryPath() {
+      return this.effectiveRuleKind === 'SENSITIVE' ? '/data-access/desens' : '/data-access/rules';
+    },
     hasRuleManage() {
       return this.myAuth.includes('DM_SECRULES_MANAGE');
     },
@@ -380,7 +386,7 @@ export default {
         this.$Message.warning(this.$t('gui-ze-lei-xing-bu-neng-wei-kong'));
       }
       this.$router.push({
-        path: '/data-access/rules',
+        path: this.entryPath,
         query: {
           tab: 'template',
           ruleKind
@@ -483,7 +489,7 @@ export default {
         ruleKind: rule.ruleKind,
         enable: true,
         warnLevel: rule.ruleKind === 'QUERY' ? 'SUGGEST' : undefined,
-        senMode: rule.ruleKind === 'SENSITIVE' ? rule.senMode || 'ROW' : undefined,
+        senMode: rule.ruleKind === 'SENSITIVE' ? rule.senMode || 'VALUE' : undefined,
         ruleParam: this.buildRuleParam(rule)
       }));
     },
@@ -564,7 +570,8 @@ export default {
       if (rule.ruleId) {
         const res = await this.$services.dmSecurityRulesRuleDetail({
           data: {
-            ruleId: rule.ruleId
+            ruleId: rule.ruleId,
+            ruleKind: rule.ruleKind || this.activeTab
           }
         });
 
@@ -575,11 +582,6 @@ export default {
       }
 
       this.showEditRuleModal = true;
-
-      const res2 = await this.$services.dmSecurityRulesRuleSupportDs();
-      if (res2.success) {
-        this.supportDsList = res2.data;
-      }
     }
   }
 };

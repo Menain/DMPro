@@ -252,11 +252,22 @@ export default [
   {
     path: '/data-access/rules',
     name: 'DMRuleList',
-    component: () => import(/* webpackChunkName: "system-datasource" */ '@/views/security/index')
+    component: () => import(/* webpackChunkName: "system-datasource" */ '@/views/security/index'),
+    meta: { fixedRuleKind: 'QUERY' }
+  },
+  {
+    path: '/data-access/desens',
+    name: 'DMDesensList',
+    component: () => import(/* webpackChunkName: "system-datasource" */ '@/views/security/index'),
+    meta: { fixedRuleKind: 'SENSITIVE' }
   },
   {
     path: 'dmrulelist',
     redirect: '/data-access/rules'
+  },
+  {
+    path: 'dmdesenslist',
+    redirect: '/data-access/desens'
   },
   {
     path: '/data-access/rules/create',

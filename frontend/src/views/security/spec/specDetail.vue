@@ -5,7 +5,7 @@
         <div class="content" v-if="isQuery">
           <div class="option">
             <div class="left">
-              <Select v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
+              <Select v-if="!effectiveRuleKind" v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
                 <Option v-for="item in ruleKindOptions" :value="item.value" :key="item.value">
                   {{ item.label }}
                 </Option>
@@ -67,7 +67,7 @@
         <div class="content" v-else>
           <div class="option">
             <div class="left">
-              <Select v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
+              <Select v-if="!effectiveRuleKind" v-model="activeTab" style="width: 160px; margin-right: 10px" @on-change="handleRuleKindChange">
                 <Option v-for="item in ruleKindOptions" :value="item.value" :key="item.value">
                   {{ item.label }}
                 </Option>
@@ -92,6 +92,28 @@
             >
               <template #senMode="{ row }">
                 {{ getSenMode(row.senMode).i18n }}
+              </template>
+              <template #rangeSummary="{ row }">
+                <div class="range-summary-cell" @click="handleGoRange(row)">
+                  <span v-if="getRangeSummary(row.ruleId).type === 'loading'">-</span>
+                  <Tooltip
+                    v-else-if="getRangeSummary(row.ruleId).type === 'empty'"
+                    :content="$t('wei-pei-zhi-fan-wei-tips')"
+                    transfer
+                    placement="top"
+                  >
+                    <span class="range-summary-warning">{{ $t('wei-pei-zhi-fan-wei') }}</span>
+                  </Tooltip>
+                  <span v-else-if="getRangeSummary(row.ruleId).type === 'error'">-</span>
+                  <div v-else>
+                    <div v-for="(line, i) in getRangeSummary(row.ruleId).lines.slice(0, 2)" :key="i" class="range-summary-line">
+                      {{ line }}
+                    </div>
+                    <div v-if="getRangeSummary(row.ruleId).lines.length > 2" class="range-summary-more">
+                      {{ `+${getRangeSummary(row.ruleId).lines.length - 2}` }}
+                    </div>
+                  </div>
+                </div>
               </template>
               <template #ruleAction="{ row }">
                 <div class="rule-action-list">
@@ -122,6 +144,7 @@
               </template>
             </Table>
           </div>
+          <div class="algorithm-note">{{ $t('tuo-min-suan-fa-shuo-ming') }}</div>
         </div>
       </div>
       <div class="footer">
@@ -214,13 +237,16 @@ export default {
   components: { DataSourceRangeTags },
   mounted() {
     this.specId = this.$route.params.specId;
-    this.activeTab = this.normalizeRuleKind(this.$route.query && this.$route.query.ruleKind);
+    this.activeTab = this.effectiveRuleKind || this.normalizeRuleKind(this.$route.query && this.$route.query.ruleKind);
     this.getRuleSetting();
     this.getSpecDetail();
   },
   computed: {
     ...mapState(['ruleSetting', 'myAuth']),
     ...mapGetters(['getTargetType', 'getSenMode']),
+    effectiveRuleKind() {
+      return this.$route.meta.fixedRuleKind || this.$route.query.ruleKind || null;
+    },
     isQuery() {
       return this.activeTab === 'QUERY';
     },
@@ -234,7 +260,7 @@ export default {
       return { x: 1250 };
     },
     sensitiveTableScroll() {
-      return { x: 910 };
+      return { x: 1150 };
     }
   },
   data() {
@@ -288,6 +314,7 @@ export default {
       },
       selectedRule: {},
       supportTargetList: [],
+      rangeSummaryMap: {},
       QUERY: {
         loading: false,
         pageSize: 20,
@@ -355,12 +382,17 @@ export default {
           {
             title: this.$t('gui-ze-miao-shu'),
             key: 'ruleDesc',
-            width: 360
+            width: 300
           },
           {
-            title: '脱敏方式',
+            title: this.$t('tuo-min-fang-shi'),
             width: 100,
             slot: 'senMode'
+          },
+          {
+            title: this.$t('sheng-xiao-fan-wei'),
+            slot: 'rangeSummary',
+            width: 240
           },
           {
             title: this.$t('qi-yong'),
@@ -484,7 +516,66 @@ export default {
         this[this.activeTab].ruleList = res.data.ruleList;
         this[this.activeTab].total = res.data.ruleList.length;
         this.handleRuleSearch('refresh');
+        if (this.activeTab === 'SENSITIVE') {
+          this.fetchRangeSummaries();
+        }
       }
+    },
+    buildRangeSummary(range) {
+      if (range.chooseAll) {
+        return this.$t('quan-bu');
+      }
+      const pathParts = [range.env, range.ds, range.catalog, range.schema, range.table]
+        .filter(Boolean)
+        .map((item) => item.name || item.objName)
+        .filter(Boolean);
+
+      const nodeNames = (range.nodes || []).map((n) => n.name || n.objName || n.value).filter(Boolean);
+
+      let summary = pathParts.join('/');
+      if (nodeNames.length) {
+        if (nodeNames.length <= 2) {
+          summary = summary ? `${summary} → ${nodeNames.join('、')}` : nodeNames.join('、');
+        } else {
+          const head = nodeNames.slice(0, 2).join('、');
+          summary = summary ? `${summary} → ${head} (+${nodeNames.length - 2})` : `${head} (+${nodeNames.length - 2})`;
+        }
+      }
+      return summary || '-';
+    },
+    getRangeSummary(ruleId) {
+      return this.rangeSummaryMap[ruleId] || { type: 'loading', lines: [] };
+    },
+    async fetchRangeSummaries() {
+      const rows = this.SENSITIVE.allRuleList || [];
+      if (!rows.length) {
+        this.rangeSummaryMap = {};
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        rows.map((row) =>
+          this.$services.dmSecurityRulesSpecFetchRange({
+            data: { specId: this.specId, ruleId: row.ruleId, ruleKind: 'SENSITIVE' }
+          })
+        )
+      );
+
+      const map = {};
+      results.forEach((res, i) => {
+        const ruleId = rows[i].ruleId;
+        if (res.status === 'fulfilled' && res.value && res.value.success) {
+          const ranges = res.value.data || [];
+          if (!ranges.length) {
+            map[ruleId] = { type: 'empty', lines: [] };
+          } else {
+            map[ruleId] = { type: 'ok', lines: ranges.map((r) => this.buildRangeSummary(r)) };
+          }
+        } else {
+          map[ruleId] = { type: 'error', lines: [] };
+        }
+      });
+      this.rangeSummaryMap = map;
     },
     setTableShowData() {
       const { pageNum, pageSize } = this[this.activeTab];
@@ -602,5 +693,30 @@ export default {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.range-summary-cell {
+  cursor: pointer;
+  min-height: 22px;
+}
+.range-summary-line {
+  line-height: 20px;
+  word-break: break-all;
+}
+.range-summary-more {
+  color: #8892a6;
+  line-height: 20px;
+}
+.range-summary-warning {
+  color: #ed4014;
+  font-weight: 500;
+}
+.algorithm-note {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 6px;
+  color: #5b667a;
+  font-size: 13px;
+  line-height: 20px;
 }
 </style>

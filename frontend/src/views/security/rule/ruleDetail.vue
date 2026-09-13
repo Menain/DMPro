@@ -65,7 +65,7 @@ export default {
         ruleContent: '',
         dsRange: [],
         targetType: '',
-        senMode: 'ROW'
+        senMode: 'VALUE'
       }
     };
   },
@@ -73,6 +73,16 @@ export default {
     ...mapState(['ruleSetting']),
     isView() {
       return this.type === 'view';
+    },
+    effectiveRuleKind() {
+      return this.$route.meta.fixedRuleKind || this.$route.query.ruleKind || null;
+    },
+    entryPath() {
+      const kind = this.effectiveRuleKind || this.ruleForm.ruleKind;
+      return kind === 'SENSITIVE' ? '/data-access/desens' : '/data-access/rules';
+    },
+    senModeOptions() {
+      return this.ruleSetting?.senConf?.senMode || [];
     },
     querySupportDs() {
       return this.ruleSetting?.queryConf?.supportDs || [];
@@ -186,7 +196,7 @@ export default {
                 this.$Message.success(res.data.message);
                 this.forceRuleModal = deepClone(EMPTY_FORCE_RULE_MODAL);
                 await this.$router.push({
-                  path: '/data-access/rules',
+                  path: this.entryPath,
                   query: {
                     ruleKind: this.ruleForm.ruleKind
                   }
@@ -215,13 +225,20 @@ export default {
         <div class="rule-section-title">{{ $t('gui-ze-pei-zhi') }}</div>
         <Form ref="ruleForm" class="rule-config-form" :model="ruleForm" :rules="ruleFormValidate" label-position="top">
           <FormItem :label="$t('gui-ze-lei-xing')" prop="ruleKind">
-            <Select v-model="ruleForm.ruleKind" :disabled="isView" clearable @on-change="handleRuleKindChange">
+            <Select v-model="ruleForm.ruleKind" :disabled="isView || !!effectiveRuleKind" clearable @on-change="handleRuleKindChange">
               <Option value="QUERY">{{ $t('cha-xun') }}</Option>
               <Option value="SENSITIVE">{{ $t('tuo-min') }}</Option>
             </Select>
           </FormItem>
           <FormItem :label="$t('gui-ze-ming-cheng')" prop="ruleName">
             <Input v-model="ruleForm.ruleName" :disabled="isView" clearable maxlength="64" :placeholder="$t('qing-shu-ru-gui-ze-ming-cheng')" />
+          </FormItem>
+          <FormItem :label="$t('tuo-min-fang-shi')" v-if="ruleForm.ruleKind === 'SENSITIVE'">
+            <Select v-model="ruleForm.senMode" :disabled="isView" style="width: 200px">
+              <Option v-for="sen in senModeOptions" :key="sen.name" :value="sen.name">
+                {{ sen.i18n }}
+              </Option>
+            </Select>
           </FormItem>
           <FormItem :label="$t('gui-ze-miao-shu')">
             <Input
