@@ -133,6 +133,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private org.springframework.transaction.PlatformTransactionManager txManager;
     @Resource
     private com.clougence.clouddm.platform.dal.access.ExecutionDal execDal;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
 
     // ==================== check ====================
 
@@ -289,6 +291,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
 
         // Reset group to PENDING
         ticketDbStmtDal.stmtMapper().updateExecStatus(groupId, EXEC_STATUS_PENDING, null);
+
+        // Sub-task A: fill-missing snapshot capture before re-execution.
+        // first-capture-wins: existing CAPTURED rows are never replaced. This ensures
+        // the pre-before baseline remains the first attempt's state, not a post-partial-
+        // execution polluted state.
+        schemaSnapshotService.captureIfMissing(group, group.getTicketId());
 
         // Rebuild group job
         String jobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper">
+
+    <resultMap id="dmProdReleaseStmtSchemaDO" type="com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSchemaDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="release_id" property="releaseId"/>
+        <result column="release_stmt_id" property="releaseStmtId"/>
+        <result column="prod_ds_id" property="prodDsId"/>
+        <result column="prod_db_name" property="prodDbName"/>
+        <result column="table_name" property="tableName"/>
+        <result column="exists_flag" property="existsFlag"/>
+        <result column="schema_json" property="schemaJson"/>
+        <result column="fingerprint" property="fingerprint"/>
+        <result column="shared_flag" property="sharedFlag"/>
+    </resultMap>
+
+    <sql id="dmProdReleaseStmtSchema">
+        id,
+        gmt_create,
+        gmt_modified,
+        release_id,
+        release_stmt_id,
+        prod_ds_id,
+        prod_db_name,
+        table_name,
+        exists_flag,
+        schema_json,
+        fingerprint,
+        shared_flag
+    </sql>
+
+    <select id="queryByReleaseStmtId" resultMap="dmProdReleaseStmtSchemaDO">
+        SELECT
+            <include refid="dmProdReleaseStmtSchema"/>
+        FROM
+            dm_prod_release_stmt_schema
+        WHERE
+            release_stmt_id = #{releaseStmtId}
+        ORDER BY
+            table_name
+    </select>
+
+    <select id="queryByReleaseId" resultMap="dmProdReleaseStmtSchemaDO">
+        SELECT
+            <include refid="dmProdReleaseStmtSchema"/>
+        FROM
+            dm_prod_release_stmt_schema
+        WHERE
+            release_id = #{releaseId}
+        ORDER BY
+            release_stmt_id, table_name
+    </select>
+
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO dm_prod_release_stmt_schema
+            (release_id, release_stmt_id, prod_ds_id, prod_db_name, table_name,
+             exists_flag, schema_json, fingerprint, shared_flag)
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (#{row.releaseId}, #{row.releaseStmtId}, #{row.prodDsId}, #{row.prodDbName}, #{row.tableName},
+             #{row.existsFlag}, #{row.schemaJson}, #{row.fingerprint}, #{row.sharedFlag})
+        </foreach>
+    </insert>
+
+</mapper>

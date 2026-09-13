@@ -19,6 +19,7 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -165,6 +166,37 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     }
 
     // ==================== core engine ====================
+
+    @Override
+    public Set<String> extractTables(String sqlContent) {
+        if (StringUtils.isBlank(sqlContent)) {
+            return Collections.emptySet();
+        }
+        Set<String> tables = new HashSet<>();
+        // Use regex patterns on the raw SQL text — no DS config or split needed.
+        // This is a lightweight extraction for snapshot scope and shared-table detection.
+        extractTableNames(sqlContent, P_CREATE_TABLE, 1, tables);
+        extractTableNames(sqlContent, P_DROP_TABLE, 1, tables);
+        extractTableNames(sqlContent, P_ALTER_TABLE, 1, tables);
+        extractTableNames(sqlContent, P_TRUNCATE, 1, tables);
+        extractTableNames(sqlContent, P_RENAME_TABLE, 1, tables);
+        extractTableNames(sqlContent, P_RENAME_TABLE, 2, tables);
+        extractTableNames(sqlContent, P_CREATE_INDEX, 2, tables);
+        extractTableNames(sqlContent, P_INSERT, 1, tables);
+        extractTableNames(sqlContent, P_UPDATE, 1, tables);
+        extractTableNames(sqlContent, P_DELETE, 1, tables);
+        return tables;
+    }
+
+    private void extractTableNames(String sql, Pattern p, int group, Set<String> out) {
+        Matcher m = p.matcher(sql);
+        while (m.find()) {
+            String name = lastComponent(m.group(group));
+            if (StringUtils.isNotBlank(name)) {
+                out.add(name);
+            }
+        }
+    }
 
     private PrecheckConclusion doPrecheck(DmProdReleaseStmtDO stmt) {
         // 1. Resolve DS identity and config

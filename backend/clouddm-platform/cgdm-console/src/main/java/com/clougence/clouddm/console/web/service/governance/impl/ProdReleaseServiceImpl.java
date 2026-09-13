@@ -18,6 +18,7 @@ package com.clougence.clouddm.console.web.service.governance.impl;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,7 @@ import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
 import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
+import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -66,8 +68,10 @@ import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
+import com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtSchemaDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
+import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSchemaDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
@@ -112,6 +116,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private ApprovalStateService    approvalStateService;
     @Resource
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
+    @Resource
+    private ReleaseSchemaDiffService releaseSchemaDiffService;
 
     // ==================== create (merge transaction) ====================
 
@@ -187,7 +193,18 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                         I18nDmMsgKeys.GOV_RELEASE_DB_LOCKED.name(), pair.getProdDbName()));
                 }
 
-                sourceEntries.add(new SourceStmtEntry(stmt, pair, ticket, ticket.getGmtCreate()));
+                SourceStmtEntry entry = new SourceStmtEntry(stmt, pair, ticket, ticket.getGmtCreate());
+
+                // Sub-task A: query CAPTURED snapshots from the pre-release side.
+                // No snapshots → merge proceeds normally (compatibility: pre-A releases).
+                try {
+                    entry.snapshots = ticketDbStmtDal.schemaMapper().queryByStmtId(stmt.getId());
+                } catch (Exception e) {
+                    log.warn("[ProdRelease] Failed to query snapshots for stmt {}: {}", stmt.getId(), e.getMessage());
+                    entry.snapshots = java.util.Collections.emptyList();
+                }
+
+                sourceEntries.add(entry);
             }
         }
 
@@ -266,6 +283,9 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 stmt.setExecutionKey(be.executionKey);
                 stmt.setExecStatus(EXEC_STATUS_PENDING);
                 prodReleaseDal.stmtMapper().insert(stmt);
+
+                // Sub-task A: propagate CAPTURED snapshots to the release side
+                propagateSnapshots(release.getId(), stmt.getId(), be, buildEntries);
             }
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(
@@ -373,6 +393,20 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             if (precheckResult.isWarnSkip()) {
                 appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
                     null, null, uid, precheckResult.toEventData(first.getId()));
+            }
+
+            // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
+            PrecheckConclusion diffResult = releaseSchemaDiffService.diff(first);
+            if (diffResult.isBlock()) {
+                prodReleaseDal.stmtMapper().updateExecStatus(first.getId(), EXEC_STATUS_FAILED,
+                    diffResult.toDetailText());
+                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_DRIFT,
+                    null, null, uid, diffResult.toEventData(first.getId()));
+                continue;
+            }
+            if (diffResult.isWarnSkip()) {
+                appendReleaseEvent(releaseId, diffWarnEventType(diffResult),
+                    null, null, uid, diffResult.toEventData(first.getId()));
             }
 
             // Create job for this stmt
@@ -495,6 +529,20 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         if (precheckResult.isWarnSkip()) {
             appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
                 null, null, uid, precheckResult.toEventData(stmt.getId()));
+        }
+
+        // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
+        PrecheckConclusion diffResult = releaseSchemaDiffService.diff(stmt);
+        if (diffResult.isBlock()) {
+            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
+                diffResult.toDetailText());
+            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_DRIFT,
+                null, null, uid, diffResult.toEventData(stmt.getId()));
+            return;
+        }
+        if (diffResult.isWarnSkip()) {
+            appendReleaseEvent(stmt.getReleaseId(), diffWarnEventType(diffResult),
+                null, null, uid, diffResult.toEventData(stmt.getId()));
         }
 
         // Reset stmt to PENDING
@@ -652,10 +700,106 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
     // ==================== helpers ====================
 
+    /**
+     * Propagate CAPTURED snapshots from the pre-release side to the release side.
+     * shared_flag is computed per (prodDsId, prodDbName) group: a table touched by
+     * >1 stmt in the group → shared_flag=1 (degraded to WARN at the diff gate).
+     * No snapshots → no propagation (compatibility: pre-A releases degrade to B).
+     */
+    private void propagateSnapshots(long releaseId, long releaseStmtId, StmtBuildEntry be,
+                                    List<StmtBuildEntry> buildEntries) {
+        if (be.source.snapshots == null || be.source.snapshots.isEmpty()) {
+            return;
+        }
+
+        // Compute shared tables for this (prodDsId, prodDbName) group.
+        // A table is shared if it appears in >1 stmt's table set within the same group.
+        // Tables from snapshots are known; tables from stmts without snapshots are
+        // computed via extractTables (avoid missing shared markers).
+        Set<String> sharedTables = computeSharedTables(be.source.pair.getProdDsId(),
+            be.source.pair.getProdDbName(), buildEntries);
+
+        List<DmProdReleaseStmtSchemaDO> rows = new ArrayList<>();
+        for (DmTicketStmtSchemaDO snap : be.source.snapshots) {
+            if (!"CAPTURED".equals(snap.getCaptureStatus())) {
+                continue;
+            }
+            DmProdReleaseStmtSchemaDO row = new DmProdReleaseStmtSchemaDO();
+            row.setReleaseId(releaseId);
+            row.setReleaseStmtId(releaseStmtId);
+            row.setProdDsId(be.source.pair.getProdDsId());
+            row.setProdDbName(be.source.pair.getProdDbName());
+            row.setTableName(snap.getTableName());
+            row.setExistsFlag(snap.getExistsFlag());
+            row.setSchemaJson(snap.getSchemaJson());
+            row.setFingerprint(snap.getFingerprint());
+            row.setSharedFlag(sharedTables.contains(snap.getTableName()) ? 1 : 0);
+            rows.add(row);
+        }
+        if (!rows.isEmpty()) {
+            prodReleaseDal.schemaMapper().batchInsert(rows);
+        }
+    }
+
+    /**
+     * Compute the set of tables touched by >1 stmt within the same (prodDsId, prodDbName) group.
+     * Called per build entry — scans all build entries sharing the same prod ds/db.
+     */
+    private Set<String> computeSharedTables(long prodDsId, String prodDbName,
+                                           List<StmtBuildEntry> buildEntries) {
+        // Collect per-stmt table sets for this group
+        List<Set<String>> perStmtTables = new ArrayList<>();
+        for (StmtBuildEntry be : buildEntries) {
+            if (be.source.pair.getProdDsId() != prodDsId
+                || !prodDbName.equals(be.source.pair.getProdDbName())) {
+                continue;
+            }
+            Set<String> tables = new HashSet<>();
+            if (be.source.snapshots != null) {
+                for (DmTicketStmtSchemaDO snap : be.source.snapshots) {
+                    if ("CAPTURED".equals(snap.getCaptureStatus())) {
+                        tables.add(snap.getTableName());
+                    }
+                }
+            }
+            // If snapshots didn't cover all tables, use extractTables to fill the gap
+            Set<String> extracted = releaseSchemaPrecheckService.extractTables(be.source.stmt.getSqlContent());
+            tables.addAll(extracted);
+            perStmtTables.add(tables);
+        }
+
+        // Find tables that appear in >1 stmt's set
+        Map<String, Integer> count = new HashMap<>();
+        for (Set<String> tables : perStmtTables) {
+            for (String t : tables) {
+                count.merge(t, 1, Integer::sum);
+            }
+        }
+        Set<String> shared = new HashSet<>();
+        for (Map.Entry<String, Integer> e : count.entrySet()) {
+            if (e.getValue() > 1) {
+                shared.add(e.getKey());
+            }
+        }
+        return shared;
+    }
+
     private String generateReleaseNo() {
         String datePart = DateFormatType.s_yyyyMMdd.format(new Date());
         String random = String.format("%04d", new java.util.Random().nextInt(10000));
         return "REL-" + datePart + "-" + random;
+    }
+
+    /**
+     * Distinguish SNAPSHOT_MISSING (no pre-before snapshot) from DRIFT_WARN
+     * (shared table or WARN-level-only drift) based on the WARN_SKIP reason.
+     */
+    private static GovEventType diffWarnEventType(PrecheckConclusion conclusion) {
+        String reason = conclusion.getSkipReason();
+        if (reason != null && reason.contains("No pre-before schema snapshot")) {
+            return GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
+        }
+        return GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
     }
 
     private void appendReleaseEvent(long releaseId, GovEventType type, String fromStatus, String toStatus, String operatorUid, String eventData) {
@@ -683,6 +827,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         final DmDbPairDO pair;
         final DmApprovalDO ticket;
         final Date ticketGmtCreate;
+        List<DmTicketStmtSchemaDO> snapshots; // CAPTURED snapshots from pre-release side
 
         SourceStmtEntry(DmTicketDbStmtDO stmt, DmDbPairDO pair, DmApprovalDO ticket, Date ticketGmtCreate) {
             this.stmt = stmt;

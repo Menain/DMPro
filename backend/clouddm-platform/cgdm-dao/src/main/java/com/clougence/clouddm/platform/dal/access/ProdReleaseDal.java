@@ -17,15 +17,19 @@ package com.clougence.clouddm.platform.dal.access;
 
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
 
 /**
  * Dal aggregation for production release tables.
  * release table is mutable via controlled state-machine methods (transitStatus / updateApprovalId / updateGateResult).
  * stmt table has insert, select, updateExecStatus, deleteByReleaseId — no arbitrary update/delete.
+ * stmt_schema table has batchInsert, queryByReleaseStmtId, queryByReleaseId.
  */
 public interface ProdReleaseDal {
 
     DmProdReleaseMapper releaseMapper();
 
     DmProdReleaseStmtMapper stmtMapper();
+
+    DmProdReleaseStmtSchemaMapper schemaMapper();
 }

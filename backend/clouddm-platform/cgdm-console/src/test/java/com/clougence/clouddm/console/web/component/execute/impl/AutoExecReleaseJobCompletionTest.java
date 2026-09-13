@@ -97,6 +97,10 @@ public class AutoExecReleaseJobCompletionTest {
         approvalStateService = mock(ApprovalStateService.class);
         releaseSchemaPrecheckService = mock(ReleaseSchemaPrecheckService.class);
         when(releaseSchemaPrecheckService.precheck(any())).thenReturn(PrecheckConclusion.pass());
+        // Sub-task A: diff service (default pass — no drift)
+        com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService
+            = mock(com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService.class);
+        when(releaseSchemaDiffService.diff(any())).thenReturn(PrecheckConclusion.pass());
 
         TicketDbStmtDal ticketDbStmtDal = mock(TicketDbStmtDal.class);
         com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper ticketStmtMapper
@@ -109,6 +113,7 @@ public class AutoExecReleaseJobCompletionTest {
         ReflectionTestUtils.setField(autoExecService, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(autoExecService, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(autoExecService, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
+        ReflectionTestUtils.setField(autoExecService, "releaseSchemaDiffService", releaseSchemaDiffService);
         ReflectionTestUtils.setField(autoExecService, "execDal", execDal);
         ReflectionTestUtils.setField(autoExecService, "ticketDbStmtDal", ticketDbStmtDal);
     }

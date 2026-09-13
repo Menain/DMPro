@@ -35,6 +35,11 @@ export const GOV_EVENT_TYPE_I18N_KEYS = {
   RELEASE_STMT_SUCCESS: 'gov-event-type-RELEASE_STMT_SUCCESS',
   RELEASE_STMT_FAILED: 'gov-event-type-RELEASE_STMT_FAILED',
   RELEASE_HASH_DRIFT: 'gov-event-type-RELEASE_HASH_DRIFT',
+  RELEASE_SCHEMA_PRECHECK_FAILED: 'gov-event-type-RELEASE_SCHEMA_PRECHECK_FAILED',
+  RELEASE_SCHEMA_PRECHECK_SKIPPED: 'gov-event-type-RELEASE_SCHEMA_PRECHECK_SKIPPED',
+  RELEASE_SCHEMA_DRIFT: 'gov-event-type-RELEASE_SCHEMA_DRIFT',
+  RELEASE_SCHEMA_DRIFT_WARN: 'gov-event-type-RELEASE_SCHEMA_DRIFT_WARN',
+  RELEASE_SCHEMA_SNAPSHOT_MISSING: 'gov-event-type-RELEASE_SCHEMA_SNAPSHOT_MISSING',
   RELEASE_DONE: 'gov-event-type-RELEASE_DONE'
 };
 
@@ -62,6 +67,11 @@ export const GOV_EVENT_ICONS = {
   RELEASE_STMT_SUCCESS: 'ios-checkmark-outline',
   RELEASE_STMT_FAILED: 'ios-close-outline',
   RELEASE_HASH_DRIFT: 'ios-alert-outline',
+  RELEASE_SCHEMA_PRECHECK_FAILED: 'ios-close-circle-outline',
+  RELEASE_SCHEMA_PRECHECK_SKIPPED: 'ios-warning-outline',
+  RELEASE_SCHEMA_DRIFT: 'ios-alert-outline',
+  RELEASE_SCHEMA_DRIFT_WARN: 'ios-warning-outline',
+  RELEASE_SCHEMA_SNAPSHOT_MISSING: 'ios-eye-off-outline',
   RELEASE_DONE: 'ios-checkbox-outline'
 };
 

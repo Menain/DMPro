@@ -101,6 +101,9 @@ public class GovAutoAdvanceServiceTest {
         ReflectionTestUtils.setField(impl, "imSenderService", imSenderService);
         ReflectionTestUtils.setField(impl, "ticketDbStmtDal", ticketDbStmtDal);
         ReflectionTestUtils.setField(impl, "autoExecService", autoExecService);
+        // Sub-task A: snapshot service (no-op mock — captures are tested separately)
+        ReflectionTestUtils.setField(impl, "schemaSnapshotService",
+            mock(com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService.class));
 
         service = impl;
 

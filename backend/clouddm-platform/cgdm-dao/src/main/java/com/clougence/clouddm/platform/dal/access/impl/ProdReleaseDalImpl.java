@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
 
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,8 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     private DmProdReleaseMapper      releaseMapper;
     @Resource
     private DmProdReleaseStmtMapper  stmtMapper;
+    @Resource
+    private DmProdReleaseStmtSchemaMapper schemaMapper;
 
     @Override
     public DmProdReleaseMapper releaseMapper() {
@@ -41,5 +44,10 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     @Override
     public DmProdReleaseStmtMapper stmtMapper() {
         return stmtMapper;
+    }
+
+    @Override
+    public DmProdReleaseStmtSchemaMapper schemaMapper() {
+        return schemaMapper;
     }
 }

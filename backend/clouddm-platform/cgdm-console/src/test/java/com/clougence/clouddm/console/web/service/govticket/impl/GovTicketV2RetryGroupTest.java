@@ -80,6 +80,20 @@ public class GovTicketV2RetryGroupTest {
         ticketDbStmtDal = mock(TicketDbStmtDal.class);
         stmtMapper = mock(DmTicketDbStmtMapper.class);
         when(ticketDbStmtDal.stmtMapper()).thenReturn(stmtMapper);
+        // Sub-task A: schema mapper for snapshot capture
+        com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper ticketSchemaMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper.class);
+        when(ticketDbStmtDal.schemaMapper()).thenReturn(ticketSchemaMapper);
+
+        // Sub-task A: snapshot service (no-op mock)
+        com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService
+            = mock(com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService.class);
+        // Mock DbPairDal for snapshot service's pair resolution
+        com.clougence.clouddm.platform.dal.access.DbPairDal dbPairDal
+            = mock(com.clougence.clouddm.platform.dal.access.DbPairDal.class);
+        com.clougence.clouddm.platform.dal.mapper.dbpair.DmDbPairMapper pairMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.dbpair.DmDbPairMapper.class);
+        when(dbPairDal.pairMapper()).thenReturn(pairMapper);
 
         approvalDal = mock(ApprovalDal.class);
         approvalMapper = mock(DmApprovalMapper.class);
@@ -98,6 +112,7 @@ public class GovTicketV2RetryGroupTest {
         ReflectionTestUtils.setField(service, "execDal", execDal);
         ReflectionTestUtils.setField(service, "autoExecService", autoExecService);
         ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
+        ReflectionTestUtils.setField(service, "schemaSnapshotService", schemaSnapshotService);
     }
 
     @Test

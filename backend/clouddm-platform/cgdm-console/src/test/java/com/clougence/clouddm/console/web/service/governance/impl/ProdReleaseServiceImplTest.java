@@ -52,6 +52,7 @@ import com.clougence.clouddm.platform.dal.mapper.datasource.DmDsMapper;
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
@@ -90,6 +91,7 @@ public class ProdReleaseServiceImplTest {
     private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -116,10 +118,18 @@ public class ProdReleaseServiceImplTest {
         stmtMapper = mock(DmProdReleaseStmtMapper.class);
         when(prodReleaseDal.releaseMapper()).thenReturn(releaseMapper);
         when(prodReleaseDal.stmtMapper()).thenReturn(stmtMapper);
+        // Sub-task A: schema mapper for freeze propagation
+        DmProdReleaseStmtSchemaMapper prodSchemaMapper = mock(DmProdReleaseStmtSchemaMapper.class);
+        when(prodReleaseDal.schemaMapper()).thenReturn(prodSchemaMapper);
 
         ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);
         when(ticketDbStmtDal.stmtMapper()).thenReturn(ticketStmtMapper);
+        // Sub-task A: ticket schema mapper for snapshot query during merge
+        com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper ticketSchemaMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper.class);
+        when(ticketDbStmtDal.schemaMapper()).thenReturn(ticketSchemaMapper);
+        when(ticketSchemaMapper.queryByStmtId(anyLong())).thenReturn(java.util.Collections.emptyList());
 
         approvalDal = mock(ApprovalDal.class);
         approvalMapper = mock(DmApprovalMapper.class);
@@ -141,6 +151,11 @@ public class ProdReleaseServiceImplTest {
         releaseSchemaPrecheckService = mock(ReleaseSchemaPrecheckService.class);
         // Default: precheck passes
         when(releaseSchemaPrecheckService.precheck(any())).thenReturn(PrecheckConclusion.pass());
+        // Sub-task A: extractTables default (no tables → no shared detection)
+        when(releaseSchemaPrecheckService.extractTables(anyString())).thenReturn(java.util.Collections.emptySet());
+        // Sub-task A: diff service (default pass — no drift)
+        releaseSchemaDiffService = mock(com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService.class);
+        when(releaseSchemaDiffService.diff(any())).thenReturn(PrecheckConclusion.pass());
 
         dbChangeEventDal = mock(DbChangeEventDal.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
@@ -164,6 +179,7 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "autoExecService", autoExecService);
         ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(service, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
+        ReflectionTestUtils.setField(service, "releaseSchemaDiffService", releaseSchemaDiffService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
     }
 

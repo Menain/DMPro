@@ -16,8 +16,11 @@
 package com.clougence.clouddm.platform.dal.access;
 
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
+import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper;
 
 public interface TicketDbStmtDal {
 
     DmTicketDbStmtMapper stmtMapper();
+
+    DmTicketStmtSchemaMapper schemaMapper();
 }

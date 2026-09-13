@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper">
+
+    <resultMap id="dmTicketStmtSchemaDO" type="com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtSchemaDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="ticket_id" property="ticketId"/>
+        <result column="stmt_id" property="stmtId"/>
+        <result column="ds_id" property="dsId"/>
+        <result column="db_name" property="dbName"/>
+        <result column="table_name" property="tableName"/>
+        <result column="exists_flag" property="existsFlag"/>
+        <result column="schema_json" property="schemaJson"/>
+        <result column="fingerprint" property="fingerprint"/>
+        <result column="capture_status" property="captureStatus"/>
+        <result column="capture_error" property="captureError"/>
+    </resultMap>
+
+    <sql id="dmTicketStmtSchema">
+        id,
+        gmt_create,
+        gmt_modified,
+        ticket_id,
+        stmt_id,
+        ds_id,
+        db_name,
+        table_name,
+        exists_flag,
+        schema_json,
+        fingerprint,
+        capture_status,
+        capture_error
+    </sql>
+
+    <select id="queryByStmtId" resultMap="dmTicketStmtSchemaDO">
+        SELECT
+            <include refid="dmTicketStmtSchema"/>
+        FROM
+            dm_ticket_stmt_schema
+        WHERE
+            stmt_id = #{stmtId}
+        ORDER BY
+            table_name
+    </select>
+
+    <select id="queryByStmtAndTable" resultMap="dmTicketStmtSchemaDO">
+        SELECT
+            <include refid="dmTicketStmtSchema"/>
+        FROM
+            dm_ticket_stmt_schema
+        WHERE
+            stmt_id = #{stmtId}
+            AND table_name = #{tableName}
+        LIMIT 1
+    </select>
+
+    <insert id="insertSnapshot" parameterType="com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtSchemaDO">
+        INSERT INTO dm_ticket_stmt_schema
+            (ticket_id, stmt_id, ds_id, db_name, table_name,
+             exists_flag, schema_json, fingerprint, capture_status, capture_error)
+        VALUES
+            (#{ticketId}, #{stmtId}, #{dsId}, #{dbName}, #{tableName},
+             #{existsFlag}, #{schemaJson}, #{fingerprint}, #{captureStatus}, #{captureError})
+    </insert>
+
+    <update id="updateSnapshotResult">
+        UPDATE dm_ticket_stmt_schema
+        SET
+            exists_flag    = #{existsFlag},
+            schema_json    = #{schemaJson},
+            fingerprint    = #{fingerprint},
+            capture_status = #{captureStatus},
+            capture_error  = #{captureError}
+        WHERE
+            stmt_id    = #{stmtId}
+            AND table_name = #{tableName}
+            AND capture_status != 'CAPTURED'
+    </update>
+
+</mapper>

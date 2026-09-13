@@ -15,6 +15,8 @@
  */
 package com.clougence.clouddm.console.web.component.governance;
 
+import java.util.Set;
+
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
 
 /**
@@ -41,4 +43,14 @@ public interface ReleaseSchemaPrecheckService {
      * @return PASS / BLOCK / WARN_SKIP conclusion; never null, never throws
      */
     PrecheckConclusion precheck(DmProdReleaseStmtDO stmt);
+
+    /**
+     * Extract the set of table names touched by the SQL content.
+     * Used by sub-task A for snapshot collection scope and shared-table detection.
+     * Returns an empty set if SQL cannot be split or no tables are found.
+     *
+     * @param sqlContent the SQL content (may contain multiple statements)
+     * @return set of table names (last component, backtick-stripped); never null
+     */
+    Set<String> extractTables(String sqlContent);
 }

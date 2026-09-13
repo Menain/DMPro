@@ -79,6 +79,8 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     private TicketDbStmtDal           ticketDbStmtDal;
     @Resource
     private AutoExecService           autoExecService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -179,6 +181,11 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
                 continue; // skip non-eligible groups
             }
             try {
+                // Sub-task A: capture pre-before schema snapshots BEFORE the group job is
+                // dispatched. Any failure is caught inside the service and never blocks
+                // the main flow — missing snapshots degrade to WARN at the diff gate.
+                schemaSnapshotService.captureIfMissing(group, ticketId);
+
                 String jobBizId = DmTeamUtils.nextExecJobBizId();
                 this.autoExecService.createGroupJob(
                     group, jobBizId,
