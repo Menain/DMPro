@@ -629,7 +629,7 @@ export default {
   background: #eaf8f2;
 }
 
-/deep/.security-ds-range-modal .ivu-modal-footer {
+:deep(.security-ds-range-modal .ivu-modal-footer) {
   padding: 14px 18px 18px;
 }
 
@@ -643,7 +643,7 @@ export default {
   min-width: 96px;
 }
 
-/deep/.security-ds-range-more-popover .ivu-poptip-rel {
+:deep(.security-ds-range-more-popover .ivu-poptip-rel) {
   display: inline-flex;
   align-items: center;
 }
