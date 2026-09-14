@@ -1,6 +1,12 @@
 <template>
   <div class="page-shell db-change-ledger-detail">
     <div class="page-shell__body">
+      <div class="ledger-detail-back">
+        <Button type="text" @click="handleBack">
+          <Icon type="ios-arrow-back" />
+          {{ $t('fan-hui') }}
+        </Button>
+      </div>
       <div v-if="loading" class="gov-detail-loading">
         <Spin size="large" />
       </div>
@@ -77,6 +83,9 @@ export default {
     }
   },
   methods: {
+    handleBack() {
+      this.$router.push('/dbChange/ledger');
+    },
     async loadDetail() {
       this.loading = true;
       try {
@@ -106,6 +115,10 @@ export default {
 
 <style lang="less">
 .db-change-ledger-detail {
+  .ledger-detail-back {
+    margin-bottom: 8px;
+  }
+
   .page-section {
     margin-bottom: 32px;
   }

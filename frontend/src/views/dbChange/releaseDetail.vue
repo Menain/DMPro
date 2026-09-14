@@ -1,6 +1,12 @@
 <template>
   <div class="page-shell db-change-release-detail">
     <div class="page-shell__body">
+      <div class="release-detail-back">
+        <Button type="text" @click="handleBack">
+          <Icon type="ios-arrow-back" />
+          {{ $t('fan-hui') }}
+        </Button>
+      </div>
       <div v-if="loading" class="gov-detail-loading">
         <Spin size="large" />
       </div>
@@ -174,6 +180,9 @@ export default {
     }
   },
   methods: {
+    handleBack() {
+      this.$router.push('/dbChange/release');
+    },
     async loadDetail() {
       this.loading = true;
       try {
@@ -286,6 +295,10 @@ export default {
 
 <style lang="less">
 .db-change-release-detail {
+  .release-detail-back {
+    margin-bottom: 8px;
+  }
+
   .page-section {
     margin-bottom: 32px;
   }

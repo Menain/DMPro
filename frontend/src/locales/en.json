@@ -436,6 +436,7 @@
   "guan-kong-xi-tong-yi-chang": "CONSOLE",
   "guan-li-ji-qi": "Manage Workers",
   "guan-li-yuan": "Administrator",
+  "guan-li-yuan-zhang-hao-bu-zhi-chi-ci-cao-zuo": "This operation is not supported for the administrator account",
   "guan-lian-de-xiao-yan-ren-wu": "Associated Verification DataJob: ",
   "guan-lian": "Association",
   "guan-lian-zhang-hao": "Associated Account",

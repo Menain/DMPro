@@ -1,6 +1,12 @@
 <template>
   <div class="page-shell ticket-detail-page">
     <div class="page-shell__body ticket-detail-container">
+      <div class="ticket-detail-back">
+        <Button type="text" @click="handleBack">
+          <Icon type="ios-arrow-back" />
+          {{ $t('fan-hui') }}
+        </Button>
+      </div>
       <section class="page-section ticket-info-section">
         <div class="ticket-info-section__header">
           <div class="ticket-info-section__heading">
@@ -1299,6 +1305,9 @@ export default {
   methods: {
     isCk,
     isMongoDB,
+    handleBack() {
+      this.$router.push('/ticket');
+    },
     autoExecJobStatusText(status) {
       const key = AUTO_EXEC_JOB_STATUS_I18N_KEYS[status];
       return key ? this.$t(key) : status || '-';
@@ -2869,6 +2878,10 @@ export default {
   color: var(--text-primary);
   background: var(--bg-card);
   overflow: hidden;
+}
+
+.ticket-detail-back {
+  margin-bottom: 8px;
 }
 
 .ticket-detail-page .ticket-detail-container {

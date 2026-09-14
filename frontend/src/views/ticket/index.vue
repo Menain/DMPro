@@ -162,10 +162,10 @@ export default {
       ticketType: '',
       loading: false,
       ticketData: [],
-      ticketListType: 'WAIT_SELF_PROCESS',
+      ticketListType: 'SELF_CREATE',
       ticketTabs: [
-        { name: 'WAIT_SELF_PROCESS', label: this.$t('dai-ban') },
         { name: 'SELF_CREATE', label: this.$t('wo-fa-qi-de') },
+        { name: 'WAIT_SELF_PROCESS', label: this.$t('dai-ban') },
         { name: 'ALL', label: this.$t('quan-bu') }
       ],
       searchKey: {
@@ -266,7 +266,7 @@ export default {
       return this.userInfo.accountType === 'PRIMARY_ACCOUNT';
     },
     rootAccountUnsupportedTip() {
-      return '管理员账号不支持此操作';
+      return this.$t('guan-li-yuan-zhang-hao-bu-zhi-chi-ci-cao-zuo');
     },
     authTicketClass() {
       return [
