@@ -42,7 +42,11 @@ import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.detectrule.SecRulesCheckResult;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
+import com.clougence.clouddm.console.web.component.approval.ApprovalPersonService;
+import com.clougence.clouddm.console.web.component.approval.model.ApprovalStageMO;
+import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.governance.FullWidthSqlLint;
+import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.component.governance.impl.GovStmtSplitServiceImpl;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -67,6 +71,8 @@ import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.datasource.DmDsMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalFeature;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalStage;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
@@ -80,6 +86,8 @@ import com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtRevisionDO
 import com.clougence.clouddm.platform.dal.model.secrule.WarnLevel;
 import com.clougence.clouddm.platform.dal.model.system.DmSysEnvDO;
 import com.clougence.clouddm.sdk.execute.session.QueryArg;
+import com.clougence.clouddm.sdk.security.auth.AuthKind;
+import com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel;
 import com.clougence.clouddm.sdk.service.secrules.Requester;
 import com.clougence.clouddm.sdk.service.secrules.RuleLevel;
 import com.clougence.clouddm.sdk.sql.parser.SplitScript;
@@ -142,6 +150,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
     @Resource
     private com.clougence.clouddm.platform.dal.access.ProdReleaseDal prodReleaseDal;
+    @Resource
+    private ApprovalPersonService  approvalPersonService;
+    @Resource
+    private DmAuthServiceForBiz    dmAuthServiceForBiz;
+    // @Lazy: GovReturnNotifyService is in the governance component layer which could
+    //   transitively cycle through the approval chain. Safe-side proxy injection.
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private GovReturnNotifyService govReturnNotifyService;
 
     // ==================== check ====================
 
@@ -332,10 +349,20 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), ticketId));
         }
-        // Only the submitter (ownerUid) can return their own ticket (design §9.1: applicant-only v1)
-        if (!uid.equals(ticket.getOwnerUid())) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_OWNER.name()));
+        // DBA/admin proxy return (design §2): owner OR primary-account OR DM_DAUTH_TICKET@bindDsId
+        if (!uid.equals(ticket.getOwnerUid()) && !uid.equals(ticket.getPrimaryUid())) {
+            boolean hasDsAuth = false;
+            if (ticket.getBindDsId() != null) {
+                hasDsAuth = dmAuthServiceForBiz.checkResAuthWithoutError(
+                    puid, uid, ticket.getBindDsId(),
+                    new com.clougence.clouddm.console.web.util.DsResPathObj(ticket.getLevelPath()),
+                    SecDataAuthLabel.DM_DAUTH_TICKET, AuthKind.DataSource);
+            }
+            if (!hasDsAuth) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_AUTHORIZED_RETURN.name()));
+            }
         }
+        String via = uid.equals(ticket.getOwnerUid()) ? "OWNER" : "DBA";
         // Guard 1: ticket_status must be EXEC_FAIL or WAIT_EXEC (WAIT_EXEC + FAILED groups = race window)
         ApprovalStatus currentStatus = ticket.getTicketStatus();
         if (currentStatus != ApprovalStatus.EXEC_FAIL && currentStatus != ApprovalStatus.WAIT_EXEC) {
@@ -371,9 +398,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Action: ticket_status -> REVISION (updateStatusByEnum, NOT transitionTicketToTerminal)
         approvalStateService.updateApprovalStatus(ticketId, ApprovalStatus.REVISION, "Returned for revision");
 
-        // Event TICKET_RETURNED (real uid, NOT SYSTEM — NOT NULL contract)
+        // Event TICKET_RETURNED (real uid, NOT SYSTEM — NOT NULL contract; via=OWNER/DBA additive)
         appendTicketReturnedEvent(ticketId, uid, currentStatus.name(), ApprovalStatus.REVISION.name(),
-            fo.getReason(), failedGroupIds);
+            fo.getReason(), failedGroupIds, via);
+
+        // IM notify applicant (operator != applicant when DBA proxy return)
+        govReturnNotifyService.notifyReturn(puid, uid, ticket.getOwnerUid(),
+            ticketId, ticket.getTicketTitle(), fo.getReason(), via);
     }
 
     // ==================== resubmit ====================
@@ -457,15 +488,24 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticketUpdate.setRawSql(first.sqlContent);
         approvalDal.approvalMapper().updateById(ticketUpdate);
 
-        // Step 5: process face — NO recreation needed. The auto-advance chain's
-        // confirmTicketBySystemForV2 -> confirmTicketBySystemInTransaction at L1306-1308
-        // explicitly resets the EXECUTION process to INIT and calls initializeExecutionProgress
-        // which resets all execution activities, regardless of their current status
-        // (FAIL/FINISH). APPROVAL and CONFIRM process rows are updated to FINISH via
-        // updateProcessStatus which does not check the current status. So the existing
-        // auto-advance chain handles the full process face reset when it re-confirms the
-        // ticket at WAIT_APPROVAL -> WAIT_CONFIRM -> WAIT_EXEC.
-        // (design §8 implementation selection record — see below)
+        // Step 5 (§0 fix): PROD_DML re-approval surgery — re-establish person list + reset APPROVAL process.
+        // The v1 comment below was aspirational: PROD_DML has no auto-advance chain (scheduler skips it),
+        // and approvalTicket L165 physically deleted the person list. Without this surgery the ticket is
+        // invisible to all approvers (canApproval=false) and approvalTicket throws NO_PERMISSION.
+        // PRE_DDL needs none of this — its auto-advance chain self-heals (systemAutoApprove resets
+        // APPROVAL→FINISH, confirmTicketBySystem resets CONFIRM/EXECUTION).
+        if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
+            List<com.clougence.clouddm.console.web.model.vo.PrimaryUserVO> persons = approvalFlowService.queryPersons(ticketId);
+            approvalPersonService.replacePersons(ticket, persons);
+
+            ApprovalStageMO resetMO = new ApprovalStageMO();
+            resetMO.setExecMsg("Resubmitted for re-approval");
+            approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.INIT, JsonUtils.toJson(resetMO));
+        }
+
+        // CONFIRM/EXECUTION process rows need NO manual reset: re-approval flows through
+        // approvalApproved → WAIT_CONFIRM, then confirmTicket resets CONFIRM (L1146) and
+        // EXECUTION (L1154-1162) on its own. (approval-chain.md Q5 step-by-step trace.)
 
         // Step 6: append new SUBMIT event with recomputed changeType
         // For SUCCESS groups (not modified), use the stored precheck_result changeType;
@@ -831,7 +871,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     }
 
     private void appendTicketReturnedEvent(long ticketId, String uid, String fromStatus, String toStatus,
-                                           String reason, List<Long> failedGroupIds) {
+                                           String reason, List<Long> failedGroupIds, String via) {
         DmDbChangeEventDO event = new DmDbChangeEventDO();
         event.setTicketId(ticketId);
         event.setEventType(GovEventType.TICKET_RETURNED.name());
@@ -842,6 +882,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         Map<String, Object> data = new HashMap<>();
         data.put("reason", reason);
         data.put("failedGroupIds", failedGroupIds);
+        data.put("via", via);
         event.setEventData(JsonUtils.toJson(data));
 
         dbChangeEventDal.eventMapper().insert(event);

@@ -41,6 +41,7 @@ import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
+import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
@@ -119,6 +120,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     @Resource
     private ReleaseSchemaDiffService releaseSchemaDiffService;
+    // @Lazy: GovReturnNotifyService injects ImSenderService; defensive proxy to avoid
+    //   any cycle through the governance/approval component layer.
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private GovReturnNotifyService govReturnNotifyService;
 
     // ==================== create (merge transaction) ====================
 
@@ -645,6 +651,18 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 Set.of(ProdReleaseStatus.PARTIAL_FAILED), ProdReleaseStatus.EXECUTING);
         }
         aggregateIfAllTerminal(release.getId());
+
+        // Step 7: IM notify source ticket applicant (operator != applicant when DBA returns).
+        // Deep link points to the source ticket (applicant edits SQL on the ticket page, not the release page).
+        if (sourceStmt != null) {
+            DmApprovalDO sourceTicket = approvalDal.approvalMapper().queryById(sourceStmt.getTicketId());
+            if (sourceTicket != null && !uid.equals(sourceTicket.getOwnerUid())) {
+                govReturnNotifyService.notifyReturn(
+                    puid, uid, sourceTicket.getOwnerUid(),
+                    sourceTicket.getId(), sourceTicket.getTicketTitle(),
+                    fo.getReason(), "RELEASE");
+            }
+        }
     }
 
     // ==================== handleApproved / handleRejected / handleCancelled ====================

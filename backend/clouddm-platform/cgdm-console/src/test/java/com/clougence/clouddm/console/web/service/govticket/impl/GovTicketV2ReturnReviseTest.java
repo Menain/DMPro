@@ -29,7 +29,10 @@ import org.mockito.InOrder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
+import com.clougence.clouddm.console.web.component.approval.ApprovalPersonService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
+import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
+import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ReturnTicketFO;
@@ -69,6 +72,9 @@ public class GovTicketV2ReturnReviseTest {
     private ProdReleaseDal           prodReleaseDal;
     private DmProdReleaseStmtMapper prodStmtMapper;
     private ApprovalStateService    approvalStateService;
+    private com.clougence.clouddm.console.web.component.approval.ApprovalFlowService approvalFlowService;
+    private com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz dmAuthServiceForBiz;
+    private ApprovalPersonService approvalPersonService;
     private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
 
@@ -174,12 +180,17 @@ public class GovTicketV2ReturnReviseTest {
         when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class))).thenReturn(true);
 
         // Mock ApprovalFlowService
-        com.clougence.clouddm.console.web.component.approval.ApprovalFlowService approvalFlowService
+        approvalFlowService
             = mock(com.clougence.clouddm.console.web.component.approval.ApprovalFlowService.class);
 
         // Mock DbPairService
         com.clougence.clouddm.console.web.service.dbpair.DbPairService dbPairService
             = mock(com.clougence.clouddm.console.web.service.dbpair.DbPairService.class);
+
+        // v2: new dependencies
+        approvalPersonService = mock(ApprovalPersonService.class);
+        dmAuthServiceForBiz = mock(DmAuthServiceForBiz.class);
+        GovReturnNotifyService govReturnNotifyService = mock(GovReturnNotifyService.class);
 
         ReflectionTestUtils.setField(service, "ticketDbStmtDal", ticketDbStmtDal);
         ReflectionTestUtils.setField(service, "approvalDal", approvalDal);
@@ -195,6 +206,9 @@ public class GovTicketV2ReturnReviseTest {
         ReflectionTestUtils.setField(service, "systemDal", systemDal);
         ReflectionTestUtils.setField(service, "approvalFlowService", approvalFlowService);
         ReflectionTestUtils.setField(service, "dbPairService", dbPairService);
+        ReflectionTestUtils.setField(service, "approvalPersonService", approvalPersonService);
+        ReflectionTestUtils.setField(service, "dmAuthServiceForBiz", dmAuthServiceForBiz);
+        ReflectionTestUtils.setField(service, "govReturnNotifyService", govReturnNotifyService);
     }
 
     // ==================== State machine tests ====================
@@ -586,6 +600,241 @@ public class GovTicketV2ReturnReviseTest {
         return ticket;
     }
 
+    // ==================== §0: PROD_DML resubmit fix ====================
+
+    @Test
+    public void resubmit_prodDml_reestablishesPersonListAndResetsApprovalProcess() {
+        long ticketId = 300L;
+        long groupId = 310L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.REVISION, "PROD_DML");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(groupId, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(revisionMapper.maxVersionByStmtId(groupId)).thenReturn(0);
+
+        // Override the mock to return a DML SplitScript for this test
+        com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService queryAnalysisService
+            = (com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService)
+                ReflectionTestUtils.getField(service, "queryAnalysisService");
+        when(queryAnalysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
+            .thenAnswer(invocation -> java.util.stream.Stream.of(createDmlSplitScript()));
+
+        // queryPersons returns a simple list
+        com.clougence.clouddm.console.web.model.vo.PrimaryUserVO person
+            = new com.clougence.clouddm.console.web.model.vo.PrimaryUserVO();
+        person.setUid(UID);
+        person.setUsername("approver");
+        when(approvalFlowService.queryPersons(ticketId)).thenReturn(List.of(person));
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setGroups(List.of(buildGroupInput(groupId, "UPDATE t SET val=1 WHERE id=2;")));
+        service.resubmit(PUID, UID, fo);
+
+        // Verify queryPersons was called (person list source for replacePersons)
+        verify(approvalFlowService).queryPersons(ticketId);
+
+        // InOrder: replacePersons → updateProcessStatus(APPROVAL, INIT) — the §0 surgery ordering
+        InOrder inOrder = inOrder(approvalPersonService, approvalStateService);
+        inOrder.verify(approvalPersonService).replacePersons(eq(ticket), any());
+        inOrder.verify(approvalStateService).updateProcessStatus(eq(ticketId),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalStage.APPROVAL),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus.INIT), anyString());
+    }
+
+    @Test
+    public void resubmit_preDdl_zeroInteractionWithPersonService() {
+        long ticketId = 301L;
+        long groupId = 320L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.REVISION, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(groupId, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(revisionMapper.maxVersionByStmtId(groupId)).thenReturn(0);
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setGroups(List.of(buildGroupInput(groupId, "CREATE TABLE t_new(id int);")));
+        service.resubmit(PUID, UID, fo);
+
+        // PRE_DDL: zero interaction with personService / queryPersons / updateProcessStatus(APPROVAL, INIT)
+        verify(approvalFlowService, never()).queryPersons(anyLong());
+        verify(approvalStateService, never()).updateProcessStatus(eq(ticketId),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalStage.APPROVAL),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus.INIT), anyString());
+    }
+
+    // ==================== DBA proxy return (§2) ====================
+
+    @Test
+    public void returnTicket_dbaProxyWithDsAuth_succeeds() {
+        long ticketId = 400L;
+        // Ticket owned by someone else, but DBA has DS auth
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, "owner-uid", ApprovalStatus.EXEC_FAIL, "PRE_DDL");
+        ticket.setBindDsId(10L);
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(410L, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(prodStmtMapper.countBySourceStmtIds(List.of(410L))).thenReturn(0);
+
+        // DBA has DS auth
+        when(dmAuthServiceForBiz.checkResAuthWithoutError(
+            eq(PUID), eq(UID), eq(10L), any(), any(), any())).thenReturn(true);
+
+        GovTicketV2ReturnTicketFO fo = new GovTicketV2ReturnTicketFO();
+        fo.setTicketId(ticketId);
+        fo.setReason("DBA proxy return");
+        service.returnTicket(PUID, UID, fo);
+
+        verify(approvalStateService).updateApprovalStatus(eq(ticketId), eq(ApprovalStatus.REVISION), anyString());
+        // Event must have via=DBA
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && GovEventType.TICKET_RETURNED.name().equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())
+                && eventDataHasVia(e, "DBA")));
+    }
+
+    @Test
+    public void returnTicket_primaryAccount_succeeds() {
+        long ticketId = 401L;
+        // PUID == UID means primary account (isPrimary)
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, "owner-uid", ApprovalStatus.EXEC_FAIL, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(411L, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(prodStmtMapper.countBySourceStmtIds(List.of(411L))).thenReturn(0);
+
+        GovTicketV2ReturnTicketFO fo = new GovTicketV2ReturnTicketFO();
+        fo.setTicketId(ticketId);
+        service.returnTicket(PUID, PUID, fo); // uid == puid (primary account)
+
+        verify(approvalStateService).updateApprovalStatus(eq(ticketId), eq(ApprovalStatus.REVISION), anyString());
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && eventDataHasVia(e, "DBA"))); // primary account → via=DBA
+    }
+
+    @Test
+    public void returnTicket_noAuth_throws() {
+        long ticketId = 402L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, "owner-uid", ApprovalStatus.EXEC_FAIL, "PRE_DDL");
+        ticket.setBindDsId(10L);
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(412L, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+
+        when(dmAuthServiceForBiz.checkResAuthWithoutError(
+            any(), any(), anyLong(), any(), any(), any())).thenReturn(false);
+
+        GovTicketV2ReturnTicketFO fo = new GovTicketV2ReturnTicketFO();
+        fo.setTicketId(ticketId);
+        try {
+            service.returnTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException");
+        } catch (ErrorMessageException ex) {
+            // ok — no auth
+        }
+        verify(approvalStateService, never()).updateApprovalStatus(anyLong(), any(), any());
+    }
+
+    @Test
+    public void resubmit_stillOwnerOnly() {
+        long ticketId = 403L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, "owner-uid", ApprovalStatus.REVISION, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setGroups(List.of(buildGroupInput(420L, "CREATE TABLE t(id int);")));
+        try {
+            service.resubmit(PUID, UID, fo); // uid != ownerUid
+            fail("Expected ErrorMessageException");
+        } catch (ErrorMessageException ex) {
+            // ok — resubmit is owner-only even with proxy return
+        }
+    }
+
+    // ==================== via field in events ====================
+
+    @Test
+    public void returnTicket_ownerReturn_eventViaOwner() {
+        long ticketId = 500L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.EXEC_FAIL, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(510L, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(prodStmtMapper.countBySourceStmtIds(List.of(510L))).thenReturn(0);
+
+        GovTicketV2ReturnTicketFO fo = new GovTicketV2ReturnTicketFO();
+        fo.setTicketId(ticketId);
+        fo.setReason("self return");
+        service.returnTicket(PUID, UID, fo);
+
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && GovEventType.TICKET_RETURNED.name().equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())
+                && eventDataHasVia(e, "OWNER")));
+    }
+
+    // ==================== reason propagation ====================
+
+    @Test
+    public void returnTicket_reasonStoredInEventData() {
+        long ticketId = 501L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.EXEC_FAIL, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(511L, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(prodStmtMapper.countBySourceStmtIds(List.of(511L))).thenReturn(0);
+
+        String reason = "SQL syntax error in group 1";
+        GovTicketV2ReturnTicketFO fo = new GovTicketV2ReturnTicketFO();
+        fo.setTicketId(ticketId);
+        fo.setReason(reason);
+        service.returnTicket(PUID, UID, fo);
+
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) -> {
+            if (e == null || !GovEventType.TICKET_RETURNED.name().equals(e.getEventType())) {
+                return false;
+            }
+            Map<String, Object> data = JsonUtils.toObj(e.getEventData(), HashMap.class);
+            return data != null && reason.equals(data.get("reason"));
+        }));
+    }
+
+    @Test
+    public void resubmit_reasonStoredInRevisionTable() {
+        long ticketId = 502L;
+        long groupId = 520L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.REVISION, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(groupId, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(revisionMapper.maxVersionByStmtId(groupId)).thenReturn(0);
+
+        String reason = "Fixed WHERE clause";
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setGroups(List.of(buildGroupInput(groupId, "CREATE TABLE t_new(id int);")));
+        fo.setReason(reason);
+        service.resubmit(PUID, UID, fo);
+
+        verify(revisionMapper).insertRevision(argThat((com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtRevisionDO r) ->
+            r != null && reason.equals(r.getReason())));
+    }
+
+    private boolean eventDataHasVia(DmDbChangeEventDO event, String expectedVia) {
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), HashMap.class);
+        return data != null && expectedVia.equals(data.get("via"));
+    }
+
     private DmTicketDbStmtDO buildGroup(long id, long ticketId, String execStatus) {
         DmTicketDbStmtDO group = new DmTicketDbStmtDO();
         group.setId(id);
@@ -611,6 +860,15 @@ public class GovTicketV2ReturnReviseTest {
         script.setIndex(1);
         script.setType(EnumSet.of(SplitQueryType.CREATE_TABLE));
         script.setScript("CREATE TABLE t(id int);");
+        return script;
+    }
+
+    /** Canned DML SplitScript for PROD_DML precheck PASS path (UPDATE -> DML classification). */
+    private static SplitScript createDmlSplitScript() {
+        SplitScript script = new SplitScript();
+        script.setIndex(1);
+        script.setType(EnumSet.of(SplitQueryType.UPDATE));
+        script.setScript("UPDATE t SET val=1 WHERE id=2;");
         return script;
     }
 }

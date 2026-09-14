@@ -4492,6 +4492,8 @@
   "gov-v2-resubmit-success": "Resubmitted — waiting for approval",
   "gov-v2-resubmit-empty": "SQL content cannot be empty",
   "gov-v2-resubmit-placeholder": "Enter modified SQL",
+  "gov-v2-resubmit-reason-placeholder": "Optional reason for resubmit",
+  "gov-v2-approver-return": "Return for Revision",
   "gov-v2-revision-notice": "Ticket is in revision mode. Modify the FAILED group SQL and resubmit. The pre-prod database may already have partial effects from the previous attempt.",
   "gov-v2-exec-detail": "Execution Detail",
   "gov-v2-precheck-status": "Pre-check Status",

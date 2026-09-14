@@ -28,6 +28,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
+import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService;
@@ -157,6 +158,10 @@ public class ProdReleaseReturnStmtTest {
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
         ReflectionTestUtils.setField(service, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
         ReflectionTestUtils.setField(service, "releaseSchemaDiffService", releaseSchemaDiffService);
+
+        // v2: IM notification service (mocked — all tests set sourceTicket ownerUid=UID so notify is skipped)
+        GovReturnNotifyService govReturnNotifyService = mock(GovReturnNotifyService.class);
+        ReflectionTestUtils.setField(service, "govReturnNotifyService", govReturnNotifyService);
     }
 
     @Test
@@ -176,6 +181,7 @@ public class ProdReleaseReturnStmtTest {
         // Source ticket + stmt
         DmApprovalDO sourceTicket = new DmApprovalDO();
         sourceTicket.setId(sourceTicketId);
+        sourceTicket.setOwnerUid(UID); // actor == owner → IM notify skipped
         sourceTicket.setTicketStatus(ApprovalStatus.FINISHED);
         when(approvalMapper.queryById(sourceTicketId)).thenReturn(sourceTicket);
 
@@ -280,6 +286,7 @@ public class ProdReleaseReturnStmtTest {
 
         DmApprovalDO sourceTicket = new DmApprovalDO();
         sourceTicket.setId(104L);
+        sourceTicket.setOwnerUid(UID); // actor == owner → IM notify skipped
         sourceTicket.setTicketStatus(ApprovalStatus.FINISHED);
         when(approvalMapper.queryById(104L)).thenReturn(sourceTicket);
 
@@ -314,6 +321,7 @@ public class ProdReleaseReturnStmtTest {
 
         DmApprovalDO sourceTicket = new DmApprovalDO();
         sourceTicket.setId(106L);
+        sourceTicket.setOwnerUid(UID); // actor == owner → IM notify skipped
         sourceTicket.setTicketStatus(ApprovalStatus.FINISHED);
         when(approvalMapper.queryById(106L)).thenReturn(sourceTicket);
 
@@ -348,6 +356,7 @@ public class ProdReleaseReturnStmtTest {
 
         DmApprovalDO sourceTicket = new DmApprovalDO();
         sourceTicket.setId(109L);
+        sourceTicket.setOwnerUid(UID); // actor == owner → IM notify skipped
         sourceTicket.setTicketStatus(ApprovalStatus.FINISHED);
         when(approvalMapper.queryById(109L)).thenReturn(sourceTicket);
 
@@ -385,6 +394,7 @@ public class ProdReleaseReturnStmtTest {
         // Source ticket is ALREADY in REVISION (returned from a previous stmt)
         DmApprovalDO sourceTicket = new DmApprovalDO();
         sourceTicket.setId(108L);
+        sourceTicket.setOwnerUid(UID); // actor == owner → IM notify skipped
         sourceTicket.setTicketStatus(ApprovalStatus.REVISION);
         when(approvalMapper.queryById(108L)).thenReturn(sourceTicket);
 

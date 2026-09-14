@@ -28,5 +28,12 @@ public class RdpApprovalFO {
 
     private boolean rejected;
 
+    /**
+     * v2 approver return-for-revision: when true, the approver returns the ticket to REVISION
+     * instead of approve/reject. Mutually exclusive with {@code rejected} (both true → parameter error).
+     * Default false = legacy behavior (approve/reject only).
+     */
+    private boolean returned;
+
     private String  comment;
 }

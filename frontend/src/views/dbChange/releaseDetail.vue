@@ -81,7 +81,7 @@
                     >
                       {{ $t('gov-v2-retry') }}
                     </Button>
-                    <Button v-if="stmt.execStatus === 'FAILED' && canRetry" size="small" :loading="returning" @click="handleReturnStmt(stmt.id)">
+                    <Button v-if="stmt.execStatus === 'FAILED' && canRetry" size="small" :loading="returning" @click="openReturnStmtModal(stmt.id)">
                       {{ $t('gov-release-return-stmt') }}
                     </Button>
                   </div>
@@ -116,6 +116,20 @@
         {{ $t('gov-release-not-found') }}
       </div>
     </div>
+    <CCModal
+      v-model="showReturnStmtModal"
+      :title="$t('gov-release-return-stmt')"
+      @on-ok="handleReturnStmtSubmit"
+      @on-cancel="
+        () => {
+          showReturnStmtModal = false;
+          returnStmtReason = '';
+          returnStmtId = null;
+        }
+      "
+    >
+      <Input v-model="returnStmtReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-return-reason-placeholder')" />
+    </CCModal>
   </div>
 </template>
 
@@ -133,7 +147,10 @@ export default {
       loading: false,
       retrying: false,
       returning: false,
-      collapsedGroups: {}
+      collapsedGroups: {},
+      showReturnStmtModal: false,
+      returnStmtReason: '',
+      returnStmtId: null
     };
   },
   computed: {
@@ -199,17 +216,26 @@ export default {
         this.retrying = false;
       }
     },
-    async handleReturnStmt(stmtId) {
-      if (this.returning) {
+    openReturnStmtModal(stmtId) {
+      this.returnStmtId = stmtId;
+      this.returnStmtReason = '';
+      this.showReturnStmtModal = true;
+    },
+    async handleReturnStmtSubmit() {
+      const stmtId = this.returnStmtId;
+      if (this.returning || !stmtId) {
         return;
       }
       this.returning = true;
       try {
         const res = await this.$services.govReleaseReturnStmt({
-          data: { stmtId, reason: 'Return for revision' }
+          data: { stmtId, reason: this.returnStmtReason || undefined }
         });
         if (res.success) {
           this.$Message.success(this.$t('gov-release-return-success'));
+          this.showReturnStmtModal = false;
+          this.returnStmtReason = '';
+          this.returnStmtId = null;
           await this.loadDetail();
         }
       } finally {

@@ -4474,6 +4474,8 @@
   "gov-v2-resubmit-success": "已重新提交，等待审批",
   "gov-v2-resubmit-empty": "SQL 内容不能为空",
   "gov-v2-resubmit-placeholder": "输入修改后的 SQL",
+  "gov-v2-resubmit-reason-placeholder": "退回原因（选填）",
+  "gov-v2-approver-return": "退回修改",
   "gov-v2-revision-notice": "工单处于退回修改态。修改 FAILED 组 SQL 后重新提交。预发库可能已有上次尝试的部分效果。",
   "gov-v2-exec-detail": "执行详情",
   "gov-v2-precheck-status": "预检状态",

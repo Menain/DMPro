@@ -29,14 +29,19 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalPersonServic
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalStageMO;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
+import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
+import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.global.i18n.I18nRdpMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.ticket.RdpApprovalFO;
 import com.clougence.clouddm.console.web.model.vo.PrimaryUserVO;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.model.approval.*;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.sdk.approval.ApprovalProvider;
 import com.clougence.clouddm.sdk.model.exception.ThirdPartyApiException;
 import com.clougence.utils.JsonUtils;
@@ -66,6 +71,14 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
     private ApprovalStateService                    approvalStateService;
     @Resource
     private ApprovalPersonService                   approvalPersonService;
+    @Resource
+    private DbChangeEventDal                        dbChangeEventDal;
+    // @Lazy breaks the potential cycle: this service is in the approval chain;
+    //   GovReturnNotifyService injects ImSenderService which is safe, but any new
+    //   transitive dependency through the governance component layer could cycle.
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private GovReturnNotifyService                  govReturnNotifyService;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -130,6 +143,11 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_OPERATOR_TYPE_NOT_MATCH_STATUS.name()));
         }
 
+        // RETURN + REJECT mutual exclusion (disambiguation for the two-boolean FO)
+        if (fo.isReturned() && fo.isRejected()) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_APPROVAL_RETURN_AND_REJECT_MUTUAL_EXCLUSION.name()));
+        }
+
         List<DmApprovalPersonDO> persons = this.approvalDal.personMapper().queryByTicketBzId(ticketDO.getBizId());
         List<String> allowUsers = persons.stream().map(DmApprovalPersonDO::getPersonUid).collect(Collectors.toList());
 
@@ -140,7 +158,30 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         ApprovalStageMO execMO = new ApprovalStageMO();
         execMO.setExecUserName(Collections.singletonList(this.authDal.userMapper().queryByUid(uid).getUsername()));
         this.approvalDal.approvalMapper().updateComment(ticketDO.getId(), fo.getComment());
-        if (fo.isRejected()) {
+
+        if (fo.isReturned()) {
+            // RETURN: WAIT_APPROVAL -> REVISION (non-terminal, for re-approval after resubmit)
+            // Internal-only: DingTalk approval model has no "return for revision" concept.
+            if (ticketDO.getApproType() != ApprovalType.Internal) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_APPROVAL_RETURN_NOT_INTERNAL.name()));
+            }
+            if (StringUtils.isNotBlank(fo.getComment())) {
+                execMO.setExecMsg(fo.getComment());
+            } else {
+                execMO.setExecMsg(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_STATUS_REJECTED_BY_APPROVAL.name()));
+            }
+            // APPROVAL process → INIT (reset for re-approval); context carries approver + reason
+            this.approvalStateService.updateProcessStatus(ticketDO.getId(), ApprovalStage.APPROVAL, ApprovalProcessStatus.INIT, JsonUtils.toJson(execMO));
+            // ticket_status → REVISION (non-terminal, NOT transitionTicketToTerminal)
+            this.approvalStateService.updateApprovalStatus(ticketDO.getId(), ApprovalStatus.REVISION,
+                DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_RETURNED_BY_APPROVER.name()));
+            // Event TICKET_RETURNED (real uid = approver, via=APPROVER)
+            appendTicketReturnedEvent(ticketDO.getId(), uid, ApprovalStatus.WAIT_APPROVAL.name(), ApprovalStatus.REVISION.name(),
+                fo.getComment(), "APPROVER");
+            // IM notify applicant (approver != applicant)
+            govReturnNotifyService.notifyReturn(puid, uid, ticketDO.getOwnerUid(),
+                ticketDO.getId(), ticketDO.getTicketTitle(), fo.getComment(), "APPROVER");
+        } else if (fo.isRejected()) {
             // WAIT_APPROVAL -> REJECTED
             if (StringUtils.isNotBlank(fo.getComment())) {
                 execMO.setExecMsg(fo.getComment());
@@ -163,6 +204,12 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
 
         //  update real approval person
         this.approvalDal.personMapper().deleteByTicketBzId(ticketDO.getBizId());
+    }
+
+    @Override
+    public List<PrimaryUserVO> queryPersons(long ticketId) {
+        DmApprovalDO ticketDO = checkTicket(ticketId);
+        return approvalHandler(ticketDO.getApproBiz()).queryPerson(ticketId);
     }
 
     private ApprovalHandler approvalHandler(ApprovalBiz approvalBiz) {
@@ -374,5 +421,27 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
                 log.error("cancel approval instance failed", e);
             }
         }
+    }
+
+    /**
+     * Append a TICKET_RETURNED event for the approver RETURN path (design §1 step 6).
+     * eventData carries via="APPROVER" + reason (additive, old rows without via
+     * are front-end tolerant).
+     */
+    private void appendTicketReturnedEvent(long ticketId, String uid, String fromStatus, String toStatus,
+                                           String reason, String via) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.TICKET_RETURNED.name());
+        event.setFromStatus(fromStatus);
+        event.setToStatus(toStatus);
+        event.setOperatorUid(uid);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("reason", reason);
+        data.put("via", via);
+        event.setEventData(JsonUtils.toJson(data));
+
+        this.dbChangeEventDal.eventMapper().insert(event);
     }
 }

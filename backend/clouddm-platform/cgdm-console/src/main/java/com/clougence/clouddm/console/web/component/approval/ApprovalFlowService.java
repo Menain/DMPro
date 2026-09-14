@@ -22,6 +22,7 @@ import java.util.Locale;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nRdpMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.ticket.RdpApprovalFO;
+import com.clougence.clouddm.console.web.model.vo.PrimaryUserVO;
 import com.clougence.clouddm.console.web.model.vo.RdpApproTemplateVO;
 import com.clougence.clouddm.platform.dal.model.approval.*;
 import com.clougence.clouddm.sdk.approval.ApprovalProvider;
@@ -53,6 +54,13 @@ public interface ApprovalFlowService {
     void cancelTicket(String puid, long ticketId, String statusMessage);
 
     void approvalTicket(String puid, String uid, RdpApprovalFO fo);
+
+    /**
+     * Resolve the approval person list for a ticket via its approBiz handler.
+     * Used by the resubmit path to re-establish the person list after the first
+     * approval cycle deleted it (PROD_DML re-approval defect fix).
+     */
+    List<PrimaryUserVO> queryPersons(long ticketId);
 
     boolean isFinish(long ticketId);
 

@@ -591,7 +591,7 @@
                   type="primary"
                   size="small"
                   :loading="v2ResubmitLoading"
-                  @click="handleResubmit(group.groupId)"
+                  @click="openResubmitModal(group.groupId)"
                 >
                   {{ $t('gov-v2-resubmit') }}
                 </Button>
@@ -642,9 +642,10 @@
     <CCModal v-model="showApprovalModal" :title="$t('shen-pi')" :closable="false">
       <Form>
         <FormItem :label="$t('yi-jian')">
-          <RadioGroup v-model="approvalData.rejected">
-            <Radio label="false">{{ $t('tong-yi') }}</Radio>
-            <Radio label="true">{{ $t('ju-jue') }}</Radio>
+          <RadioGroup v-model="approvalData.action">
+            <Radio :label="'approve'">{{ $t('tong-yi') }}</Radio>
+            <Radio :label="'reject'">{{ $t('ju-jue') }}</Radio>
+            <Radio :label="'return'">{{ $t('gov-v2-approver-return') }}</Radio>
           </RadioGroup>
         </FormItem>
         <FormItem :label="$t('li-you')">
@@ -809,6 +810,19 @@
     >
       <div style="margin-bottom: 12px">{{ $t('gov-v2-return-notice') }}</div>
       <Input v-model="v2ReturnReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-return-reason-placeholder')" />
+    </CCModal>
+    <CCModal
+      v-model="showResubmitModal"
+      :title="$t('gov-v2-resubmit')"
+      @on-ok="handleResubmitSubmit"
+      @on-cancel="
+        () => {
+          showResubmitModal = false;
+          v2ResubmitReason = '';
+        }
+      "
+    >
+      <Input v-model="v2ResubmitReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-resubmit-reason-placeholder')" />
     </CCModal>
   </div>
 </template>
@@ -1034,7 +1048,7 @@ export default {
       sqlContentAction: '',
       showApprovalModal: false,
       approvalData: {
-        rejected: 'false',
+        action: 'approve',
         comment: ''
       },
       taskList: [],
@@ -1092,6 +1106,9 @@ export default {
       v2ResubmitLoading: false,
       v2ReturnReason: '',
       showReturnTicketModal: false,
+      v2ResubmitReason: '',
+      showResubmitModal: false,
+      v2ResubmitGroupId: null,
       v2ResubmitSqlMap: {},
       releaseSummary: null
     };
@@ -2076,13 +2093,25 @@ export default {
         this.v2ReturnLoading = false;
       }
     },
-    async handleResubmit(groupId) {
-      if (this.v2ResubmitLoading) {
+    openResubmitModal(groupId) {
+      const sqlContent = this.v2ResubmitSqlMap[groupId];
+      if (!sqlContent || !sqlContent.trim()) {
+        this.$Message.warning(this.$t('gov-v2-resubmit-empty'));
+        return;
+      }
+      this.v2ResubmitGroupId = groupId;
+      this.v2ResubmitReason = '';
+      this.showResubmitModal = true;
+    },
+    async handleResubmitSubmit() {
+      const groupId = this.v2ResubmitGroupId;
+      if (this.v2ResubmitLoading || !groupId) {
         return;
       }
       const sqlContent = this.v2ResubmitSqlMap[groupId];
       if (!sqlContent || !sqlContent.trim()) {
         this.$Message.warning(this.$t('gov-v2-resubmit-empty'));
+        this.showResubmitModal = false;
         return;
       }
       this.v2ResubmitLoading = true;
@@ -2091,11 +2120,14 @@ export default {
           data: {
             ticketId: this.ticketId,
             groups: [{ groupId, sqlContent }],
-            reason: 'Frontend resubmit'
+            reason: this.v2ResubmitReason || undefined
           }
         });
         if (res.success) {
           this.$Message.success(this.$t('gov-v2-resubmit-success'));
+          this.showResubmitModal = false;
+          this.v2ResubmitReason = '';
+          this.v2ResubmitGroupId = null;
           await this.getTicketDetail();
           await this.loadV2GroupList();
         }
@@ -2211,12 +2243,13 @@ export default {
       this.showApprovalModal = true;
     },
     async handleApproval() {
-      const { rejected, comment } = this.approvalData;
+      const { action, comment } = this.approvalData;
       const res = await this.$services.rdpTicketApproval({
         data: {
           ticketId: this.ticketId,
           comment,
-          rejected: rejected === 'true'
+          rejected: action === 'reject',
+          returned: action === 'return'
         }
       });
 
@@ -2228,7 +2261,7 @@ export default {
     },
     handleCloseModal() {
       this.approvalData = {
-        rejected: 'false',
+        action: 'approve',
         comment: ''
       };
       this.showApprovalModal = false;
