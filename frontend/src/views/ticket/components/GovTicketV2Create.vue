@@ -1,5 +1,6 @@
 <script lang="js">
 import TicketEditor from '@/components/editor/TicketEditor';
+import dayjs from 'dayjs';
 import { mapState } from 'vuex';
 
 const PREFILL_KEY = 'cgdm.govTicketPrefill.v2';
@@ -28,6 +29,7 @@ export default {
         ticketTitle: '',
         description: ''
       },
+      lastAutoTitle: '',
       ticketRuleValidate: {
         ticketTitle: [{ required: true, message: this.$t('biao-ti-bu-neng-wei-kong'), trigger: 'blur' }]
       }
@@ -58,12 +60,17 @@ export default {
         map[id] = this.groupSqlMap[id] || '';
       });
       this.groupSqlMap = map;
+    },
+    selectedServiceId() {
+      if (this.ticketForm.ticketTitle === this.lastAutoTitle) {
+        this.applyAutoTitle();
+      }
     }
   },
   mounted() {
     this.loadServices();
     this.loadPairs();
-    this.ticketForm.ticketTitle = `${this.$t('gong-dan')}${new Date().getTime()}`;
+    this.applyAutoTitle();
     this.$nextTick(() => this.layoutEditors());
     window.addEventListener('resize', this.handleWindowResize);
     this.applyPrefill();
@@ -88,6 +95,17 @@ export default {
       if (res.success) {
         this.serviceList = res.data || [];
       }
+    },
+    applyAutoTitle() {
+      const prefix = this.$t('gov-v2-title-prefix');
+      const ts = dayjs().format('YYYYMMDDHHmmss');
+      const svc = this.serviceList.find((s) => s.id === this.selectedServiceId);
+      let title = `${prefix}-${ts}`;
+      if (svc) {
+        title = `${prefix}-${svc.serviceName}-${ts}`;
+      }
+      this.lastAutoTitle = title;
+      this.ticketForm.ticketTitle = title;
     },
     handleTypeChange() {
       this.selectedPairIds = [];
