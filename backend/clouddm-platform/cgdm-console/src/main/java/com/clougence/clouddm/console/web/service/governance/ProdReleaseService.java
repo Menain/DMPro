@@ -74,8 +74,9 @@ public interface ProdReleaseService {
 
     /**
      * List releases for a tenant (paginated, tenant-filtered by primary_uid).
+     * days: null or <=0 means no time filter; otherwise only releases with gmt_create >= now-days are returned.
      */
-    List<ProdReleaseListVO> listReleases(String puid, String status, int page, int size);
+    List<ProdReleaseListVO> listReleases(String puid, String status, Integer days, int page, int size);
 
     /**
      * Get release detail (stmts grouped by prod DB, status, event timeline).

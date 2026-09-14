@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.platform.dal.mapper.prodrelease;
 
+import java.util.Date;
 import java.util.List;
 
 import org.apache.ibatis.annotations.Param;
@@ -52,11 +53,13 @@ public interface DmProdReleaseMapper extends BaseMapper<DmProdReleaseDO> {
 
     /**
      * Paginated list with tenant filter on primary_uid.
+     * since: optional lower bound on gmt_create (null = no time filter).
      */
     IPage<DmProdReleaseDO> listByConditionAndPage(
         Page<?> page,
         @Param("puid") String puid,
-        @Param("status") String status);
+        @Param("status") String status,
+        @Param("since") Date since);
 
     /**
      * Count non-terminal releases that have stmt rows targeting a specific prod DB.

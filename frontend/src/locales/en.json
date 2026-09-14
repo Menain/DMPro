@@ -4554,6 +4554,8 @@
   "gov-release-creator": "Creator",
   "gov-release-approval-id": "Approval Ticket ID",
   "gov-release-filter-status": "Filter by status",
+  "gov-release-filter-time": "Filter by time",
+  "gov-release-time-3d": "3 Days",
   "gov-release-overview": "Release Overview",
   "gov-release-approval-ticket": "Approval Ticket",
   "gov-release-gate-result": "Gate Snapshot",

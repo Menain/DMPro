@@ -91,6 +91,9 @@
         <if test="status != null and status != ''">
             AND status = #{status}
         </if>
+        <if test="since != null">
+            AND gmt_create &gt;= #{since}
+        </if>
         ORDER BY
             gmt_create DESC
     </select>

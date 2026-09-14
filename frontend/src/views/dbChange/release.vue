@@ -15,6 +15,13 @@
                 {{ releaseStatusText(status) }}
               </Option>
             </Select>
+            <Select v-model="timeFilter" :placeholder="$t('gov-release-filter-time')" style="width: 160px" @on-change="handleTimeChange">
+              <Option :value="1" :label="$t('yi-tian')">{{ $t('yi-tian') }}</Option>
+              <Option :value="3" :label="$t('gov-release-time-3d')">{{ $t('gov-release-time-3d') }}</Option>
+              <Option :value="7" :label="$t('yi-zhou')">{{ $t('yi-zhou') }}</Option>
+              <Option :value="30" :label="$t('yi-ge-yue')">{{ $t('yi-ge-yue') }}</Option>
+              <Option :value="null" :label="$t('quan-bu')">{{ $t('quan-bu') }}</Option>
+            </Select>
           </div>
           <div class="release-toolbar__actions">
             <Button type="primary" ghost :loading="listLoading" @click="loadReleases">
@@ -49,7 +56,8 @@ export default {
     return {
       releaseList: [],
       listLoading: false,
-      statusFilter: null
+      statusFilter: null,
+      timeFilter: 7
     };
   },
   computed: {
@@ -75,7 +83,7 @@ export default {
       this.listLoading = true;
       try {
         const res = await this.$services.govReleaseList({
-          data: { status: this.statusFilter || undefined, page: 1, size: 100 }
+          data: { status: this.statusFilter || undefined, days: this.timeFilter === null ? undefined : this.timeFilter, page: 1, size: 100 }
         });
         if (res.success) {
           this.releaseList = res.data || [];
@@ -85,6 +93,9 @@ export default {
       }
     },
     handleStatusChange() {
+      this.loadReleases();
+    },
+    handleTimeChange() {
       this.loadReleases();
     },
     handleViewRelease(row) {

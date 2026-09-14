@@ -70,6 +70,7 @@ public class GovReleaseController {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         List<ProdReleaseListVO> data = prodReleaseService.listReleases(
             puid, fo != null ? fo.getStatus() : null,
+            fo != null ? fo.getDays() : null,
             fo != null ? fo.getPage() : 1, fo != null ? fo.getSize() : 20);
         return ResWebDataUtils.buildSuccess(data);
     }

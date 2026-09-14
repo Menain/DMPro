@@ -729,9 +729,10 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     // ==================== list / detail ====================
 
     @Override
-    public List<ProdReleaseListVO> listReleases(String puid, String status, int page, int size) {
+    public List<ProdReleaseListVO> listReleases(String puid, String status, Integer days, int page, int size) {
         Page<DmProdReleaseDO> pageObj = new Page<>(page, size);
-        var result = prodReleaseDal.releaseMapper().listByConditionAndPage(pageObj, puid, status);
+        Date since = computeSince(days);
+        var result = prodReleaseDal.releaseMapper().listByConditionAndPage(pageObj, puid, status, since);
         List<ProdReleaseListVO> vos = new ArrayList<>();
         for (DmProdReleaseDO rel : result.getRecords()) {
             ProdReleaseListVO vo = new ProdReleaseListVO();
@@ -744,6 +745,17 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             vos.add(vo);
         }
         return vos;
+    }
+
+    /**
+     * Convert days filter to a lower-bound Date.
+     * null or <=0 → null (no time filter); otherwise now - days days.
+     */
+    static Date computeSince(Integer days) {
+        if (days == null || days <= 0) {
+            return null;
+        }
+        return new Date(System.currentTimeMillis() - days * 86400_000L);
     }
 
     @Override

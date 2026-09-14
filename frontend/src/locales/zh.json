@@ -4536,6 +4536,8 @@
   "gov-release-creator": "创建人",
   "gov-release-approval-id": "审批工单ID",
   "gov-release-filter-status": "按状态筛选",
+  "gov-release-filter-time": "按时间筛选",
+  "gov-release-time-3d": "三天",
   "gov-release-overview": "发布单概览",
   "gov-release-approval-ticket": "审批工单",
   "gov-release-gate-result": "门禁快照",
