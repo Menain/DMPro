@@ -44,4 +44,11 @@ public interface DmProdReleaseStmtSchemaMapper extends BaseMapper<DmProdReleaseS
      * to clean up orphaned rows when the parent stmt row is deleted).
      */
     int deleteByReleaseStmtId(@Param("releaseStmtId") long releaseStmtId);
+
+    /**
+     * Delete all schema snapshot rows for an entire release (used by returnRelease,
+     * handleRejected, handleCancelled to clean up orphaned rows when all stmt rows
+     * are deleted). Mirrors {@code stmtMapper().deleteByReleaseId}.
+     */
+    int deleteByReleaseId(@Param("releaseId") long releaseId);
 }

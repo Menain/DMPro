@@ -87,7 +87,12 @@ public class GovReturnNotifyService {
 
     private String buildMessage(long ticketId, String ticketTitle, String reason, String via) {
         StringBuilder sb = new StringBuilder();
-        sb.append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_TITLE.name(), ticketId));
+        boolean isRelease = "RELEASE".equals(via);
+        if (isRelease) {
+            sb.append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_RELEASE_TITLE.name(), ticketId));
+        } else {
+            sb.append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_TITLE.name(), ticketId));
+        }
         if (ticketTitle != null && !ticketTitle.isBlank()) {
             sb.append("\n").append(ticketTitle);
         }
@@ -95,7 +100,11 @@ public class GovReturnNotifyService {
         if (reason != null && !reason.isBlank()) {
             sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_REASON.name(), reason));
         }
-        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_LINK.name(), ticketId));
+        if (isRelease) {
+            sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_RELEASE_LINK.name(), ticketId));
+        } else {
+            sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RETURN_NOTIFY_LINK.name(), ticketId));
+        }
         return sb.toString();
     }
 

@@ -32,6 +32,8 @@ public class ProdReleaseDetailVO {
     private String creatorUid;
     private String gmtCreate;
     private String gateResult;
+    private String returnReason;
+    private List<SourceTicketEntry> sourceTickets;
     private List<StmtGroup> stmtGroups;
     private List<EventEntry> events;
 
@@ -69,5 +71,20 @@ public class ProdReleaseDetailVO {
         private String operatorUid;
         private String gmtCreate;
         private String eventData;
+    }
+
+    /**
+     * Source ticket availability entry — only populated for RETURNED releases.
+     * Dry-run validation: available=true means the ticket can be re-merged.
+     */
+    @Getter
+    @Setter
+    public static class SourceTicketEntry {
+
+        private long   ticketId;
+        private String ticketTitle;
+        private String ticketStatus;
+        private boolean available;
+        private String unavailableReason;
     }
 }

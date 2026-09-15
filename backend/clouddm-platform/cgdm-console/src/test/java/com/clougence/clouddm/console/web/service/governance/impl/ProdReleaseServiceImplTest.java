@@ -303,6 +303,70 @@ public class ProdReleaseServiceImplTest {
         }
     }
 
+    // ==================== createRelease tenant check (R1: open-to-all + cross-tenant block) ====================
+
+    @Test
+    public void createRelease_crossTenantTicket_throws_zeroInserts() {
+        long ticketId = 110L;
+        // Ticket exists, is FINISHED + PRE_DDL, but belongs to a different tenant
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL");
+        ticket.setPrimaryUid("puid-other-tenant"); // cross-tenant
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for cross-tenant ticket");
+        } catch (ErrorMessageException ex) {
+            assertTrue("Error message must contain the ticketId",
+                ex.getMessage().contains(String.valueOf(ticketId)));
+        }
+        // Zero objects created — verify no inserts on any mapper
+        verify(releaseMapper, never()).insert(any(DmProdReleaseDO.class));
+        verify(stmtMapper, never()).insert(any(DmProdReleaseStmtDO.class));
+        // checkResAuth must NOT be called (R1: removed from createRelease)
+        verifyNoInteractions(dmAuthServiceForBiz);
+    }
+
+    @Test
+    public void createRelease_mixedBatch_crossTenantSecond_throws_zeroInserts() {
+        // First ticket: same-tenant, fully valid
+        long ticketIdA = 120L;
+        DmApprovalDO ticketA = buildTicket(ticketIdA, ApprovalStatus.FINISHED, "PRE_DDL");
+        when(approvalMapper.queryById(ticketIdA)).thenReturn(ticketA);
+
+        DmTicketDbStmtDO stmtA = buildTicketStmt(220L, ticketIdA, "SUCCESS");
+        when(ticketStmtMapper.queryByTicketId(ticketIdA)).thenReturn(List.of(stmtA));
+        when(stmtMapper.queryBySourceStmtId(220L)).thenReturn(null);
+
+        // buildTicketStmt sets pairId=300L; mock pairMapper for that id
+        DmDbPairDO pairA = buildPair(300L, 11L, "prod_db_a");
+        when(pairMapper.selectById(300L)).thenReturn(pairA);
+        when(releaseMapper.countActiveByProdDb(11L, "prod_db_a")).thenReturn(0);
+
+        // Second ticket: cross-tenant
+        long ticketIdB = 121L;
+        DmApprovalDO ticketB = buildTicket(ticketIdB, ApprovalStatus.FINISHED, "PRE_DDL");
+        ticketB.setPrimaryUid("puid-other-tenant");
+        when(approvalMapper.queryById(ticketIdB)).thenReturn(ticketB);
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketIdA, ticketIdB));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for mixed-batch with cross-tenant ticket");
+        } catch (ErrorMessageException ex) {
+            assertTrue("Error message must contain the cross-tenant ticketId",
+                ex.getMessage().contains(String.valueOf(ticketIdB)));
+        }
+        // Whole batch rejected — zero inserts despite first ticket being valid
+        verify(releaseMapper, never()).insert(any(DmProdReleaseDO.class));
+        verify(stmtMapper, never()).insert(any(DmProdReleaseStmtDO.class));
+    }
+
     // ==================== startExecution hash drift rejection ====================
 
     @Test

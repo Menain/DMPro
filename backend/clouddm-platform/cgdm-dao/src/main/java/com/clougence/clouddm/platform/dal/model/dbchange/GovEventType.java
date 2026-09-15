@@ -51,5 +51,9 @@ public enum GovEventType {
     /** Layer 1: ticket returned to REVISION for SQL editing (operator_uid = real user). */
     TICKET_RETURNED,
     /** Layer 2: release stmt returned to source ticket for revision (operator_uid = real user). */
-    RELEASE_STMT_RETURNED
+    RELEASE_STMT_RETURNED,
+    /** Release-level return: entire release returned to RETURNED state (operator_uid = real user). */
+    RELEASE_RETURNED,
+    /** Release-level resubmit: RETURNED release re-merged and re-submitted to approval (operator_uid = real user). */
+    RELEASE_RESUBMITTED
 }

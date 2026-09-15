@@ -30,6 +30,7 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.global.mcp.McpApiProvider;
 import com.clougence.clouddm.console.web.global.mcp.model.McpTool;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
@@ -119,5 +120,25 @@ public class DbChangeOpenApi extends BasicApi {
         log.info("[DbChangeOpenApi] releaseDetail request id={}, releaseId={}, stmtGroups={}",
             requestId, fo.getReleaseId(), stmtGroupCount);
         return ResWebDataUtils.buildSuccess(result);
+    }
+
+    // ==================== Interface D: release return (external withdrawal sync) ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_RELEASE_RETURN)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/releases/return", method = RequestMethod.POST)
+    public ResWebData<?> releaseReturn(@RequestBody @Valid DbChangeReleaseReturnFO fo,
+                                        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] releaseReturn request id={}, uid={}, releaseId={}, releaseNo={}",
+            requestId, uid, fo.getReleaseId(), fo.getReleaseNo());
+
+        govOpenApiService.returnRelease(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] releaseReturn request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
     }
 }

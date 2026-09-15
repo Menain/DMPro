@@ -17,9 +17,10 @@ package com.clougence.clouddm.console.web.service.governance;
 
 import java.util.List;
 
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
-import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
@@ -55,4 +56,12 @@ public interface GovOpenApiService {
      * Cross-tenant calls return null (not-found semantics).
      */
     ProdReleaseDetailVO releaseDetail(String puid, String uid, DbChangeReleaseDetailFO fo);
+
+    /**
+     * Interface D: return a production release (external approval-flow withdrawal sync).
+     * Tenant-filtered: caller's puid must match release.primaryUid.
+     * Either releaseNo or releaseId must be provided; reason is mandatory.
+     * Idempotent: RETURNED/terminal releases → clear error, zero side effects.
+     */
+    void returnRelease(String puid, String uid, DbChangeReleaseReturnFO fo);
 }

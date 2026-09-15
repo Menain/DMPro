@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.api.console.autoexec.ErrorStrategy;
+import com.clougence.clouddm.console.web.component.approval.ApprovalFlowService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
@@ -45,6 +46,8 @@ import com.clougence.clouddm.console.web.component.governance.GovReturnNotifySer
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAddTicketFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
@@ -116,6 +119,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private AutoExecService         autoExecService;
     @Resource
     private ApprovalStateService    approvalStateService;
+    // @Lazy: ApprovalFlowService sits in the approval component layer; defensive proxy
+    //   to avoid any cycle through the governance/approval component layer.
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private ApprovalFlowService     approvalFlowService;
     @Resource
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     @Resource
@@ -136,88 +144,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RELEASE_NO_TICKETS.name()));
         }
 
-        // Step 1: Validate each ticket's four conditions and collect source stmts
-        List<SourceStmtEntry> sourceEntries = new ArrayList<>();
-        Set<Long> seenProdDbs = new java.util.HashSet<>();
-        for (Long ticketId : ticketIds) {
-            DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
-            if (ticket == null) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FOUND.name(), ticketId));
-            }
-            // Condition 1: ticket status = FINISHED
-            if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FINISHED.name(), ticketId));
-            }
-            // Condition 2: ticketType = PRE_DDL
-            ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
-            if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_PRE_DDL.name(), ticketId));
-            }
-
-            // Get stmts for this ticket
-            List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
-            for (DmTicketDbStmtDO stmt : stmts) {
-                // Condition 3: stmt exec_status = SUCCESS
-                if (!EXEC_STATUS_SUCCESS.equals(stmt.getExecStatus())) {
-                    throw new ErrorMessageException(DmI18nUtils.getMessage(
-                        I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_SUCCESS.name(), ticketId, stmt.getDbName()));
-                }
-
-                // Condition 4: not already merged (uk_source_stmt check)
-                DmProdReleaseStmtDO existing = prodReleaseDal.stmtMapper().queryBySourceStmtId(stmt.getId());
-                if (existing != null) {
-                    throw new ErrorMessageException(DmI18nUtils.getMessage(
-                        I18nDmMsgKeys.GOV_RELEASE_STMT_ALREADY_MERGED.name(), ticketId, stmt.getDbName(),
-                        existing.getReleaseId()));
-                }
-
-                // Resolve pair to get prod DS and prod DB name
-                DmDbPairDO pair = dbPairDal.pairMapper().selectById(stmt.getPairId());
-                if (pair == null || !STATUS_ENABLED.equals(pair.getStatus())) {
-                    throw new ErrorMessageException(DmI18nUtils.getMessage(
-                        I18nDmMsgKeys.GOV_RELEASE_PAIR_NOT_FOUND.name(), stmt.getPairId()));
-                }
-
-                // checkResAuth on prod DS (DM_DAUTH_TICKET)
-                DmDsDO prodDs = dsDal.dsMapper().queryDsIdentityById(pair.getProdDsId());
-                if (prodDs == null) {
-                    throw new ErrorMessageException("Production datasource not found for pair: " + pair.getId());
-                }
-                dmAuthServiceForBiz.checkResAuth(
-                    puid, uid, pair.getProdDsId(),
-                    new DsResPathObj("/" + prodDs.getInstanceId() + "/" + pair.getProdDbName()),
-                    com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel.DM_DAUTH_TICKET,
-                    com.clougence.clouddm.sdk.security.auth.AuthKind.DataSource);
-
-                // Library-level lock check (service-layer, design §6)
-                int activeCount = prodReleaseDal.releaseMapper().countActiveByProdDb(
-                    pair.getProdDsId(), pair.getProdDbName());
-                if (activeCount > 0) {
-                    throw new ErrorMessageException(DmI18nUtils.getMessage(
-                        I18nDmMsgKeys.GOV_RELEASE_DB_LOCKED.name(), pair.getProdDbName()));
-                }
-
-                SourceStmtEntry entry = new SourceStmtEntry(stmt, pair, ticket, ticket.getGmtCreate());
-
-                // Sub-task A: query CAPTURED snapshots from the pre-release side.
-                // No snapshots → merge proceeds normally (compatibility: pre-A releases).
-                try {
-                    entry.snapshots = ticketDbStmtDal.schemaMapper().queryByStmtId(stmt.getId());
-                } catch (Exception e) {
-                    log.warn("[ProdRelease] Failed to query snapshots for stmt {}: {}", stmt.getId(), e.getMessage());
-                    entry.snapshots = java.util.Collections.emptyList();
-                }
-
-                sourceEntries.add(entry);
-            }
-        }
-
-        if (sourceEntries.isEmpty()) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RELEASE_NO_STMTS.name()));
-        }
+        // Step 1: Validate each ticket's four conditions + tenant check, collect source stmts
+        List<SourceStmtEntry> sourceEntries = collectSourceEntries(puid, ticketIds);
 
         // Step 2: Sort by source ticket gmt_create, then by stmt id (original order within ticket)
         sourceEntries.sort((a, b) -> {
@@ -665,6 +593,289 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         }
     }
 
+    // ==================== returnRelease (R2: release-level return) ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void returnRelease(String puid, String uid, long releaseId, String reason) {
+        // Step 1: Row lock + tenant check (existence not disclosed for cross-tenant)
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().selectByIdForUpdate(releaseId);
+        if (release == null || !puid.equals(release.getPrimaryUid())) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        // Step 2: Status guard — only APPROVING/APPROVED can be returned
+        String currentStatus = release.getStatus();
+        if (!ProdReleaseStatus.APPROVING.name().equals(currentStatus)
+            && !ProdReleaseStatus.APPROVED.name().equals(currentStatus)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_RETURN_INVALID_STATUS.name(), currentStatus));
+        }
+
+        // Step 3: Transit to RETURNED (must happen BEFORE cancelling the approval flow,
+        //   so handleCancelled's transit guard ({APPROVING,APPROVED}→CANCELLED) fails on RETURNED)
+        boolean ok = releaseStateMachine.transit(releaseId,
+            Set.of(ProdReleaseStatus.APPROVING, ProdReleaseStatus.APPROVED),
+            ProdReleaseStatus.RETURNED);
+        if (!ok) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_RETURN_INVALID_STATUS.name(), currentStatus));
+        }
+
+        // Step 4: Delete stmt + schema rows (release source tickets: ledger promoted=false)
+        int deletedStmtCount = prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
+        prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
+
+        // Step 5: Cancel the approval flow WITHOUT triggering handler dispatch.
+        //   cancelAllProcess + updateApprovalStatus are public methods that bypass
+        //   finalizeApproval, so handler.approvalCanceled (→ handleCancelled) is never
+        //   called — preventing the RETURNED status from being overwritten to CANCELLED.
+        Long approvalId = release.getApprovalId();
+        if (approvalId != null) {
+            DmApprovalDO approvalTicket = approvalDal.approvalMapper().queryById(approvalId);
+            if (approvalTicket != null && !ApprovalStatus.isEndStatus(approvalTicket.getTicketStatus())) {
+                approvalFlowService.cancelAllProcess(approvalId);
+                approvalStateService.updateApprovalStatus(approvalId, ApprovalStatus.CANCELED, reason);
+            }
+        }
+
+        // Step 6: Event RELEASE_RETURNED (real operator uid, NOT NULL contract)
+        appendReleaseEvent(releaseId, GovEventType.RELEASE_RETURNED,
+            currentStatus, ProdReleaseStatus.RETURNED.name(), uid,
+            JsonUtils.toJson(Map.of(
+                "reason", reason != null ? reason : "",
+                "approvalId", approvalId != null ? approvalId : 0,
+                "deletedStmtCount", deletedStmtCount)));
+
+        // Step 7 (optional enhancement): IM notify the release creator if actor != creator.
+        //   Mirrors returnStmt's notification pattern; per-call catch, never blocks.
+        if (!uid.equals(release.getCreatorUid())) {
+            try {
+                govReturnNotifyService.notifyReturn(
+                    puid, uid, release.getCreatorUid(),
+                    release.getId(), release.getReleaseNo(),
+                    reason, "RELEASE");
+            } catch (Exception e) {
+                log.warn("[ProdRelease] returnRelease IM notify failed for release {}, creator={}",
+                    releaseId, release.getCreatorUid(), e);
+            }
+        }
+    }
+
+    // ==================== resubmitRelease (R3: RETURNED release resubmit) ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void resubmitRelease(String puid, String uid, boolean isMaintainer, ProdReleaseResubmitFO fo) {
+        long releaseId = fo.getReleaseId();
+
+        // Step 1: Row lock + tenant check
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().selectByIdForUpdate(releaseId);
+        if (release == null || !puid.equals(release.getPrimaryUid())) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        // Step 1b: Permission — creator, primary account, or maintainer only
+        if (!uid.equals(release.getCreatorUid()) && !uid.equals(puid) && !isMaintainer) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        // Step 2: Status guard — only RETURNED can be resubmitted
+        String currentStatus = release.getStatus();
+        if (!ProdReleaseStatus.RETURNED.name().equals(currentStatus)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_RESUBMIT_INVALID_STATUS.name(), currentStatus));
+        }
+
+        // Step 3: Parse gate_result snapshot → original source ticket IDs (ordered, unique).
+        //   Used only for audit diff (added/removed) — NOT as a candidate constraint.
+        //   The applicant may add new eligible tickets or remove unwanted ones; the final
+        //   full list is validated authoritatively by collectSourceEntries below.
+        List<Long> originalTicketIds = parseGateResultTicketIds(release.getGateResult());
+
+        // Dedup the submitted ticketIds (preserve order via LinkedHashSet)
+        List<Long> finalTicketIds = new java.util.ArrayList<>(
+            new java.util.LinkedHashSet<>(fo.getTicketIds()));
+        if (finalTicketIds.isEmpty()) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_RESUBMIT_NO_TICKETS.name()));
+        }
+
+        // Step 4: Re-run collectSourceEntries on the final full list (fails on invalidated/usurped)
+        List<SourceStmtEntry> sourceEntries = collectSourceEntries(puid, finalTicketIds);
+
+        // Step 5: Sort + assign seq per (prodDsId, prodDbName) group — same as createRelease
+        sourceEntries.sort((a, b) -> {
+            int cmp = a.ticketGmtCreate.compareTo(b.ticketGmtCreate);
+            if (cmp != 0) return cmp;
+            return a.stmt.getId().compareTo(b.stmt.getId());
+        });
+
+        Map<String, Integer> seqCounter = new HashMap<>();
+        List<StmtBuildEntry> buildEntries = new ArrayList<>();
+        for (SourceStmtEntry se : sourceEntries) {
+            String key = se.pair.getProdDsId() + "|" + se.pair.getProdDbName();
+            int seq = seqCounter.getOrDefault(key, 0) + 1;
+            seqCounter.put(key, seq);
+            String sqlContent = se.stmt.getSqlContent();
+            String hash = GovSqlHashUtils.hash(sqlContent);
+            String executionKey = GovSqlHashUtils.hash(se.stmt.getId() + "|" + se.pair.getProdDsId() + "|" + se.pair.getProdDbName());
+            buildEntries.add(new StmtBuildEntry(se, seq, hash, executionKey));
+        }
+
+        // Step 6: Rewrite gate_result (new validatedAt/counts/stmts snapshot)
+        Map<String, Object> gateResult = new LinkedHashMap<>();
+        gateResult.put("validatedAt", new Date().toString());
+        gateResult.put("sourceTicketCount", finalTicketIds.size());
+        gateResult.put("stmtCount", buildEntries.size());
+        List<Map<String, Object>> stmtSnapshots = new ArrayList<>();
+        for (StmtBuildEntry be : buildEntries) {
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("sourceTicketId", be.source.stmt.getTicketId());
+            s.put("sourceStmtId", be.source.stmt.getId());
+            s.put("prodDbName", be.source.pair.getProdDbName());
+            s.put("seq", be.seq);
+            s.put("hash", be.hash);
+            stmtSnapshots.add(s);
+        }
+        gateResult.put("stmts", stmtSnapshots);
+        String gateResultJson = JsonUtils.toJson(gateResult);
+        prodReleaseDal.releaseMapper().updateGateResult(releaseId, gateResultJson);
+
+        // Step 7: Update title if provided
+        if (StringUtils.isNotBlank(fo.getTitle())) {
+            DmProdReleaseDO titleUpdate = new DmProdReleaseDO();
+            titleUpdate.setId(releaseId);
+            titleUpdate.setTitle(fo.getTitle());
+            prodReleaseDal.releaseMapper().updateById(titleUpdate);
+        }
+
+        // Step 8: Re-insert stmt rows (UK locks freed by return's delete; same hash/executionKey)
+        try {
+            for (StmtBuildEntry be : buildEntries) {
+                DmProdReleaseStmtDO stmt = new DmProdReleaseStmtDO();
+                stmt.setReleaseId(releaseId);
+                stmt.setProdDsId(be.source.pair.getProdDsId());
+                stmt.setProdDbName(be.source.pair.getProdDbName());
+                stmt.setSeq(be.seq);
+                stmt.setSqlContent(be.source.stmt.getSqlContent());
+                stmt.setHash(be.hash);
+                stmt.setSourceTicketId(be.source.stmt.getTicketId());
+                stmt.setSourceStmtId(be.source.stmt.getId());
+                stmt.setExecutionKey(be.executionKey);
+                stmt.setExecStatus(EXEC_STATUS_PENDING);
+                prodReleaseDal.stmtMapper().insert(stmt);
+
+                propagateSnapshots(releaseId, stmt.getId(), be, buildEntries);
+            }
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_STMT_ALREADY_MERGED.name(), "concurrent", "unknown", 0));
+        }
+
+        // Step 9: Create new approval flow (releaseNo unchanged — same release identity)
+        String releaseNo = release.getReleaseNo();
+        String title = StringUtils.isNotBlank(fo.getTitle()) ? fo.getTitle() : release.getTitle();
+        long firstProdDsId = buildEntries.get(0).source.pair.getProdDsId();
+        DmDsDO firstProdDs = dsDal.dsMapper().queryDsIdentityById(firstProdDsId);
+
+        DmAddTicketFO ticketFO = new DmAddTicketFO();
+        ticketFO.setTicketTitle(title);
+        ticketFO.setRawSql("-- Production release: " + releaseNo + "\n-- " + buildEntries.size() + " statement(s)");
+        ticketFO.setContentType(SqlContentType.INLINE);
+        ticketFO.setDescription("Production release " + releaseNo + " resubmit merging " + finalTicketIds.size() + " ticket(s)");
+        ticketFO.setForce(true);
+        ticketFO.setDbLevels(List.of(firstProdDs.getDsEnvId().toString(), String.valueOf(firstProdDsId),
+            buildEntries.get(0).source.pair.getProdDbName()));
+
+        DmTicketResultVO ticketResult = approvalControlService.createSqlTicket(puid, uid, ticketFO, ApprovalBiz.DM_PROD_RELEASE);
+
+        // Writeback releaseId/releaseNo into ticketInfo
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketResult.getTicketId());
+        if (ticket != null) {
+            ApprovalMO writeMO = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+            if (writeMO != null) {
+                writeMO.setReleaseId(releaseId);
+                writeMO.setReleaseNo(releaseNo);
+                ticket.setTicketInfo(JsonUtils.toJson(writeMO));
+                approvalDal.approvalMapper().updateById(ticket);
+            }
+        }
+
+        // Backfill release.approval_id with the new approval ticket
+        prodReleaseDal.releaseMapper().updateApprovalId(releaseId, ticketResult.getTicketId());
+
+        // Step 10: Transit RETURNED → APPROVING
+        boolean ok = releaseStateMachine.transit(releaseId,
+            Set.of(ProdReleaseStatus.RETURNED), ProdReleaseStatus.APPROVING);
+        if (!ok) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_RESUBMIT_INVALID_STATUS.name(), currentStatus));
+        }
+
+        // Step 11: Event RELEASE_RESUBMITTED
+        //   added/removed computed by diffing the original gate_result snapshot with the
+        //   final ticket list — for audit trail (which tickets were added/removed).
+        java.util.Set<Long> originalSet = new java.util.HashSet<>(originalTicketIds);
+        java.util.Set<Long> finalSet = new java.util.HashSet<>(finalTicketIds);
+        List<Long> addedTicketIds = new ArrayList<>();
+        for (Long tid : finalTicketIds) {
+            if (!originalSet.contains(tid)) {
+                addedTicketIds.add(tid);
+            }
+        }
+        List<Long> removedTicketIds = new ArrayList<>();
+        for (Long tid : originalTicketIds) {
+            if (!finalSet.contains(tid)) {
+                removedTicketIds.add(tid);
+            }
+        }
+
+        appendReleaseEvent(releaseId, GovEventType.RELEASE_RESUBMITTED,
+            ProdReleaseStatus.RETURNED.name(), ProdReleaseStatus.APPROVING.name(), uid,
+            JsonUtils.toJson(Map.of(
+                "addedTicketIds", addedTicketIds,
+                "removedTicketIds", removedTicketIds,
+                "ticketCount", finalTicketIds.size(),
+                "stmtCount", buildEntries.size(),
+                "approvalId", ticketResult.getTicketId())));
+    }
+
+    // ==================== cancelRelease (R3: RETURNED → CANCELLED) ====================
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void cancelRelease(String puid, String uid, boolean isMaintainer, long releaseId) {
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().selectByIdForUpdate(releaseId);
+        if (release == null || !puid.equals(release.getPrimaryUid())) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        // Permission — creator, primary account, or maintainer only
+        if (!uid.equals(release.getCreatorUid()) && !uid.equals(puid) && !isMaintainer) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        String currentStatus = release.getStatus();
+        if (!ProdReleaseStatus.RETURNED.name().equals(currentStatus)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_CANCEL_INVALID_STATUS.name(), currentStatus));
+        }
+
+        boolean ok = releaseStateMachine.transit(releaseId,
+            Set.of(ProdReleaseStatus.RETURNED), ProdReleaseStatus.CANCELLED);
+        if (!ok) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_CANCEL_INVALID_STATUS.name(), currentStatus));
+        }
+
+        // No stmt/schema cleanup needed (already deleted on return).
+        // No approval flow to cancel (already cancelled on return).
+        appendReleaseEvent(releaseId, GovEventType.RELEASE_CANCELLED,
+            ProdReleaseStatus.RETURNED.name(), ProdReleaseStatus.CANCELLED.name(), uid,
+            JsonUtils.toJson(Map.of("from", "RETURNED")));
+    }
+
     // ==================== handleApproved / handleRejected / handleCancelled ====================
 
     @Override
@@ -695,8 +906,9 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             return;
         }
 
-        // Delete stmt rows (release UK locks)
+        // Delete stmt rows + schema snapshot rows (release UK locks, orphan cleanup)
         prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
+        prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
 
         // Event
         appendReleaseEvent(releaseId, GovEventType.RELEASE_REJECTED,
@@ -718,8 +930,9 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             return;
         }
 
-        // Delete stmt rows (release UK locks)
+        // Delete stmt rows + schema snapshot rows (release UK locks, orphan cleanup)
         prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
+        prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
 
         // Event
         appendReleaseEvent(releaseId, GovEventType.RELEASE_CANCELLED,
@@ -816,10 +1029,218 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         }
         vo.setEvents(eventEntries);
 
+        // RETURNED-only extension: returnReason + sourceTickets dry-run (read-only, zero writes)
+        if (ProdReleaseStatus.RETURNED.name().equals(release.getStatus())) {
+            // returnReason: extract from the most recent RELEASE_RETURNED event's eventData.reason
+            for (ProdReleaseDetailVO.EventEntry ee : eventEntries) {
+                if (GovEventType.RELEASE_RETURNED.name().equals(ee.getEventType())
+                    && ee.getEventData() != null) {
+                    try {
+                        Map<String, Object> ed = JsonUtils.toObj(ee.getEventData(), Map.class);
+                        if (ed != null && ed.get("reason") != null) {
+                            vo.setReturnReason(String.valueOf(ed.get("reason")));
+                            break;
+                        }
+                    } catch (Exception ignored) { }
+                }
+            }
+
+            // sourceTickets: dry-run availability check for each original ticket
+            List<Long> originalTicketIds = parseGateResultTicketIds(release.getGateResult());
+            List<ProdReleaseDetailVO.SourceTicketEntry> sourceTickets = new ArrayList<>();
+            for (Long ticketId : originalTicketIds) {
+                ProdReleaseDetailVO.SourceTicketEntry ste = new ProdReleaseDetailVO.SourceTicketEntry();
+                ste.setTicketId(ticketId);
+                DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+                if (ticket == null) {
+                    ste.setAvailable(false);
+                    ste.setUnavailableReason("Ticket not found");
+                    ste.setTicketStatus(null);
+                    ste.setTicketTitle(null);
+                } else {
+                    ste.setTicketTitle(ticket.getTicketTitle());
+                    ste.setTicketStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
+                    String unavailReason = checkTicketAvailability(ticket);
+                    ste.setAvailable(unavailReason == null);
+                    ste.setUnavailableReason(unavailReason);
+                }
+                sourceTickets.add(ste);
+            }
+            vo.setSourceTickets(sourceTickets);
+        }
+
         return vo;
     }
 
     // ==================== helpers ====================
+
+    /**
+     * Read-only dry-run: check if a ticket is available for re-merge into a resubmitted release.
+     * Returns null if available, or a human-readable reason if not.
+     * Mirrors collectSourceEntries' four conditions but without side effects (no exception throw).
+     */
+    private String checkTicketAvailability(DmApprovalDO ticket) {
+        // Condition 1: FINISHED
+        if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) {
+            return "Ticket is not FINISHED (current: " + ticket.getTicketStatus() + ")";
+        }
+        // Condition 2: PRE_DDL
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) {
+            return "Ticket is not PRE_DDL type";
+        }
+        // Condition 3 + 4: each stmt must be SUCCESS and not already merged
+        List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(ticket.getId());
+        if (stmts == null || stmts.isEmpty()) {
+            return "No statement groups found";
+        }
+        for (DmTicketDbStmtDO stmt : stmts) {
+            if (!EXEC_STATUS_SUCCESS.equals(stmt.getExecStatus())) {
+                return "Statement group for " + stmt.getDbName() + " has not executed successfully";
+            }
+            DmProdReleaseStmtDO existing = prodReleaseDal.stmtMapper().queryBySourceStmtId(stmt.getId());
+            if (existing != null) {
+                return "Statement group for " + stmt.getDbName() + " is already merged into release " + existing.getReleaseId();
+            }
+        }
+        // Library-level lock check
+        for (DmTicketDbStmtDO stmt : stmts) {
+            DmDbPairDO pair = dbPairDal.pairMapper().selectById(stmt.getPairId());
+            if (pair == null) continue;
+            int activeCount = prodReleaseDal.releaseMapper().countActiveByProdDb(
+                pair.getProdDsId(), pair.getProdDbName());
+            if (activeCount > 0) {
+                return "Production database " + pair.getProdDbName() + " is locked by an active release";
+            }
+        }
+        return null; // available
+    }
+
+    /**
+     * Parse the gate_result JSON to extract the ordered list of unique source ticket IDs
+     * from the original merge. Used by resubmitRelease to determine the base list for exclusion.
+     */
+    @SuppressWarnings("unchecked")
+    private List<Long> parseGateResultTicketIds(String gateResultJson) {
+        if (StringUtils.isBlank(gateResultJson)) {
+            return java.util.Collections.emptyList();
+        }
+        try {
+            Map<String, Object> gateResult = JsonUtils.toObj(gateResultJson, Map.class);
+            if (gateResult == null) {
+                return java.util.Collections.emptyList();
+            }
+            Object stmtsObj = gateResult.get("stmts");
+            if (!(stmtsObj instanceof List<?> stmts)) {
+                return java.util.Collections.emptyList();
+            }
+            List<Long> ticketIds = new java.util.ArrayList<>();
+            java.util.Set<Long> seen = new java.util.HashSet<>();
+            for (Object s : stmts) {
+                if (s instanceof Map<?, ?> stmtMap) {
+                    Object ticketIdObj = stmtMap.get("sourceTicketId");
+                    if (ticketIdObj instanceof Number n) {
+                        long tid = n.longValue();
+                        if (seen.add(tid)) {
+                            ticketIds.add(tid);
+                        }
+                    }
+                }
+            }
+            return ticketIds;
+        } catch (Exception e) {
+            log.warn("[ProdRelease] Failed to parse gate_result for ticket IDs: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
+     * Shared merge-validation core: validate each ticket's four conditions (FINISHED,
+     * PRE_DDL, all stmts SUCCESS, not already merged), resolve the prod pair, and collect
+     * source stmt entries. Used by both {@code createRelease} and {@code resubmitRelease}
+     * to prevent validation drift between the two paths.
+     * <p>
+     * R1: tenant check — every ticket must belong to the caller's puid. Cross-tenant
+     * merge is rejected with a clear error (closes the hole opened by opening create to all).
+     * R1: no per-database {@code checkResAuth(DM_DAUTH_TICKET)} — create is now open to
+     * all same-tenant users.
+     */
+    private List<SourceStmtEntry> collectSourceEntries(String puid, List<Long> ticketIds) {
+        List<SourceStmtEntry> sourceEntries = new ArrayList<>();
+        for (Long ticketId : ticketIds) {
+            DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+            if (ticket == null) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FOUND.name(), ticketId));
+            }
+            // R1 tenant check: ticket must belong to the caller's puid
+            if (!puid.equals(ticket.getPrimaryUid())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_TICKET_TENANT_MISMATCH.name(), ticketId));
+            }
+            // Condition 1: ticket status = FINISHED
+            if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FINISHED.name(), ticketId));
+            }
+            // Condition 2: ticketType = PRE_DDL
+            ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+            if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_PRE_DDL.name(), ticketId));
+            }
+
+            // Get stmts for this ticket
+            List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+            for (DmTicketDbStmtDO stmt : stmts) {
+                // Condition 3: stmt exec_status = SUCCESS
+                if (!EXEC_STATUS_SUCCESS.equals(stmt.getExecStatus())) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_SUCCESS.name(), ticketId, stmt.getDbName()));
+                }
+
+                // Condition 4: not already merged (uk_source_stmt check)
+                DmProdReleaseStmtDO existing = prodReleaseDal.stmtMapper().queryBySourceStmtId(stmt.getId());
+                if (existing != null) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_STMT_ALREADY_MERGED.name(), ticketId, stmt.getDbName(),
+                        existing.getReleaseId()));
+                }
+
+                // Resolve pair to get prod DS and prod DB name
+                DmDbPairDO pair = dbPairDal.pairMapper().selectById(stmt.getPairId());
+                if (pair == null || !STATUS_ENABLED.equals(pair.getStatus())) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_PAIR_NOT_FOUND.name(), stmt.getPairId()));
+                }
+
+                // Library-level lock check (service-layer, design §6)
+                int activeCount = prodReleaseDal.releaseMapper().countActiveByProdDb(
+                    pair.getProdDsId(), pair.getProdDbName());
+                if (activeCount > 0) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_DB_LOCKED.name(), pair.getProdDbName()));
+                }
+
+                SourceStmtEntry entry = new SourceStmtEntry(stmt, pair, ticket, ticket.getGmtCreate());
+
+                // Sub-task A: query CAPTURED snapshots from the pre-release side.
+                try {
+                    entry.snapshots = ticketDbStmtDal.schemaMapper().queryByStmtId(stmt.getId());
+                } catch (Exception e) {
+                    log.warn("[ProdRelease] Failed to query snapshots for stmt {}: {}", stmt.getId(), e.getMessage());
+                    entry.snapshots = java.util.Collections.emptyList();
+                }
+
+                sourceEntries.add(entry);
+            }
+        }
+
+        if (sourceEntries.isEmpty()) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RELEASE_NO_STMTS.name()));
+        }
+        return sourceEntries;
+    }
 
     /**
      * Propagate CAPTURED snapshots from the pre-release side to the release side.

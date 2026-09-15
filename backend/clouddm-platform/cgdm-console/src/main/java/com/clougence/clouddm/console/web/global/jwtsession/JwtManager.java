@@ -124,6 +124,12 @@ public class JwtManager {
             return true;
         }
 
+        if (authInfo.strategy() == RequestAuth.AuthStrategy.RefPrimaryOrMaintainer) {
+            // verifyAuth already short-circuited for isMaintainer() || PRIMARY_ACCOUNT.
+            // Reaching testAuth means the caller is a sub-account → deny (406).
+            return false;
+        }
+
         DmAuthRoleDO roleDO = this.roleService.fetchRoleById(roleId);
         if (roleDO == null) {
             return false;
@@ -147,7 +153,9 @@ public class JwtManager {
     private String[] fetchAuthLabel(Supplier<RequestAuth> authSupplier) {
         RequestAuth requestAuth = authSupplier.get();
         if (requestAuth != null) {
-            if (requestAuth.strategy() == RequestAuth.AuthStrategy.Ignore || requestAuth.strategy() == RequestAuth.AuthStrategy.RefAnyOnes) {
+            if (requestAuth.strategy() == RequestAuth.AuthStrategy.Ignore
+                || requestAuth.strategy() == RequestAuth.AuthStrategy.RefAnyOnes
+                || requestAuth.strategy() == RequestAuth.AuthStrategy.RefPrimaryOrMaintainer) {
                 return new String[] { requestAuth.strategy().name() };
             }
 

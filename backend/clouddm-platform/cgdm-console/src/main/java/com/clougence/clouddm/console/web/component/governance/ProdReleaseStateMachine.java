@@ -77,7 +77,8 @@ public class ProdReleaseStateMachine {
         = new EnumMap<>(ProdReleaseStatus.class);
 
     static {
-        LEGAL_TRANSITIONS.put(ProdReleaseStatus.APPROVING, Set.of());
+        LEGAL_TRANSITIONS.put(ProdReleaseStatus.APPROVING, Set.of(
+            ProdReleaseStatus.RETURNED));       // resubmit back-edge (RETURNED -> APPROVING)
         LEGAL_TRANSITIONS.put(ProdReleaseStatus.APPROVED, Set.of(
             ProdReleaseStatus.APPROVING));
         LEGAL_TRANSITIONS.put(ProdReleaseStatus.EXECUTING, Set.of(
@@ -92,6 +93,10 @@ public class ProdReleaseStateMachine {
             ProdReleaseStatus.APPROVED));
         LEGAL_TRANSITIONS.put(ProdReleaseStatus.CANCELLED, Set.of(
             ProdReleaseStatus.APPROVING,
-            ProdReleaseStatus.APPROVED));
+            ProdReleaseStatus.APPROVED,
+            ProdReleaseStatus.RETURNED));       // discard a RETURNED release
+        LEGAL_TRANSITIONS.put(ProdReleaseStatus.RETURNED, Set.of(
+            ProdReleaseStatus.APPROVING,
+            ProdReleaseStatus.APPROVED));       // return entry edge
     }
 }

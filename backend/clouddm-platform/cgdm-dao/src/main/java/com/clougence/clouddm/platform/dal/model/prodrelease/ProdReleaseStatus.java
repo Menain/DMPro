@@ -19,11 +19,13 @@ package com.clougence.clouddm.platform.dal.model.prodrelease;
  * Production release status state machine.
  * <p>
  * Main trunk: APPROVING -> APPROVED -> EXECUTING -> DONE
- * Branches:   PARTIAL_FAILED (some stmts failed, retryable), REJECTED, CANCELLED
+ * Branches:   PARTIAL_FAILED (some stmts failed, retryable), REJECTED, CANCELLED, RETURNED
  * <p>
  * Terminal states (no outgoing transitions): DONE, REJECTED, CANCELLED.
  * PARTIAL_FAILED has one revival edge: PARTIAL_FAILED -> EXECUTING (retry recovery).
- * APPROVING/APPROVED can be REJECTED or CANCELLED (before execution starts).
+ * APPROVING/APPROVED can be REJECTED, CANCELLED, or RETURNED (before execution starts).
+ * RETURNED is non-terminal: RETURNED -> APPROVING (resubmit with rebuilt stmts/approval),
+ * RETURNED -> CANCELLED (discard). RETURNED releases have no stmt rows (deleted on return).
  */
 public enum ProdReleaseStatus {
     APPROVING,
@@ -32,5 +34,6 @@ public enum ProdReleaseStatus {
     DONE,
     PARTIAL_FAILED,
     REJECTED,
-    CANCELLED
+    CANCELLED,
+    RETURNED
 }

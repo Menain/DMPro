@@ -15,8 +15,6 @@
  */
 package com.clougence.rdp.controller;
 
-import static com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel.DM_DAUTH_TICKET;
-
 import java.util.List;
 
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,6 +29,9 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseListFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCancelFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseRetryStmtFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
@@ -44,8 +45,8 @@ import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Production release controller — create (DM_DAUTH_TICKET), list/detail (RefAnyOnes + tenant filter),
- * retryStmt (DM_DAUTH_TICKET + tenant).
+ * Production release controller — create (RefAnyOnes), list/detail (RefAnyOnes + tenant filter),
+ * retryStmt/returnStmt (RefPrimaryOrMaintainer — processing side only).
  */
 @RestController
 @RequestMapping(value = DmControllerUrlPrefix.CONSOLE_PREFIX)
@@ -55,7 +56,7 @@ public class GovReleaseController {
     @Resource
     private ProdReleaseService prodReleaseService;
 
-    @RequestAuth(DM_DAUTH_TICKET)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
     @RequestMapping(value = "/govrelease/create", method = RequestMethod.POST)
     public ResWebData<?> create(@Valid @RequestBody ProdReleaseCreateFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
@@ -83,7 +84,7 @@ public class GovReleaseController {
         return ResWebDataUtils.buildSuccess(data);
     }
 
-    @RequestAuth(DM_DAUTH_TICKET)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefPrimaryOrMaintainer)
     @RequestMapping(value = "/govrelease/retryStmt", method = RequestMethod.POST)
     public ResWebData<?> retryStmt(@Valid @RequestBody ProdReleaseRetryStmtFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
@@ -92,12 +93,41 @@ public class GovReleaseController {
         return ResWebDataUtils.buildSuccess();
     }
 
-    @RequestAuth(DM_DAUTH_TICKET)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefPrimaryOrMaintainer)
     @RequestMapping(value = "/govrelease/returnStmt", method = RequestMethod.POST)
     public ResWebData<?> returnStmt(@Valid @RequestBody ProdReleaseReturnStmtFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
         prodReleaseService.returnStmt(puid, uid, fo);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefPrimaryOrMaintainer)
+    @RequestMapping(value = "/govrelease/return", method = RequestMethod.POST)
+    public ResWebData<?> returnRelease(@Valid @RequestBody ProdReleaseReturnFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        prodReleaseService.returnRelease(puid, uid, fo.getReleaseId(), fo.getReason());
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
+    @RequestMapping(value = "/govrelease/resubmit", method = RequestMethod.POST)
+    public ResWebData<?> resubmit(@Valid @RequestBody ProdReleaseResubmitFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        boolean isMaintainer = Boolean.TRUE.equals(request.getAttribute(RdpUserService.IS_MAINTAINER));
+        prodReleaseService.resubmitRelease(puid, uid, isMaintainer, fo);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
+    @RequestMapping(value = "/govrelease/cancel", method = RequestMethod.POST)
+    public ResWebData<?> cancelRelease(@Valid @RequestBody ProdReleaseCancelFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        boolean isMaintainer = Boolean.TRUE.equals(request.getAttribute(RdpUserService.IS_MAINTAINER));
+        prodReleaseService.cancelRelease(puid, uid, isMaintainer, fo.getReleaseId());
         return ResWebDataUtils.buildSuccess();
     }
 }

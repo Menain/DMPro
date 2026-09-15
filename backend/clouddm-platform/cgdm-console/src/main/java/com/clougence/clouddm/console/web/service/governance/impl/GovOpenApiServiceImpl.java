@@ -26,9 +26,11 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmResAuthService;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
@@ -236,6 +238,34 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         }
         // Delegate to existing service for full detail assembly
         return prodReleaseService.getDetail(puid, fo.getReleaseId());
+    }
+
+    // ==================== Interface D: returnRelease (external withdrawal sync) ====================
+
+    @Override
+    public void returnRelease(String puid, String uid, DbChangeReleaseReturnFO fo) {
+        // Resolve releaseId: prefer releaseId, fall back to releaseNo lookup
+        long releaseId;
+        if (fo.getReleaseId() != null) {
+            releaseId = fo.getReleaseId();
+        } else if (StringUtils.isNotBlank(fo.getReleaseNo())) {
+            DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryByReleaseNo(fo.getReleaseNo());
+            if (release == null || !puid.equals(release.getPrimaryUid())) {
+                throw new ErrorMessageException("Release not found: " + fo.getReleaseNo());
+            }
+            releaseId = release.getId();
+        } else {
+            throw new ErrorMessageException("Either releaseId or releaseNo must be provided");
+        }
+
+        // Tenant check (not-found semantics for cross-tenant)
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseId);
+        if (release == null || !puid.equals(release.getPrimaryUid())) {
+            throw new ErrorMessageException("Release not found: " + releaseId);
+        }
+
+        // Delegate to ProdReleaseService — permission scope = tenant match only (AK/SK is the credential)
+        prodReleaseService.returnRelease(puid, uid, releaseId, fo.getReason());
     }
 
     // ==================== Helpers: dbName pair resolution ====================

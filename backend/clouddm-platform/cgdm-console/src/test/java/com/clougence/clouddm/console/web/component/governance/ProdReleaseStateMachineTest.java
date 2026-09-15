@@ -127,4 +127,76 @@ public class ProdReleaseStateMachineTest {
         assertEquals(1, legal.size());
         assertTrue(legal.contains(ProdReleaseStatus.APPROVING));
     }
+
+    // ===== RETURNED state machine edges (design §3.1) =====
+
+    @Test
+    public void legalFromFor_returned_hasApprovingAndApproved() {
+        Set<ProdReleaseStatus> legal = stateMachine.legalFromFor(ProdReleaseStatus.RETURNED);
+        assertTrue(legal.contains(ProdReleaseStatus.APPROVING));
+        assertTrue(legal.contains(ProdReleaseStatus.APPROVED));
+    }
+
+    @Test
+    public void legalFromFor_approving_hasReturned() {
+        Set<ProdReleaseStatus> legal = stateMachine.legalFromFor(ProdReleaseStatus.APPROVING);
+        assertTrue("RETURNED should be a legal source for APPROVING (resubmit back-edge)",
+            legal.contains(ProdReleaseStatus.RETURNED));
+    }
+
+    @Test
+    public void legalFromFor_cancelled_hasReturned() {
+        Set<ProdReleaseStatus> legal = stateMachine.legalFromFor(ProdReleaseStatus.CANCELLED);
+        assertTrue("RETURNED should be a legal source for CANCELLED (discard edge)",
+            legal.contains(ProdReleaseStatus.RETURNED));
+    }
+
+    @Test
+    public void legalFromFor_returned_doesNotIncludeExecuting() {
+        Set<ProdReleaseStatus> legal = stateMachine.legalFromFor(ProdReleaseStatus.RETURNED);
+        assertFalse("EXECUTING should not be a legal source for RETURNED", legal.contains(ProdReleaseStatus.EXECUTING));
+    }
+
+    @Test
+    public void transit_returnedFromApproving_succeeds() {
+        when(releaseMapper.transitStatus(eq(1L), eq("RETURNED"), anyList()))
+            .thenReturn(1);
+        boolean result = stateMachine.transit(1L,
+            Set.of(ProdReleaseStatus.APPROVING), ProdReleaseStatus.RETURNED);
+        assertTrue(result);
+    }
+
+    @Test
+    public void transit_returnedFromApproved_succeeds() {
+        when(releaseMapper.transitStatus(eq(1L), eq("RETURNED"), anyList()))
+            .thenReturn(1);
+        boolean result = stateMachine.transit(1L,
+            Set.of(ProdReleaseStatus.APPROVED), ProdReleaseStatus.RETURNED);
+        assertTrue(result);
+    }
+
+    @Test
+    public void transit_executingToReturned_fails() {
+        when(releaseMapper.transitStatus(eq(1L), eq("RETURNED"), anyList()))
+            .thenReturn(0);
+        boolean result = stateMachine.transit(1L,
+            Set.of(ProdReleaseStatus.EXECUTING), ProdReleaseStatus.RETURNED);
+        assertFalse(result);
+    }
+
+    @Test
+    public void transit_doneToReturned_fails() {
+        when(releaseMapper.transitStatus(eq(1L), eq("RETURNED"), anyList()))
+            .thenReturn(0);
+        boolean result = stateMachine.transit(1L,
+            Set.of(ProdReleaseStatus.DONE), ProdReleaseStatus.RETURNED);
+        assertFalse(result);
+    }
+
+    @Test
+    public void terminalStates_haveNoOutgoingTransitions_returnedIsNotTerminal() {
+        // RETURNED is non-terminal: it appears as a legal source for APPROVING and CANCELLED
+        Set<ProdReleaseStatus> approvingFrom = stateMachine.legalFromFor(ProdReleaseStatus.APPROVING);
+        assertTrue("RETURNED should be a legal source (non-terminal)", approvingFrom.contains(ProdReleaseStatus.RETURNED));
+    }
 }

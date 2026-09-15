@@ -19,7 +19,9 @@ import java.util.List;
 import java.util.Map;
 
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmitFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
@@ -80,6 +82,33 @@ public interface ProdReleaseService {
 
     /**
      * Get release detail (stmts grouped by prod DB, status, event timeline).
+     * For RETURNED releases, also computes sourceTickets dry-run availability.
      */
     ProdReleaseDetailVO getDetail(String puid, long releaseId);
+
+    /**
+     * Return an entire release (APPROVING/APPROVED → RETURNED).
+     * Deletes all stmt + schema rows (releases source tickets), cancels the approval
+     * flow without triggering the handler dispatch, and records a RELEASE_RETURNED event.
+     * Platform-side: puid must match release.primaryUid (admin/primary only via controller).
+     */
+    void returnRelease(String puid, String uid, long releaseId, String reason);
+
+    /**
+     * Resubmit a RETURNED release (RETURNED → APPROVING).
+     * Re-runs collectSourceEntries on the remaining tickets (after optional exclusion),
+     * rebuilds stmt rows + gate_result, creates a new approval flow, and backfills approvalId.
+     * Any invalidated/usurped ticket raises a clear error with the ticketId — no silent drop.
+     * Permission: caller must be the release creator, the primary account (uid == puid),
+     * or a maintainer (isMaintainer == true).
+     */
+    void resubmitRelease(String puid, String uid, boolean isMaintainer, ProdReleaseResubmitFO fo);
+
+    /**
+     * Cancel (discard) a RETURNED release (RETURNED → CANCELLED).
+     * Terminal — no approval flow to cancel (already cancelled on return).
+     * Permission: caller must be the release creator, the primary account (uid == puid),
+     * or a maintainer (isMaintainer == true).
+     */
+    void cancelRelease(String puid, String uid, boolean isMaintainer, long releaseId);
 }

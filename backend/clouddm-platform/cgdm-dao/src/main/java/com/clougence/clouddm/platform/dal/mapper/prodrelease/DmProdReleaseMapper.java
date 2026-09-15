@@ -46,6 +46,11 @@ public interface DmProdReleaseMapper extends BaseMapper<DmProdReleaseDO> {
     DmProdReleaseDO queryById(@Param("id") long id);
 
     /**
+     * Lookup by release number (used by open API release-return endpoint).
+     */
+    DmProdReleaseDO queryByReleaseNo(@Param("releaseNo") String releaseNo);
+
+    /**
      * Locking read (FOR UPDATE) — serializes concurrent release-stmt job completion
      * callbacks per release (completion-aggregation race fix, 2026-09-12).
      */

@@ -38,6 +38,15 @@
             id = #{id}
     </select>
 
+    <select id="queryByReleaseNo" resultMap="dmProdReleaseDO">
+        SELECT
+            <include refid="dmProdRelease"/>
+        FROM
+            dm_prod_release
+        WHERE
+            release_no = #{releaseNo}
+    </select>
+
     <!-- Locking read: serializes concurrent release-stmt job completion callbacks
          (same convention as dm_approval selectByIdForUpdate, race fix 2026-09-12). -->
     <select id="selectByIdForUpdate" resultMap="dmProdReleaseDO">
@@ -110,7 +119,7 @@
         WHERE
             s.prod_ds_id = #{prodDsId}
             AND s.prod_db_name = #{prodDbName}
-            AND r.status NOT IN ('DONE', 'REJECTED', 'CANCELLED')
+            AND r.status NOT IN ('DONE', 'REJECTED', 'CANCELLED', 'RETURNED')
     </select>
 
     <select id="listActive" resultMap="dmProdReleaseDO">
@@ -119,7 +128,7 @@
         FROM
             dm_prod_release
         WHERE
-            status NOT IN ('DONE', 'REJECTED', 'CANCELLED')
+            status NOT IN ('DONE', 'REJECTED', 'CANCELLED', 'RETURNED')
     </select>
 
 </mapper>

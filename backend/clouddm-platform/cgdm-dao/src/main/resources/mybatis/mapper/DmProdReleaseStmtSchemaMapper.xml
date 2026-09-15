@@ -73,4 +73,11 @@
             release_stmt_id = #{releaseStmtId}
     </delete>
 
+    <delete id="deleteByReleaseId">
+        DELETE FROM
+            dm_prod_release_stmt_schema
+        WHERE
+            release_id = #{releaseId}
+    </delete>
+
 </mapper>

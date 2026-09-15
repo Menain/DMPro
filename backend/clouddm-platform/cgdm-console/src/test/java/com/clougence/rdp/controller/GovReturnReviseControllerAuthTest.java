@@ -54,14 +54,13 @@ public class GovReturnReviseControllerAuthTest {
     }
 
     @Test
-    public void returnStmt_hasDmDauthTicketAuth() throws Exception {
+    public void returnStmt_hasRefPrimaryOrMaintainerAuth() throws Exception {
         Method method = GovReleaseController.class.getDeclaredMethod("returnStmt",
             com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO.class,
             jakarta.servlet.http.HttpServletRequest.class);
         RequestAuth auth = method.getAnnotation(RequestAuth.class);
         assertNotNull("returnStmt must have @RequestAuth", auth);
-        String[] labels = auth.value();
-        assertTrue("returnStmt must require DM_DAUTH_TICKET (DM_TICKET)",
-            java.util.Arrays.asList(labels).contains("DM_TICKET"));
+        assertEquals("returnStmt must use RefPrimaryOrMaintainer strategy",
+            RequestAuth.AuthStrategy.RefPrimaryOrMaintainer, auth.strategy());
     }
 }

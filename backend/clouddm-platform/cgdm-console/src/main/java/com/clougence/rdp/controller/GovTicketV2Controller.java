@@ -15,7 +15,6 @@
  */
 package com.clougence.rdp.controller;
 
-import static com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel.DM_DAUTH_TICKET;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.RDP_WORKER_ORDER_REQUEST;
 
 import java.util.List;
@@ -56,7 +55,7 @@ import lombok.extern.slf4j.Slf4j;
  * <ul>
  *   <li>availablePairs / availableServices: RefAnyOnes (any logged-in user)</li>
  *   <li>check / submit: RDP_WORKER_ORDER_REQUEST (no DM_DAUTH_TICKET — submit ≠ process, design §11)</li>
- *   <li>retryGroup: DM_DAUTH_TICKET (processing side — DBA only)</li>
+ *   <li>retryGroup: RefPrimaryOrMaintainer (processing side — DBA/primary only)</li>
  *   <li>groupList: RefAnyOnes (ticket visibility controlled at service layer)</li>
  * </ul>
  */
@@ -102,7 +101,7 @@ public class GovTicketV2Controller {
         return ResWebDataUtils.buildSuccess(data);
     }
 
-    @RequestAuth(DM_DAUTH_TICKET)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.RefPrimaryOrMaintainer)
     @RequestMapping(value = "/dbChangeV2/retryGroup", method = RequestMethod.POST)
     public ResWebData<?> retryGroup(@Valid @RequestBody GovTicketV2GroupIdFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
