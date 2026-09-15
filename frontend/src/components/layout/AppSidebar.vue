@@ -101,6 +101,12 @@ export default {
       if (path.indexOf('/ticket') > -1) {
         return 'ticket';
       }
+      if (path.indexOf('/dbChange/ledger') === 0) {
+        return 'dbChange/ledger';
+      }
+      if (path.indexOf('/dbChange/release') === 0) {
+        return 'dbChange/release';
+      }
       if (path.indexOf('/datasource') === 0) {
         return '/datasource';
       }
@@ -113,6 +119,9 @@ export default {
       if (path.indexOf('/data-access/rules') === 0 || path.indexOf('/system/dmrule') > -1) {
         return '/data-access/rules';
       }
+      if (path.indexOf('/data-access/desens') === 0) {
+        return '/data-access/desens';
+      }
       if (path.indexOf('/integrations/im') === 0 || path.indexOf('/system/im') > -1) {
         return '/integrations/im';
       }
@@ -121,6 +130,9 @@ export default {
       }
       if (path.indexOf('/integrations/sso') === 0 || path.indexOf('/system/sso') > -1) {
         return '/integrations/sso';
+      }
+      if (path.indexOf('/integrations/approval') === 0) {
+        return '/integrations/approval';
       }
       if (path.indexOf('/settings/profile') === 0 || path.indexOf('/system/profile') > -1) {
         return '/settings/profile';
@@ -133,6 +145,15 @@ export default {
       }
       if (path.indexOf('/manager/role') === 0 || path.indexOf('/system/role') > -1) {
         return '/manager/role';
+      }
+      if (path.indexOf('/manager/permGroup') === 0) {
+        return '/manager/permGroup';
+      }
+      if (path.indexOf('/manager/dbPair') === 0) {
+        return '/manager/dbPair';
+      }
+      if (path.indexOf('/manager/schemaPatrol') === 0) {
+        return '/manager/schemaPatrol';
       }
       if (path.indexOf('/manager/account') === 0 || path.indexOf('/system/account') > -1) {
         return '/manager/account';

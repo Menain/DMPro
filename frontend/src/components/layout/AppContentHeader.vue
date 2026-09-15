@@ -64,7 +64,7 @@ export default {
         return this.$t('nav-ci-cd');
       }
       if (path === '/ticket' || path === '/ticket/') {
-        return this.$t('gong-dan');
+        return this.$t('gong-dan-lie-biao');
       }
       if (path.indexOf('/ticket') === 0) {
         return this.$t('gong-dan');
@@ -81,14 +81,53 @@ export default {
         }
         return this.$t('my-permissions');
       }
+      if (path === '/datasource' || path === '/datasource/') {
+        return this.$t('shi-li-lie-biao');
+      }
       if (path.indexOf('/datasource') === 0) {
         return this.$t('nav-shu-ju-ku-guan-li');
+      }
+      if (path === '/env' || path === '/env/') {
+        return this.$t('huan-jing-lie-biao');
       }
       if (path === '/env' || path.indexOf('/env/') === 0 || path.indexOf('/system/env') > -1) {
         return this.$t('huan-jing');
       }
+      if (path === '/dbChange/ledger' || path === '/dbChange/ledger/') {
+        return this.$t('bian-geng-tai-zhang-lie-biao');
+      }
+      if (path.indexOf('/dbChange/ledger') === 0) {
+        return this.$t('bian-geng-tai-zhang');
+      }
+      if (path === '/dbChange/release' || path === '/dbChange/release/') {
+        return this.$t('sheng-chan-fa-bu-dan-lie-biao');
+      }
+      if (path.indexOf('/dbChange/release') === 0) {
+        return this.$t('sheng-chan-fa-bu-dan');
+      }
+      if (path === '/manager/role' || path === '/manager/role/') {
+        return this.$t('jiao-se-lie-biao');
+      }
       if (path.indexOf('/manager/role') === 0 || path.indexOf('/system/role') > -1) {
         return this.$t('jiao-se');
+      }
+      if (path === '/manager/permGroup' || path === '/manager/permGroup/') {
+        return this.$t('quan-xian-zu-lie-biao');
+      }
+      if (path.indexOf('/manager/permGroup') === 0) {
+        return this.$t('quan-xian-zu');
+      }
+      if (path === '/manager/dbPair' || path === '/manager/dbPair/') {
+        return this.$t('ku-ying-she-lie-biao');
+      }
+      if (path.indexOf('/manager/dbPair') === 0) {
+        return this.$t('ku-ying-she');
+      }
+      if (path.indexOf('/manager/schemaPatrol') === 0) {
+        return this.$t('xun-jian-bao-gao');
+      }
+      if (path === '/manager/account' || path === '/manager/account/') {
+        return this.$t('zhang-hu-lie-biao');
       }
       if (path.indexOf('/manager/account') === 0 || path.indexOf('/system/management/accounts') > -1 || path.indexOf('/system/account') > -1) {
         return this.$t('nav-zhang-hu');
@@ -276,6 +315,27 @@ export default {
       }
       if (/^\/ticket\/[^/]+$/.test(path)) {
         return [ticketRoot, { label: this.$t('gong-dan-xiang-qing'), to: this.$route.fullPath }];
+      }
+      if (path === '/ticket_create') {
+        return [ticketRoot, { label: this.$t('chuang-jian-gong-dan'), to: this.$route.fullPath }];
+      }
+      if (path === '/dbChange/ledger/detail') {
+        return [
+          { label: this.$t('bian-geng-tai-zhang-lie-biao'), to: '/dbChange/ledger' },
+          { label: this.$t('tai-zhang-xiang-qing'), to: this.$route.fullPath }
+        ];
+      }
+      if (/^\/dbChange\/release\/[^/]+$/.test(path)) {
+        return [
+          { label: this.$t('sheng-chan-fa-bu-dan-lie-biao'), to: '/dbChange/release' },
+          { label: this.$t('fa-bu-dan-xiang-qing'), to: this.$route.fullPath }
+        ];
+      }
+      if (/^\/manager\/permGroup\/[^/]+$/.test(path)) {
+        return [
+          { label: this.$t('quan-xian-zu-lie-biao'), to: '/manager/permGroup' },
+          { label: this.$t('quan-xian-zu-xiang-qing'), to: this.$route.fullPath }
+        ];
       }
       if (path === '/datasource/add') {
         const dsType = this.$route.query.dsType;
