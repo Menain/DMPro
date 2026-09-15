@@ -42,7 +42,9 @@ export const GOV_EVENT_TYPE_I18N_KEYS = {
   RELEASE_SCHEMA_SNAPSHOT_MISSING: 'gov-event-type-RELEASE_SCHEMA_SNAPSHOT_MISSING',
   RELEASE_DONE: 'gov-event-type-RELEASE_DONE',
   TICKET_RETURNED: 'gov-event-type-TICKET_RETURNED',
-  RELEASE_STMT_RETURNED: 'gov-event-type-RELEASE_STMT_RETURNED'
+  RELEASE_STMT_RETURNED: 'gov-event-type-RELEASE_STMT_RETURNED',
+  RELEASE_RETURNED: 'gov-event-type-RELEASE_RETURNED',
+  RELEASE_RESUBMITTED: 'gov-event-type-RELEASE_RESUBMITTED'
 };
 
 export const GOV_EVENT_ICONS = {
@@ -76,7 +78,9 @@ export const GOV_EVENT_ICONS = {
   RELEASE_SCHEMA_SNAPSHOT_MISSING: 'ios-eye-off-outline',
   RELEASE_DONE: 'ios-checkbox-outline',
   TICKET_RETURNED: 'ios-undo-outline',
-  RELEASE_STMT_RETURNED: 'ios-arrow-back-outline'
+  RELEASE_STMT_RETURNED: 'ios-arrow-back-outline',
+  RELEASE_RETURNED: 'ios-undo-outline',
+  RELEASE_RESUBMITTED: 'ios-refresh-outline'
 };
 
 /**
@@ -86,8 +90,8 @@ export const GOV_EVENT_ICONS = {
  */
 
 /**
- * Production release status i18n keys — covers all 7 values of ProdReleaseStatus enum:
- * APPROVING, APPROVED, EXECUTING, DONE, PARTIAL_FAILED, REJECTED, CANCELLED.
+ * Production release status i18n keys — covers all values of ProdReleaseStatus enum:
+ * APPROVING, APPROVED, EXECUTING, DONE, PARTIAL_FAILED, REJECTED, CANCELLED, RETURNED.
  */
 export const RELEASE_STATUS_I18N_KEYS = {
   APPROVING: 'gov-release-status-APPROVING',
@@ -96,5 +100,6 @@ export const RELEASE_STATUS_I18N_KEYS = {
   DONE: 'gov-release-status-DONE',
   PARTIAL_FAILED: 'gov-release-status-PARTIAL_FAILED',
   REJECTED: 'gov-release-status-REJECTED',
-  CANCELLED: 'gov-release-status-CANCELLED'
+  CANCELLED: 'gov-release-status-CANCELLED',
+  RETURNED: 'gov-release-status-RETURNED'
 };

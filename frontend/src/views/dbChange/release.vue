@@ -107,7 +107,7 @@ export default {
     },
     statusColor(status) {
       if (status === 'DONE') return 'success';
-      if (status === 'PARTIAL_FAILED') return 'warning';
+      if (status === 'PARTIAL_FAILED' || status === 'RETURNED') return 'warning';
       if (status === 'REJECTED' || status === 'CANCELLED') return 'error';
       return 'primary';
     },

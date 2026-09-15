@@ -30,6 +30,10 @@
               <span class="gov-overview-label">{{ $t('gov-release-creator') }}</span>
               <span>{{ detail.creatorUid || '-' }}</span>
             </div>
+            <div v-if="detail.returnReason" class="gov-overview-item gov-overview-item--full">
+              <span class="gov-overview-label">{{ $t('gov-release-return-reason-label') }}</span>
+              <span class="gov-release-return-reason-text">{{ detail.returnReason }}</span>
+            </div>
             <div class="gov-overview-item">
               <span class="gov-overview-label">{{ $t('gov-release-approval-ticket') }}</span>
               <span v-if="detail.approvalId">
@@ -44,9 +48,42 @@
           </div>
         </section>
 
+        <section v-if="showReleaseActions" class="page-section">
+          <div class="gov-release-actions">
+            <Button v-if="canReturnRelease" type="warning" :loading="returning" @click="openReturnModal">
+              {{ $t('gov-release-return-button') }}
+            </Button>
+            <template v-if="detail.status === 'RETURNED'">
+              <Button type="primary" :loading="resubmitting" @click="openResubmitModal">
+                {{ $t('gov-release-resubmit-button') }}
+              </Button>
+              <Button type="error" :loading="cancelling" @click="handleCancel">
+                {{ $t('gov-release-cancel-button') }}
+              </Button>
+            </template>
+          </div>
+        </section>
+
         <section v-if="showGateResult" class="page-section">
           <div class="page-section__title">{{ $t('gov-release-gate-result') }}</div>
           <pre class="gov-gate-result-json">{{ formatJson(detail.gateResult) }}</pre>
+        </section>
+
+        <section v-if="detail.status === 'RETURNED' && detail.sourceTickets && detail.sourceTickets.length" class="page-section">
+          <div class="page-section__title">{{ $t('gov-release-source-tickets') }}</div>
+          <div class="gov-source-tickets">
+            <div v-for="t in detail.sourceTickets" :key="t.ticketId" class="gov-source-ticket-row">
+              <div class="gov-source-ticket-row__info">
+                <span class="gov-source-ticket-row__id">{{ t.ticketId }}</span>
+                <span class="gov-source-ticket-row__title">{{ t.ticketTitle }}</span>
+              </div>
+              <div class="gov-source-ticket-row__status">
+                <Tag v-if="t.available" color="success">{{ $t('gov-release-source-ticket-available') }}</Tag>
+                <Tag v-else color="error">{{ $t('gov-release-source-ticket-unavailable') }}</Tag>
+                <span v-if="!t.available && t.unavailableReason" class="gov-source-ticket-row__reason">{{ t.unavailableReason }}</span>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section v-if="detail.stmtGroups && detail.stmtGroups.length" class="page-section">
@@ -136,11 +173,72 @@
     >
       <Input v-model="returnStmtReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-return-reason-placeholder')" />
     </CCModal>
+
+    <CCModal v-model="showReturnModal" :title="$t('gov-release-return-button')" :footer-hide="true">
+      <div class="gov-release-return-form">
+        <div class="gov-release-return-form__label">{{ $t('gov-release-return-reason-label') }}</div>
+        <Input
+          v-model="returnReason"
+          type="textarea"
+          :rows="4"
+          :maxlength="1000"
+          show-word-limit
+          :placeholder="$t('gov-release-return-reason-placeholder')"
+        />
+      </div>
+      <template #footer>
+        <Button @click="showReturnModal = false">{{ $t('qu-xiao') }}</Button>
+        <Button type="primary" :loading="returning" @click="handleReturnSubmit">{{ $t('que-ren') }}</Button>
+      </template>
+    </CCModal>
+
+    <CCModal v-model="showResubmitModal" :title="$t('gov-release-resubmit-button')" :footer-hide="true" width="680">
+      <div class="gov-resubmit-form">
+        <div class="gov-resubmit-form__title-row">
+          <span class="gov-resubmit-form__label">{{ $t('gov-release-title') }}</span>
+          <Input v-model="resubmitTitle" :placeholder="$t('gov-ledger-title-placeholder')" maxlength="255" />
+        </div>
+        <div class="gov-resubmit-form__label">{{ $t('gov-release-resubmit-exclude-hint') }}</div>
+        <div class="gov-resubmit-tickets">
+          <div v-for="t in resubmitSourceTickets" :key="t.ticketId" class="gov-resubmit-ticket-row" :class="{ 'is-disabled': !t.available }">
+            <Checkbox v-model="t.checked" :disabled="!t.available">
+              <span class="gov-resubmit-ticket-row__id">{{ t.ticketId }}</span>
+              <span class="gov-resubmit-ticket-row__title">{{ t.ticketTitle }}</span>
+            </Checkbox>
+            <div class="gov-resubmit-ticket-row__status">
+              <Tag v-if="t.available" color="success" size="small">{{ $t('gov-release-source-ticket-available') }}</Tag>
+              <template v-else>
+                <Tag color="error" size="small">{{ $t('gov-release-source-ticket-unavailable') }}</Tag>
+                <span v-if="t.unavailableReason" class="gov-resubmit-ticket-row__reason">{{ t.unavailableReason }}</span>
+              </template>
+            </div>
+          </div>
+        </div>
+        <template v-if="resubmitCandidates.length">
+          <div class="gov-resubmit-form__label">{{ $t('gov-release-resubmit-candidates-title') }}</div>
+          <div class="gov-resubmit-tickets">
+            <div v-for="t in resubmitCandidates" :key="t.ticketId" class="gov-resubmit-ticket-row">
+              <Checkbox v-model="t.checked">
+                <span class="gov-resubmit-ticket-row__id">{{ t.ticketId }}</span>
+                <span class="gov-resubmit-ticket-row__title">{{ t.ticketTitle }}</span>
+                <span class="gov-resubmit-ticket-row__service">{{ t.serviceName }}</span>
+              </Checkbox>
+            </div>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <Button @click="showResubmitModal = false">{{ $t('qu-xiao') }}</Button>
+        <Button type="primary" :loading="resubmitting" @click="handleResubmitSubmit">{{ $t('que-ren') }}</Button>
+      </template>
+    </CCModal>
   </div>
 </template>
 
 <script>
+import { mapState } from 'vuex';
 import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
+import formatError from '@/services/formatError';
 import { GOV_EVENT_TYPE_I18N_KEYS, GOV_EVENT_ICONS, RELEASE_STATUS_I18N_KEYS } from './govEventConstants';
 
 export default {
@@ -156,21 +254,47 @@ export default {
       collapsedGroups: {},
       showReturnStmtModal: false,
       returnStmtReason: '',
-      returnStmtId: null
+      returnStmtId: null,
+      showReturnModal: false,
+      returnReason: '',
+      showResubmitModal: false,
+      resubmitTitle: '',
+      resubmitSourceTickets: [],
+      resubmitCandidates: [],
+      resubmitCandidatesLoading: false,
+      resubmitting: false,
+      cancelling: false
     };
   },
   computed: {
+    ...mapState(['userInfo']),
     myAuth() {
       return this.$store.state.myAuth || [];
     },
     canRetry() {
       return this.myAuth.includes('RDP_WORKER_ORDER_EXECUTE');
     },
+    isPrimaryOrMaintainer() {
+      const info = this.userInfo || {};
+      return info.accountType === 'PRIMARY_ACCOUNT' || info.isMaintainer === true;
+    },
+    canReturnRelease() {
+      if (!this.detail) return false;
+      return ['APPROVING', 'APPROVED'].includes(this.detail.status) && this.isPrimaryOrMaintainer;
+    },
+    canManageReturnedRelease() {
+      if (!this.detail || this.detail.status !== 'RETURNED') return false;
+      if (this.isPrimaryOrMaintainer) return true;
+      return this.detail.creatorUid && this.userInfo?.uid === this.detail.creatorUid;
+    },
+    showReleaseActions() {
+      return this.canReturnRelease || this.canManageReturnedRelease;
+    },
     showGateResult() {
       if (!this.detail || !this.detail.gateResult) {
         return false;
       }
-      return ['REJECTED', 'CANCELLED'].includes(this.detail.status);
+      return ['REJECTED', 'CANCELLED', 'RETURNED'].includes(this.detail.status);
     }
   },
   mounted() {
@@ -246,10 +370,132 @@ export default {
           this.returnStmtReason = '';
           this.returnStmtId = null;
           await this.loadDetail();
+        } else {
+          this.$Message.error(formatError(res.msg));
         }
       } finally {
         this.returning = false;
       }
+    },
+    openReturnModal() {
+      this.returnReason = '';
+      this.showReturnModal = true;
+    },
+    async handleReturnSubmit() {
+      if (this.returning) {
+        return;
+      }
+      const reason = (this.returnReason || '').trim();
+      if (!reason) {
+        this.$Message.warning(this.$t('gov-release-return-reason-required'));
+        return;
+      }
+      this.returning = true;
+      try {
+        const res = await this.$services.govReleaseReturn({
+          data: { releaseId: Number(this.releaseId), reason }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-release-return-release-success'));
+          this.showReturnModal = false;
+          this.returnReason = '';
+          await this.loadDetail();
+        } else {
+          this.$Message.error(formatError(res.msg));
+        }
+      } finally {
+        this.returning = false;
+      }
+    },
+    async openResubmitModal() {
+      this.resubmitTitle = this.detail.title || '';
+      this.resubmitSourceTickets = (this.detail.sourceTickets || []).map((t) => ({
+        ticketId: t.ticketId,
+        ticketTitle: t.ticketTitle,
+        ticketStatus: t.ticketStatus,
+        available: t.available,
+        unavailableReason: t.unavailableReason,
+        checked: true
+      }));
+      this.resubmitCandidates = [];
+      this.resubmitCandidatesLoading = true;
+      this.showResubmitModal = true;
+      // Fetch addable tickets from the ledger (NOT_PROMOTED, not already in original list).
+      // Failure degrades silently — modal still usable for original-list removal only.
+      const originalIds = new Set(this.resubmitSourceTickets.map((t) => t.ticketId));
+      try {
+        const res = await this.$services.govLedgerList({ data: {} });
+        if (res.success && res.data) {
+          this.resubmitCandidates = res.data
+            .filter((t) => !t.promoted && !originalIds.has(t.ticketId))
+            .map((t) => ({
+              ticketId: t.ticketId,
+              ticketTitle: t.ticketTitle,
+              serviceName: t.serviceName,
+              checked: false
+            }));
+        }
+      } catch {
+        // Degrade: no addable candidates, modal remains usable for original-list removal
+      } finally {
+        this.resubmitCandidatesLoading = false;
+      }
+    },
+    async handleResubmitSubmit() {
+      if (this.resubmitting) {
+        return;
+      }
+      const originalChecked = this.resubmitSourceTickets.filter((t) => t.available && t.checked).map((t) => t.ticketId);
+      const candidateChecked = this.resubmitCandidates.filter((t) => t.checked).map((t) => t.ticketId);
+      const ticketIds = [...new Set([...originalChecked, ...candidateChecked])];
+      if (ticketIds.length === 0) {
+        this.$Message.warning(this.$t('gov-release-resubmit-keep-at-least-one'));
+        return;
+      }
+      this.resubmitting = true;
+      try {
+        const res = await this.$services.govReleaseResubmit({
+          data: {
+            releaseId: Number(this.releaseId),
+            ticketIds,
+            title: this.resubmitTitle || undefined
+          }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-release-resubmit-success'));
+          this.showResubmitModal = false;
+          await this.loadDetail();
+        } else {
+          this.$Message.error(formatError(res.msg));
+        }
+      } finally {
+        this.resubmitting = false;
+      }
+    },
+    handleCancel() {
+      if (this.cancelling) {
+        return;
+      }
+      this.$Modal.confirm({
+        title: this.$t('gov-release-cancel-button'),
+        content: this.$t('gov-release-cancel-confirm'),
+        onOk: async () => {
+          this.cancelling = true;
+          try {
+            const res = await this.$services.govReleaseCancel({
+              data: { releaseId: Number(this.releaseId) }
+            });
+            if (res.success) {
+              this.$Message.success(this.$t('gov-release-cancel-success'));
+              await this.loadDetail();
+            } else {
+              this.$Message.error(formatError(res.msg));
+            }
+          } finally {
+            this.cancelling = false;
+          }
+        }
+      });
     },
     govEventTypeText(eventType) {
       const key = GOV_EVENT_TYPE_I18N_KEYS[eventType];
@@ -266,6 +512,7 @@ export default {
       if (status === 'DONE') return 'success';
       if (status === 'PARTIAL_FAILED') return 'warning';
       if (status === 'REJECTED' || status === 'CANCELLED') return 'error';
+      if (status === 'RETURNED') return 'warning';
       return 'primary';
     },
     shortHash(hash) {
@@ -356,6 +603,119 @@ export default {
     color: var(--muted, #41454d);
     flex-shrink: 0;
     min-width: 80px;
+  }
+
+  .gov-overview-item--full {
+    grid-column: 1 / -1;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .gov-release-return-reason-text {
+    font-size: 14px;
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  .gov-release-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .gov-source-tickets,
+  .gov-resubmit-tickets {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .gov-source-ticket-row,
+  .gov-resubmit-ticket-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+    gap: 12px;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    &__info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    &__id {
+      font-size: 13px;
+      font-family: Menlo, Monaco, 'Courier New', monospace;
+      color: var(--muted, #41454d);
+      flex-shrink: 0;
+    }
+
+    &__title {
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    &__service {
+      font-size: 13px;
+      color: var(--muted, #41454d);
+      margin-left: 4px;
+    }
+
+    &__status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    &__reason {
+      font-size: 13px;
+      color: #ed4014;
+    }
+
+    &.is-disabled {
+      opacity: 0.6;
+    }
+  }
+
+  .gov-release-return-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    &__label {
+      font-size: 14px;
+      color: var(--muted, #41454d);
+    }
+  }
+
+  .gov-resubmit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    &__title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    &__label {
+      font-size: 14px;
+      color: var(--muted, #41454d);
+      flex-shrink: 0;
+    }
   }
 
   .gov-mono {

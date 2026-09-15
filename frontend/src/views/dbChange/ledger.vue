@@ -83,6 +83,8 @@
 </template>
 
 <script>
+import formatError from '@/services/formatError';
+
 export default {
   name: 'DbChangeLedger',
   data() {
@@ -259,6 +261,8 @@ export default {
           this.selectedRowKeys = [];
           await this.loadList();
           this.$router.push(`/dbChange/release/${releaseId}`);
+        } else {
+          this.$Message.error(formatError(res.msg));
         }
       } finally {
         this.creating = false;

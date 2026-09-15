@@ -5,5 +5,8 @@ export const dbChangeApi = {
   govReleaseList: '/api/entry/govrelease/list',
   govReleaseDetail: '/api/entry/govrelease/detail',
   govReleaseRetryStmt: '/api/entry/govrelease/retryStmt',
-  govReleaseReturnStmt: '/api/entry/govrelease/returnStmt'
+  govReleaseReturnStmt: '/api/entry/govrelease/returnStmt',
+  govReleaseReturn: '/api/entry/govrelease/return',
+  govReleaseResubmit: '/api/entry/govrelease/resubmit',
+  govReleaseCancel: '/api/entry/govrelease/cancel'
 };
