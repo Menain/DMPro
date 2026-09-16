@@ -76,6 +76,8 @@
               <div class="gov-source-ticket-row__info">
                 <span class="gov-source-ticket-row__id">{{ t.ticketId }}</span>
                 <span class="gov-source-ticket-row__title">{{ t.ticketTitle }}</span>
+                <Tag v-if="t.ticketType === 'PROD_DML'" size="small" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+                <Tag v-else-if="t.ticketType === 'PRE_DDL'" size="small" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
               </div>
               <div class="gov-source-ticket-row__status">
                 <Tag v-if="t.available" color="success">{{ $t('gov-release-source-ticket-available') }}</Tag>
@@ -105,7 +107,11 @@
                 <div v-for="stmt in group.stmts" :key="stmt.id" class="gov-stmt-card">
                   <div class="gov-stmt-card__header">
                     <span class="gov-stmt-card__seq">{{ $t('gov-release-seq-label') }}{{ stmt.seq }}</span>
-                    <span :class="['gov-stmt-card__status', `is-${stmt.execStatus}`]">{{ stmt.execStatus }}</span>
+                    <div class="gov-stmt-card__type-status">
+                      <Tag v-if="stmt.sourceTicketType === 'PROD_DML'" size="small" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+                      <Tag v-else-if="stmt.sourceTicketType === 'PRE_DDL'" size="small" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
+                      <span :class="['gov-stmt-card__status', `is-${stmt.execStatus}`]">{{ stmt.execStatus }}</span>
+                    </div>
                   </div>
                   <div class="gov-stmt-card__sql">
                     <read-only-editor :text="stmt.sqlContent" :max-height="200" />
@@ -204,6 +210,8 @@
             <Checkbox v-model="t.checked" :disabled="!t.available">
               <span class="gov-resubmit-ticket-row__id">{{ t.ticketId }}</span>
               <span class="gov-resubmit-ticket-row__title">{{ t.ticketTitle }}</span>
+              <Tag v-if="t.ticketType === 'PROD_DML'" size="small" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+              <Tag v-else-if="t.ticketType === 'PRE_DDL'" size="small" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
             </Checkbox>
             <div class="gov-resubmit-ticket-row__status">
               <Tag v-if="t.available" color="success" size="small">{{ $t('gov-release-source-ticket-available') }}</Tag>
@@ -222,6 +230,8 @@
                 <span class="gov-resubmit-ticket-row__id">{{ t.ticketId }}</span>
                 <span class="gov-resubmit-ticket-row__title">{{ t.ticketTitle }}</span>
                 <span class="gov-resubmit-ticket-row__service">{{ t.serviceName }}</span>
+                <Tag v-if="t.ticketType === 'PROD_DML'" size="small" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+                <Tag v-else-if="t.ticketType === 'PRE_DDL'" size="small" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
               </Checkbox>
             </div>
           </div>
@@ -413,6 +423,7 @@ export default {
         ticketId: t.ticketId,
         ticketTitle: t.ticketTitle,
         ticketStatus: t.ticketStatus,
+        ticketType: t.ticketType,
         available: t.available,
         unavailableReason: t.unavailableReason,
         checked: true
@@ -432,6 +443,7 @@ export default {
               ticketId: t.ticketId,
               ticketTitle: t.ticketTitle,
               serviceName: t.serviceName,
+              ticketType: t.ticketType,
               checked: false
             }));
         }
@@ -810,6 +822,12 @@ export default {
       font-size: 14px;
       font-weight: 600;
       color: #181d26;
+    }
+
+    &__type-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     &__status {

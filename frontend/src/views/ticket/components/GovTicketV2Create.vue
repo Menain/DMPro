@@ -15,7 +15,10 @@ export default {
     return {
       TYPE_PRE_DDL: 'PRE_DDL',
       TYPE_PROD_DML: 'PROD_DML',
+      MODE_DIRECT: 'DIRECT',
+      MODE_VIA_RELEASE: 'VIA_RELEASE',
       ticketType: 'PRE_DDL',
+      approvalMode: 'DIRECT',
       pairList: [],
       serviceList: [],
       selectedPairIds: [],
@@ -111,6 +114,7 @@ export default {
       this.selectedPairIds = [];
       this.groupSqlMap = {};
       this.checkResult = null;
+      this.approvalMode = this.MODE_DIRECT;
       this.loadPairs();
     },
     handleRemovePair(pairId) {
@@ -207,7 +211,7 @@ export default {
       }
     },
     buildSubmitData() {
-      return {
+      const data = {
         ticketType: this.ticketType,
         serviceId: this.selectedServiceId,
         ticketTitle: this.ticketForm.ticketTitle,
@@ -217,6 +221,10 @@ export default {
           sqlContent: this.getSqlForPair(pairId)
         }))
       };
+      if (this.ticketType === this.TYPE_PROD_DML) {
+        data.approvalMode = this.approvalMode;
+      }
+      return data;
     },
     async handleSubmit() {
       if (this.submitLoading) {
@@ -301,6 +309,20 @@ export default {
               <Radio :label="TYPE_PRE_DDL">{{ $t('gov-v2-type-pre-ddl') }}</Radio>
               <Radio :label="TYPE_PROD_DML">{{ $t('gov-v2-type-prod-dml') }}</Radio>
             </RadioGroup>
+          </div>
+          <div v-if="ticketType === TYPE_PROD_DML" class="v2-approval-mode-section">
+            <span class="v2-label">{{ $t('gov-v2-approval-mode') }}</span>
+            <RadioGroup v-model="approvalMode" size="small">
+              <Radio :label="MODE_DIRECT">{{ $t('gov-v2-approval-mode-direct') }}</Radio>
+              <Radio :label="MODE_VIA_RELEASE">{{ $t('gov-v2-approval-mode-via-release') }}</Radio>
+            </RadioGroup>
+            <div class="v2-approval-mode-desc">
+              <span v-if="approvalMode === MODE_DIRECT">{{ $t('gov-v2-approval-mode-direct-desc') }}</span>
+              <span v-else>{{ $t('gov-v2-approval-mode-via-release-desc') }}</span>
+            </div>
+            <div v-if="approvalMode === MODE_VIA_RELEASE" class="v2-mixed-order-hint">
+              {{ $t('gov-v2-mixed-release-order-hint') }}
+            </div>
           </div>
           <div class="v2-pair-select-section">
             <span class="v2-label">{{ $t('gov-v2-mapped-db') }}</span>
@@ -425,6 +447,26 @@ export default {
 
         .v2-type-section {
           min-width: 0;
+        }
+
+        .v2-approval-mode-section {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+
+          .v2-approval-mode-desc {
+            font-size: 12px;
+            color: #707070;
+          }
+
+          .v2-mixed-order-hint {
+            font-size: 12px;
+            color: #707070;
+            padding: 4px 8px;
+            background: var(--surface-soft, #f8fafc);
+            border-radius: 4px;
+          }
         }
 
         .v2-pair-select-section {

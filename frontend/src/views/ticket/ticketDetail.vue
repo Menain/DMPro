@@ -166,6 +166,10 @@
             <Icon type="ios-create-outline" />
             <span>{{ $t('gov-v2-revision-notice') }}</span>
           </div>
+          <div v-if="ticketDetail.ticketStatus === 'WAIT_RELEASE'" class="ticket-overview__wait-release">
+            <Icon type="ios-archive-outline" />
+            <span>{{ $t('gov-v2-wait-release-notice') }}</span>
+          </div>
         </div>
       </section>
 
@@ -3351,6 +3355,18 @@ export default {
   border-radius: 6px;
   color: var(--error-color);
   background: color-mix(in srgb, var(--error-color) 6%, var(--bg-card));
+}
+
+.ticket-overview__revision,
+.ticket-overview__wait-release {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: var(--warning-color, #ffa30e);
+  background: color-mix(in srgb, var(--warning-color, #ffa30e) 8%, var(--bg-card, #fff));
 }
 
 .ticket-progress-section {

@@ -21,6 +21,11 @@
               <Option value="NOT_PROMOTED" :label="$t('gov-ledger-not-promoted')">{{ $t('gov-ledger-not-promoted') }}</Option>
               <Option value="PROMOTED" :label="$t('gov-ledger-promoted')">{{ $t('gov-ledger-promoted') }}</Option>
             </Select>
+            <Select v-model="ticketTypeFilter" clearable :placeholder="$t('gov-ledger-filter-type')" style="width: 160px">
+              <Option value="" :label="$t('gov-ledger-filter-all')">{{ $t('gov-ledger-filter-all') }}</Option>
+              <Option value="PRE_DDL" :label="$t('gov-v2-type-pre-ddl')">{{ $t('gov-v2-type-pre-ddl') }}</Option>
+              <Option value="PROD_DML" :label="$t('gov-v2-type-prod-dml')">{{ $t('gov-v2-type-prod-dml') }}</Option>
+            </Select>
           </div>
           <div class="ledger-toolbar__actions">
             <Button type="primary" :disabled="!canCreateRelease" :loading="creating" @click="handleShowCreateModal">
@@ -43,6 +48,11 @@
             <template #promoted="{ row }">
               <Tag v-if="row.promoted" color="warning">{{ $t('gov-ledger-promoted') }}</Tag>
               <Tag v-else color="success">{{ $t('gov-ledger-not-promoted') }}</Tag>
+            </template>
+            <template #ticketType="{ row }">
+              <Tag v-if="row.ticketType === 'PROD_DML'" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
+              <Tag v-else-if="row.ticketType === 'PRE_DDL'" color="primary">{{ $t('gov-v2-type-pre-ddl') }}</Tag>
+              <span v-else>-</span>
             </template>
             <template #releaseInfo="{ row }">
               <span v-if="row.promoted && row.releaseNo" class="gov-mono">{{ row.releaseNo }}</span>
@@ -96,6 +106,7 @@ export default {
       serviceFilter: null,
       dbFilter: null,
       promotedFilter: 'NOT_PROMOTED',
+      ticketTypeFilter: null,
       createModalVisible: false,
       createTitle: '',
       creating: false
@@ -155,6 +166,7 @@ export default {
         }
         if (this.promotedFilter === 'NOT_PROMOTED' && t.promoted) return false;
         if (this.promotedFilter === 'PROMOTED' && !t.promoted) return false;
+        if (this.ticketTypeFilter && t.ticketType !== this.ticketTypeFilter) return false;
         return true;
       });
     },
@@ -176,14 +188,29 @@ export default {
         },
         { title: this.$t('gov-ledger-ticket-title'), key: 'ticketTitle', minWidth: 160, ellipsis: true, tooltip: true },
         { title: this.$t('gov-ledger-service'), key: 'serviceName', width: 120 },
+        { title: this.$t('gov-ledger-ticket-type'), slot: 'ticketType', width: 110, align: 'center' },
         {
           title: this.$t('gov-ledger-pre-db'),
           key: 'preDbs',
           minWidth: 160,
           ellipsis: true,
           render: (h, params) => {
+            if (params.row.ticketType === 'PROD_DML') {
+              return h('span', this.$t('zhan-wei-fu'));
+            }
             const dbs = params.row.preDbs || [];
             const text = dbs.map((db) => `${db.dsName}/${db.dbName}`).join(', ');
+            return h('span', text || '-');
+          }
+        },
+        {
+          title: this.$t('gov-ledger-prod-db'),
+          key: 'prodDbs',
+          minWidth: 160,
+          ellipsis: true,
+          render: (h, params) => {
+            const dbs = params.row.prodDbs || [];
+            const text = Array.isArray(dbs) ? dbs.join(', ') : String(dbs || '');
             return h('span', text || '-');
           }
         },
