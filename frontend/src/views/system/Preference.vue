@@ -28,6 +28,7 @@
                   :field="field"
                   :model-value="activeState.draftValues[field.key]"
                   :disabled="isFieldDisabled(field)"
+                  :configured="isFieldConfigured(field)"
                   @update:model-value="setDraftValue(field.key, $event)"
                 />
                 <p class="preference-field-help">{{ $t(field.helpKey) }}</p>
@@ -342,6 +343,10 @@ export default {
     isFieldDisabled(field) {
       const config = this.activeState.configMeta[field.key];
       return !this.canEdit || Boolean(config?.readOnly);
+    },
+    isFieldConfigured(field) {
+      const config = this.activeState.configMeta[field.key];
+      return Boolean(config?.secret && config?.configured);
     },
     resetTabDraft(tabName) {
       const state = this.tabStates[tabName];

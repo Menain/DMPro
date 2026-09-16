@@ -41,4 +41,6 @@ public class RdpUserConfigVO {
     private ConfigValType     confValType;
     private boolean           isSecret;
     private boolean           needCreated;
+    /** 该配置在库中已存有非空值（secret 配置前端无法回显值，用此标志展示"已配置"状态） */
+    private boolean           configured;
 }

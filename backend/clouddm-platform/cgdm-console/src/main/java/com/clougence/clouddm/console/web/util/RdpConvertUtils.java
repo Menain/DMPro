@@ -348,6 +348,7 @@ public class RdpConvertUtils {
         } else {
             vo.setConfigValue(value);
         }
+        vo.setConfigured(configValue != null && StringUtils.isNotBlank(configValue.getConfigValue()));
 
         vo.setDescription(DmI18nUtils.getMessage(config.getDescKey()));
         vo.setConfigName(config.getConfigName());

@@ -25,7 +25,7 @@
       <span v-if="field.unitKey" class="preference-setting-field__unit">{{ $t(field.unitKey) }}</span>
     </div>
 
-    <Input v-else v-model="innerValue" :disabled="disabled" :placeholder="field.placeholderKey ? $t(field.placeholderKey) : ''" />
+    <Input v-else v-model="innerValue" :disabled="disabled" :placeholder="inputPlaceholder" />
 
     <div v-if="field.specialValueKey" class="preference-setting-field__special">
       {{ $t(field.specialValueKey, [field.specialValue]) }}
@@ -46,7 +46,8 @@ export default {
       default: null,
       required: false
     },
-    disabled: Boolean
+    disabled: Boolean,
+    configured: Boolean
   },
   emits: ['update:modelValue'],
   computed: {
@@ -57,6 +58,15 @@ export default {
       set(value) {
         this.$emit('update:modelValue', value);
       }
+    },
+    inputPlaceholder() {
+      if (this.configured && !this.innerValue) {
+        return this.$t('yi-pei-zhi-liu-kong-bao-chi-bu-bian');
+      }
+      if (this.field.placeholderKey) {
+        return this.$t(this.field.placeholderKey);
+      }
+      return '';
     }
   }
 };
