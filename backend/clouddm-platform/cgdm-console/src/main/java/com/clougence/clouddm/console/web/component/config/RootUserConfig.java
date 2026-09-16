@@ -292,7 +292,7 @@ public class RootUserConfig {
      * Tencent Cloud (DBbrain)
      */
 
-    @UserConfigDef(name = "tencentCloudSecretId", descKey = I18nUserConfigMsgKeys.TENCENT_CLOUD_SECRET_ID, valueRange = "Tencent Cloud sub-account SecretId (QcloudDBBRAINReadOnlyAccess)", configTagType = UserConfigTagType.TENCENT_CLOUD, confBelong = ConfBelong.Common, isSecret = true)
+    @UserConfigDef(name = "tencentCloudSecretId", descKey = I18nUserConfigMsgKeys.TENCENT_CLOUD_SECRET_ID, valueRange = "Tencent Cloud sub-account SecretId (QcloudDBBRAINReadOnlyAccess)", configTagType = UserConfigTagType.TENCENT_CLOUD, confBelong = ConfBelong.Common, isSecret = true, secretEcho = true)
     private String        tencentCloudSecretId;
     @UserConfigDef(name = "tencentCloudSecretKey", descKey = I18nUserConfigMsgKeys.TENCENT_CLOUD_SECRET_KEY, valueRange = "Tencent Cloud sub-account SecretKey", configTagType = UserConfigTagType.TENCENT_CLOUD, confBelong = ConfBelong.Common, isSecret = true)
     private String        tencentCloudSecretKey;

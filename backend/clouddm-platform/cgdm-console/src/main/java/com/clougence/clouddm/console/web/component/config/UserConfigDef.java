@@ -49,4 +49,11 @@ public @interface UserConfigDef {
     ConfBelong confBelong() default ConfBelong.Common;
 
     boolean isSecret() default false;
+
+    /**
+     * 仅对 isSecret=true 的配置有意义：存储保持加密，但 VO 回显时解密返回明文。
+     * 只允许用于标识类字段（如腾讯云 SecretId，本身不是密钥，需要可见以确认配置的是哪个凭证）；
+     * 真正的密钥（SecretKey、密码等）严禁开启。
+     */
+    boolean secretEcho() default false;
 }

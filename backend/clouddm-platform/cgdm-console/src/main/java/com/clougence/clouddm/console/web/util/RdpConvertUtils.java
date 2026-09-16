@@ -19,6 +19,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import com.clougence.clouddm.api.common.crypt.CryptService;
 import com.clougence.clouddm.base.metadata.ds.ConfigValType;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalAnalysisStateMO;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalExecutionStateMO;
@@ -345,6 +346,14 @@ public class RdpConvertUtils {
         String value = configValue == null ? config.getConfigValue() : configValue.getConfigValue();
         if (config.isSecret()) {
             vo.setSecret(true);
+            // secretEcho：标识类 secret（如腾讯云 SecretId）存储仍加密，回显解密后的明文，便于确认配置的是哪个凭证
+            if (config.isSecretEcho() && StringUtils.isNotBlank(value)) {
+                try {
+                    vo.setConfigValue(CryptService.INSTANCE.decryptUseDefaultKeyAndSalt(value));
+                } catch (Exception e) {
+                    log.warn("failed to decrypt secretEcho config {}: {}", config.getConfigName(), e.getMessage());
+                }
+            }
         } else {
             vo.setConfigValue(value);
         }

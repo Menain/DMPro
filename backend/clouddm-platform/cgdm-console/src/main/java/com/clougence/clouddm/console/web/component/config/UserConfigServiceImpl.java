@@ -393,6 +393,7 @@ public class UserConfigServiceImpl implements UserConfigService {
         config.setDefaultValue(configDef.defaultValue());
         config.setReadOnly(configDef.readOnly());
         config.setSecret(configDef.isSecret());
+        config.setSecretEcho(configDef.secretEcho());
         config.setDescKey(configDef.descKey().name());
 
         return config;

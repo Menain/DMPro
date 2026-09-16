@@ -41,5 +41,7 @@ public class UserConfigKvDef {
     private ConfBelong        confBelong;
     private ConfigValType     confValType;
     private boolean           secret;
+    /** 标识类 secret 允许解密回显（见 {@link UserConfigDef#secretEcho()}） */
+    private boolean           secretEcho;
     private String            descKey;
 }
