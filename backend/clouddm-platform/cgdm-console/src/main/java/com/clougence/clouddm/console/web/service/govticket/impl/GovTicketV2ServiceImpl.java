@@ -76,6 +76,7 @@ import com.clougence.clouddm.platform.dal.model.approval.ApprovalStage;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.approval.DmApprovalTemplateDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
@@ -222,12 +223,28 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // no approval persons, no standalone execution entry (double-execution mutex by construction).
         boolean viaRelease = APPROVAL_MODE_VIA_RELEASE.equals(approvalMode);
 
-        // Determine approval type (VIA_RELEASE still stores it for display; no process consumes it)
+        // Determine approval type (VIA_RELEASE still stores it for display; no process consumes it).
+        // For external channels (DingTalk/Feishu/Wechat/Custom) the template must exist and the channel
+        // must be enabled at submit time — fail-fast here, before any dm_approval insert, so a
+        // misconfigured env never creates a ticket whose OA approval instance would be doomed
+        // (processCode comes from approTemplateIdentity at handler.createApproval time). Internal
+        // path keeps both template fields null — legacy bit-by-bit (regression pin).
         ApprovalType approvalType = ApprovalType.Internal;
+        String approTemplateId = null;
+        String approTemplateName = null;
         if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
             var ticketConfig = dmEnvParamService.querySqlTicketInfoParam(puid, firstDs.getDsEnvId());
             if (ticketConfig != null && StringUtils.isNotBlank(ticketConfig.getType())) {
                 approvalType = ApprovalType.valueOf(ticketConfig.getType());
+            }
+            if (approvalType != ApprovalType.Internal) {
+                // checkApprovalAndReturnTemplate throws ErrorMessageException on missing template /
+                // disabled channel (TICKET_TEMPLATE_NOT_EXISTS / TICKET_APPROVAL_TYPE_NOT_ENABLE);
+                // production impl never returns null, so no defensive null-check (AUTH path precedent).
+                DmApprovalTemplateDO templateDO = approvalFlowService.checkApprovalAndReturnTemplate(
+                    puid, approvalType, ticketConfig.getTemplateId(), null);
+                approTemplateId = ticketConfig.getTemplateId();
+                approTemplateName = templateDO.getTemplateName();
             }
         }
 
@@ -244,6 +261,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setTicketStatus(viaRelease ? ApprovalStatus.WAIT_RELEASE : ApprovalStatus.WAIT_APPROVAL);
         ticket.setApproBiz(ApprovalBiz.DM_CHANGE);
         ticket.setApproType(approvalType);
+        // External channels only: template identity/name persisted so the approval handler can
+        // populate processCode when creating the OA approval instance. Internal stays null (regression pin).
+        if (approTemplateId != null) {
+            ticket.setApproTemplateIdentity(approTemplateId);
+            ticket.setApproTemplateName(approTemplateName);
+        }
         ticket.setEnvName(envDO != null ? envDO.getEnvName() : null);
         ticket.setContentType(com.clougence.clouddm.platform.dal.model.approval.SqlContentType.INLINE);
         ticket.setFeatures(List.of(ApprovalFeature.values()));

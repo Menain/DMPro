@@ -40,6 +40,7 @@ import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
+import com.clougence.clouddm.console.web.model.vo.envparam.DmEnvParamTicketDesVO;
 import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2SubmitVO;
 import com.clougence.clouddm.console.web.service.dbpair.DbPairService;
 import com.clougence.clouddm.console.web.service.envparam.DmEnvParamService;
@@ -63,6 +64,9 @@ import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtRevisionM
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketStmtSchemaMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
+import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.approval.DmApprovalTemplateDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
@@ -95,6 +99,7 @@ public class GovTicketV2SubmitModeTest {
     private DbChangeEventDal       dbChangeEventDal;
     private DmDbChangeEventMapper    eventMapper;
     private NamingDao               namingDao;
+    private DmEnvParamService       dmEnvParamService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -176,7 +181,7 @@ public class GovTicketV2SubmitModeTest {
             .thenAnswer(invocation -> java.util.stream.Stream.empty());
 
         // DmEnvParamService
-        DmEnvParamService dmEnvParamService = mock(DmEnvParamService.class);
+        dmEnvParamService = mock(DmEnvParamService.class);
 
         // SystemDal
         SystemDal systemDal = mock(SystemDal.class);
@@ -360,6 +365,162 @@ public class GovTicketV2SubmitModeTest {
     public void waitRelease_cannotBeApprovedByStatus() {
         // canApproval checks ticketStatus == WAIT_APPROVAL. WAIT_RELEASE != WAIT_APPROVAL → false.
         assertTrue(ApprovalStatus.WAIT_RELEASE != ApprovalStatus.WAIT_APPROVAL);
+    }
+
+    // ==================== DingTalk template field resolution (T1-T5) ====================
+
+    /**
+     * T1: DIRECT + DingTalk + valid template → approType/approTemplateIdentity/approTemplateName persisted.
+     */
+    @Test
+    public void submit_prodDmlDirectDingTalk_persistsTemplateFields() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("DingTalk")
+            .templateId("tpl-123")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+
+        DmApprovalTemplateDO templateDO = new DmApprovalTemplateDO();
+        templateDO.setTemplateName("DingTalk-Prod-DML-Template");
+        when(approvalFlowService.checkApprovalAndReturnTemplate(
+            eq(PUID), eq(ApprovalType.DingTalk), eq("tpl-123"), any()))
+            .thenReturn(templateDO);
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo);
+
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket = ticketCaptor.getValue();
+        assertEquals(ApprovalType.DingTalk, ticket.getApproType());
+        assertEquals("tpl-123", ticket.getApproTemplateIdentity());
+        assertEquals("DingTalk-Prod-DML-Template", ticket.getApproTemplateName());
+    }
+
+    /**
+     * T2: DIRECT + DingTalk + template check throws → submit throws, zero dm_approval/stmt insert.
+     */
+    @Test
+    public void submit_prodDmlDirectDingTalkTemplateMissing_throwsFailFast() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("DingTalk")
+            .templateId("tpl-missing")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+        when(approvalFlowService.checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any()))
+            .thenThrow(new ErrorMessageException("template not found"));
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        try {
+            service.submit(PUID, UID, fo);
+            fail("Expected ErrorMessageException for missing DingTalk template");
+        } catch (ErrorMessageException ex) {
+            // ok — fail-fast before any insert
+        }
+        verify(approvalMapper, never()).insert(any(DmApprovalDO.class));
+        verify(stmtMapper, never()).insert(any(DmTicketDbStmtDO.class));
+    }
+
+    /**
+     * T3: Internal pin — config null OR type=Internal → both template fields null (regression pin).
+     */
+    @Test
+    public void submit_prodDmlInternal_templateFieldsNull() {
+        // Sub-case 1: config null (default mock returns null)
+        GovTicketV2SubmitFO fo1 = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo1);
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket1 = ticketCaptor.getValue();
+        assertEquals(ApprovalType.Internal, ticket1.getApproType());
+        assertNull(ticket1.getApproTemplateIdentity());
+        assertNull(ticket1.getApproTemplateName());
+        verify(approvalFlowService, never()).checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any());
+
+        // Clear invocations for sub-case 2 (stubs remain active)
+        clearInvocations(approvalMapper, approvalFlowService);
+
+        // Sub-case 2: config with type=Internal
+        DmEnvParamTicketDesVO internalConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("Internal")
+            .templateId("tpl-internal")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(internalConfig);
+
+        GovTicketV2SubmitFO fo2 = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo2);
+
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket2 = ticketCaptor.getValue();
+        assertEquals(ApprovalType.Internal, ticket2.getApproType());
+        assertNull(ticket2.getApproTemplateIdentity());
+        assertNull(ticket2.getApproTemplateName());
+        verify(approvalFlowService, never()).checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any());
+    }
+
+    /**
+     * T4: VIA_RELEASE + DingTalk + valid template → WAIT_RELEASE, zero createProcess, template fields persisted.
+     */
+    @Test
+    public void submit_prodDmlViaReleaseDingTalk_persistsTemplateFields() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("DingTalk")
+            .templateId("tpl-456")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+
+        DmApprovalTemplateDO templateDO = new DmApprovalTemplateDO();
+        templateDO.setTemplateName("DingTalk-Release-Template");
+        when(approvalFlowService.checkApprovalAndReturnTemplate(
+            eq(PUID), eq(ApprovalType.DingTalk), eq("tpl-456"), any()))
+            .thenReturn(templateDO);
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "VIA_RELEASE", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo);
+
+        // VIA_RELEASE skips createProcess
+        verify(approvalFlowService, never()).createProcess(anyLong(), any(), anyBoolean());
+
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket = ticketCaptor.getValue();
+        assertEquals(ApprovalStatus.WAIT_RELEASE, ticket.getTicketStatus());
+        assertEquals(ApprovalType.DingTalk, ticket.getApproType());
+        assertEquals("tpl-456", ticket.getApproTemplateIdentity());
+        assertEquals("DingTalk-Release-Template", ticket.getApproTemplateName());
+    }
+
+    /**
+     * T5: VIA_RELEASE + DingTalk + template check throws → submit throws, zero dm_approval/stmt insert.
+     */
+    @Test
+    public void submit_prodDmlViaReleaseDingTalkTemplateMissing_throwsFailFast() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("DingTalk")
+            .templateId("tpl-missing")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+        when(approvalFlowService.checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any()))
+            .thenThrow(new ErrorMessageException("template not found"));
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "VIA_RELEASE", "UPDATE t SET val=1 WHERE id=2;");
+        try {
+            service.submit(PUID, UID, fo);
+            fail("Expected ErrorMessageException for missing DingTalk template");
+        } catch (ErrorMessageException ex) {
+            // ok — fail-fast before any insert
+        }
+        verify(approvalMapper, never()).insert(any(DmApprovalDO.class));
+        verify(stmtMapper, never()).insert(any(DmTicketDbStmtDO.class));
     }
 
     // ==================== helpers ====================
