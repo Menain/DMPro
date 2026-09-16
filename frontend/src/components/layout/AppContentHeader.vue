@@ -105,6 +105,9 @@ export default {
       if (path.indexOf('/dbChange/release') === 0) {
         return this.$t('sheng-chan-fa-bu-dan');
       }
+      if (path === '/slowSql' || path === '/slowSql/' || path.indexOf('/slowSql') === 0) {
+        return this.$t('man-sql-lie-biao');
+      }
       if (path === '/manager/role' || path === '/manager/role/') {
         return this.$t('jiao-se-lie-biao');
       }

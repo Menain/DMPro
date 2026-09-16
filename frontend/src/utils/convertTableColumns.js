@@ -9,6 +9,8 @@ export function convertTableColumns(columns = []) {
       align: col.align,
       fixed: col.fixed,
       ellipsis: col.ellipsis,
+      sorter: col.sorter,
+      sortDirections: col.sortDirections,
       __slot: col.slot,
       __legacyRender: col.render,
       __legacyColumn: col,

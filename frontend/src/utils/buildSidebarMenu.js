@@ -37,6 +37,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
     primary.push(linkItem('dbChange/ledger', '/#/dbChange/ledger', 'bian-geng-tai-zhang', 'icon-v2-DataBase2'));
     primary.push(linkItem('dbChange/release', '/#/dbChange/release', 'sheng-chan-fa-bu-dan', 'icon-v2-DataBase2'));
   }
+  if (myCatLog.includes('CAT_DM_SLOW_SQL') && !isDesktop) {
+    primary.push(linkItem('slowSql', '/#/slowSql', 'man-sql', 'icon-v2-DataBase2'));
+  }
 
   const groups = [];
 

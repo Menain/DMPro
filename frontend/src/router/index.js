@@ -137,6 +137,12 @@ const routes = [
         meta: { requiredAuth: 'RDP_WORKER_ORDER_READ' }
       },
       {
+        path: 'slowSql',
+        name: 'SlowSql',
+        component: () => import(/* webpackChunkName: "slow-sql" */ '../views/slowSql/index'),
+        meta: { requiredAuth: 'DM_SLOW_SQL_READ' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'

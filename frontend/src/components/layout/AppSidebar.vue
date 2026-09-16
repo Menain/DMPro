@@ -107,6 +107,9 @@ export default {
       if (path.indexOf('/dbChange/release') === 0) {
         return 'dbChange/release';
       }
+      if (path.indexOf('/slowSql') === 0) {
+        return 'slowSql';
+      }
       if (path.indexOf('/datasource') === 0) {
         return '/datasource';
       }

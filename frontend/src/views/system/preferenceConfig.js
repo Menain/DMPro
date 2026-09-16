@@ -385,6 +385,32 @@ export const PREFERENCE_TABS = [
         ]
       }
     ]
+  },
+  {
+    name: 'tencent-cloud',
+    labelKey: 'preference-tab-tencent-cloud',
+    sections: [
+      {
+        name: 'tencent-cloud-credentials',
+        titleKey: 'preference-section-tencent-cloud-credentials',
+        fields: [
+          {
+            key: 'tencentCloudSecretId',
+            labelKey: 'preference-tencent-cloud-secret-id',
+            helpKey: 'preference-tencent-cloud-secret-id-help',
+            placeholderKey: 'preference-tencent-cloud-secret-id-placeholder',
+            widget: 'text'
+          },
+          {
+            key: 'tencentCloudSecretKey',
+            labelKey: 'preference-tencent-cloud-secret-key',
+            helpKey: 'preference-tencent-cloud-secret-key-help',
+            placeholderKey: 'preference-tencent-cloud-secret-key-placeholder',
+            widget: 'text'
+          }
+        ]
+      }
+    ]
   }
 ];
 

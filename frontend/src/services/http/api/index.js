@@ -28,6 +28,7 @@ import { dbChangeApi } from '@/services/http/api/dbChange';
 import { dbPairApi } from '@/services/http/api/dbPair';
 import { schemaPatrolApi } from '@/services/http/api/schemaPatrol';
 import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
+import { slowSqlApi } from '@/services/http/api/slowSql';
 
 export const api = {
   ...authApi,
@@ -59,5 +60,6 @@ export const api = {
   ...dbChangeApi,
   ...dbPairApi,
   ...schemaPatrolApi,
-  ...dbChangeV2Api
+  ...dbChangeV2Api,
+  ...slowSqlApi
 };
