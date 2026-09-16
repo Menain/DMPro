@@ -57,16 +57,26 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Ledger service — read-only, no primary_uid filtering (D6: all logged-in users can see).
- * Lists all FINISHED PRE_DDL tickets whose statement groups are all SUCCESS,
- * aligned with {@code ProdReleaseServiceImpl.createRelease} validation so the
- * frontend can never show a selectable ticket that would be rejected on submit.
+ * Lists tickets in two admission branches:
+ * <ul>
+ *   <li>Branch A (existing): PRE_DDL, FINISHED, all stmts SUCCESS — pre-env executed, awaiting release merge.</li>
+ *   <li>Branch B (new): PROD_DML, approvalMode=VIA_RELEASE, status∈{WAIT_RELEASE, FINISHED},
+ *       all stmts PENDING — entered the release pool at submit (no approval process), awaiting
+ *       release merge; FINISHED rows (via-release-completed) remain for traceability.</li>
+ * </ul>
+ * Direct PROD_DML tickets (FINISHED + all SUCCESS, no VIA_RELEASE flag) never appear.
+ * Aligned with {@code ProdReleaseServiceImpl.collectSourceEntries} so the frontend can never show
+ * a selectable ticket that would be rejected on submit.
  */
 @Slf4j
 @Service
 public class GovLedgerServiceImpl implements GovLedgerService {
 
-    private static final String TICKET_TYPE_PRE_DDL = "PRE_DDL";
+    private static final String TICKET_TYPE_PRE_DDL  = "PRE_DDL";
+    private static final String TICKET_TYPE_PROD_DML = "PROD_DML";
+    private static final String APPROVAL_MODE_VIA_RELEASE = "VIA_RELEASE";
     private static final String EXEC_STATUS_SUCCESS  = "SUCCESS";
+    private static final String EXEC_STATUS_PENDING = "PENDING";
     private static final String STATUS_ENABLED       = "ENABLED";
 
     @Resource
@@ -138,18 +148,27 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             DmApprovalDO ticket = ticketMap.get(ticketId);
             if (ticket == null) continue;
 
-            // Condition 1: ticket FINISHED
-            if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) continue;
-
-            // Condition 2: ticketType = PRE_DDL
+            // Two admission branches (union):
+            //   A (existing): PRE_DDL && FINISHED && all SUCCESS
+            //   B (new): PROD_DML && approvalMode==VIA_RELEASE && status∈{WAIT_RELEASE, FINISHED} && all PENDING
+            // Direct PROD_DML (FINISHED + all SUCCESS, no VIA_RELEASE flag) matches neither branch.
             ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
-            if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) continue;
+            String ticketType = mo != null ? mo.getTicketType() : null;
+            String approvalMode = mo != null ? mo.getApprovalMode() : null;
+            ApprovalStatus ticketStatus = ticket.getTicketStatus();
 
-            // Condition 3: ALL stmts SUCCESS (full-ticket scope, aligned with createRelease)
-            boolean allSuccess = ticketStmts.stream().allMatch(s -> EXEC_STATUS_SUCCESS.equals(s.getExecStatus()));
-            if (!allSuccess) continue;
+            boolean branchA = TICKET_TYPE_PRE_DDL.equals(ticketType)
+                && ticketStatus == ApprovalStatus.FINISHED
+                && ticketStmts.stream().allMatch(s -> EXEC_STATUS_SUCCESS.equals(s.getExecStatus()));
 
-            // Promoted check: first stmt already in dm_prod_release_stmt
+            boolean branchB = TICKET_TYPE_PROD_DML.equals(ticketType)
+                && APPROVAL_MODE_VIA_RELEASE.equals(approvalMode)
+                && (ticketStatus == ApprovalStatus.WAIT_RELEASE || ticketStatus == ApprovalStatus.FINISHED)
+                && ticketStmts.stream().allMatch(s -> EXEC_STATUS_PENDING.equals(s.getExecStatus()));
+
+            if (!branchA && !branchB) continue;
+
+            // Promoted check: first stmt already in dm_prod_release_stmt (shared by both branches)
             DmTicketDbStmtDO firstStmt = ticketStmts.get(0);
             DmProdReleaseStmtDO releaseStmt = prodReleaseDal.stmtMapper().queryBySourceStmtId(firstStmt.getId());
             boolean promoted = releaseStmt != null;
@@ -159,7 +178,9 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             vo.setTicketTitle(ticket.getTicketTitle());
             vo.setOwnerUid(ticket.getOwnerUid());
             vo.setGmtCreate(DateFormatType.s_yyyyMMdd_HHmmss.format(ticket.getGmtCreate()));
-            vo.setExecStatus(EXEC_STATUS_SUCCESS);
+            vo.setTicketType(ticketType);
+            vo.setApprovalMode(approvalMode);
+            vo.setExecStatus(branchA ? EXEC_STATUS_SUCCESS : EXEC_STATUS_PENDING);
             String sqlContent = firstStmt.getSqlContent();
             if (sqlContent != null) {
                 vo.setSqlSummary(sqlContent.length() > 200 ? sqlContent.substring(0, 200) : sqlContent);

@@ -311,6 +311,8 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         OpenDbChangeTicketVO vo = new OpenDbChangeTicketVO();
         vo.setTicketId(ticket.getId());
         vo.setTicketType(mo.getTicketType());
+        vo.setApprovalMode(mo.getApprovalMode());
+        vo.setTicketStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
         vo.setTitle(ticket.getTicketTitle());
 
         // dbNames: unique list from all groups

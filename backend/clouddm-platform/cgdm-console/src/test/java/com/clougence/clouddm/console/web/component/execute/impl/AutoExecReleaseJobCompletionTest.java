@@ -40,6 +40,9 @@ import com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoJobMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
+import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
+import com.clougence.utils.JsonUtils;
 import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAutoJobDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
@@ -493,6 +496,126 @@ public class AutoExecReleaseJobCompletionTest {
 
         verify(releaseStateMachine, never()).transit(anyLong(), anySet(), any(ProdReleaseStatus.class));
         verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    // ==================== VIA_RELEASE writeback on release DONE ====================
+
+    @Test
+    public void aggregateReleaseCompletion_allSuccess_writeBackViaReleaseTicket() {
+        long releaseId = 1030L;
+        long stmtId = 2030L;
+        long jobId = 3030L;
+        long sourceTicketId = 5000L;
+        long approvalId = 4030L;
+        String bizId = "biz-4030";
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        stmt.setSourceTicketId(sourceTicketId);
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(approvalId);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        // No next pending (single stmt)
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
+
+        // All terminal: SUCCESS
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        successStmt.setSourceTicketId(sourceTicketId);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt));
+        // writeBackViaReleaseSourceTickets uses queryByReleaseId (not ForUpdate)
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(successStmt));
+
+        // Source ticket: VIA_RELEASE PROD_DML in WAIT_RELEASE
+        DmApprovalDO sourceTicket = new DmApprovalDO();
+        sourceTicket.setId(sourceTicketId);
+        sourceTicket.setBizId("biz-src-5000");
+        sourceTicket.setTicketStatus(ApprovalStatus.WAIT_RELEASE);
+        ApprovalMO mo = new ApprovalMO();
+        mo.setTicketType("PROD_DML");
+        mo.setApprovalMode("VIA_RELEASE");
+        sourceTicket.setTicketInfo(JsonUtils.toJson(mo));
+
+        // Release approval ticket
+        DmApprovalDO releaseApproval = new DmApprovalDO();
+        releaseApproval.setId(approvalId);
+        releaseApproval.setBizId(bizId);
+        releaseApproval.setTicketStatus(ApprovalStatus.WAIT_EXEC);
+
+        when(approvalMapper.queryById(approvalId)).thenReturn(releaseApproval);
+        when(approvalMapper.queryById(sourceTicketId)).thenReturn(sourceTicket);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        // Verify source ticket written back to FINISHED
+        verify(approvalStateService).updateApprovalStatus(eq(sourceTicketId),
+            eq(ApprovalStatus.FINISHED), anyString());
+        // Verify TICKET_VIA_RELEASE_DONE event written (SYSTEM operator)
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "TICKET_VIA_RELEASE_DONE".equals(e.getEventType())
+                && "SYSTEM".equals(e.getOperatorUid())
+                && e.getTicketId() == sourceTicketId));
+    }
+
+    @Test
+    public void aggregateReleaseCompletion_allSuccess_preDdlSource_zeroWriteBack() {
+        long releaseId = 1031L;
+        long stmtId = 2031L;
+        long jobId = 3031L;
+        long sourceTicketId = 5001L;
+        long approvalId = 4031L;
+        String bizId = "biz-4031";
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        stmt.setSourceTicketId(sourceTicketId);
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(approvalId);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(null);
+
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        successStmt.setSourceTicketId(sourceTicketId);
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt));
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(successStmt));
+
+        // Source ticket: PRE_DDL FINISHED (already completed — not eligible for writeback)
+        DmApprovalDO sourceTicket = new DmApprovalDO();
+        sourceTicket.setId(sourceTicketId);
+        sourceTicket.setBizId("biz-src-5001");
+        sourceTicket.setTicketStatus(ApprovalStatus.FINISHED);
+        ApprovalMO mo = new ApprovalMO();
+        mo.setTicketType("PRE_DDL");
+        sourceTicket.setTicketInfo(JsonUtils.toJson(mo));
+
+        DmApprovalDO releaseApproval = new DmApprovalDO();
+        releaseApproval.setId(approvalId);
+        releaseApproval.setBizId(bizId);
+        releaseApproval.setTicketStatus(ApprovalStatus.WAIT_EXEC);
+        when(approvalMapper.queryById(approvalId)).thenReturn(releaseApproval);
+        when(approvalMapper.queryById(sourceTicketId)).thenReturn(sourceTicket);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        // PRE_DDL source: zero writeback — no updateApprovalStatus to FINISHED for the source ticket
+        verify(approvalStateService, never()).updateApprovalStatus(eq(sourceTicketId),
+            eq(ApprovalStatus.FINISHED), anyString());
     }
 
     // ==================== Chain precheck wiring ====================

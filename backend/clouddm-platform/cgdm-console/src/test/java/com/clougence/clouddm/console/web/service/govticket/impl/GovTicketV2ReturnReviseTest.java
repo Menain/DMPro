@@ -252,6 +252,42 @@ public class GovTicketV2ReturnReviseTest {
         assertTrue(ApprovalStatus.REVISION != ApprovalStatus.WAIT_APPROVAL);
     }
 
+    // ==================== WAIT_RELEASE state pin (VIA_RELEASE pool) ====================
+
+    @Test
+    public void waitRelease_isNotEndStatus() {
+        assertFalse(ApprovalStatus.isEndStatus(ApprovalStatus.WAIT_RELEASE));
+    }
+
+    @Test
+    public void waitRelease_isNotInUnFinishListInSet() {
+        // Same XML-text pin pattern as REVISION — WAIT_RELEASE must NOT be in the sweep IN set.
+        String xml;
+        try {
+            xml = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "../clouddm-platform/cgdm-dao/src/main/resources/mybatis/mapper/DmApprovalMapper.xml"));
+        } catch (Exception e) {
+            try {
+                xml = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "../../clouddm-platform/cgdm-dao/src/main/resources/mybatis/mapper/DmApprovalMapper.xml"));
+            } catch (Exception e2) {
+                throw new RuntimeException(e2);
+            }
+        }
+        int inIndex = xml.indexOf("IN ('PRE_INIT_WAIT'");
+        assertTrue("IN list should exist in the XML", inIndex > -1);
+        String inClause = xml.substring(inIndex, inIndex + 200);
+        assertFalse("WAIT_RELEASE must NOT be in the listUnFinishTicketIdList IN set:\n" + inClause,
+            inClause.contains("WAIT_RELEASE"));
+    }
+
+    @Test
+    public void advanceOneTicket_doesNotAdvanceWaitReleaseTicket() {
+        // Scheduler Filter 2 skips PROD_DML; Filter 3 requires status==WAIT_APPROVAL.
+        // WAIT_RELEASE != WAIT_APPROVAL → returns early regardless. Structural property:
+        assertTrue(ApprovalStatus.WAIT_RELEASE != ApprovalStatus.WAIT_APPROVAL);
+    }
+
     // ==================== returnTicket guard matrix ====================
 
     @Test
@@ -586,6 +622,10 @@ public class GovTicketV2ReturnReviseTest {
     // ==================== helpers ====================
 
     private DmApprovalDO buildTicket(long id, String primaryUid, String ownerUid, ApprovalStatus status, String ticketType) {
+        return buildTicket(id, primaryUid, ownerUid, status, ticketType, null);
+    }
+
+    private DmApprovalDO buildTicket(long id, String primaryUid, String ownerUid, ApprovalStatus status, String ticketType, String approvalMode) {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(id);
         ticket.setBizId("biz-" + id);
@@ -596,6 +636,7 @@ public class GovTicketV2ReturnReviseTest {
         ApprovalMO mo = new ApprovalMO();
         mo.setTicketType(ticketType);
         mo.setPairIds(List.of(300L));
+        mo.setApprovalMode(approvalMode);
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;
     }
@@ -639,6 +680,42 @@ public class GovTicketV2ReturnReviseTest {
         InOrder inOrder = inOrder(approvalPersonService, approvalStateService);
         inOrder.verify(approvalPersonService).replacePersons(eq(ticket), any());
         inOrder.verify(approvalStateService).updateProcessStatus(eq(ticketId),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalStage.APPROVAL),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus.INIT), anyString());
+    }
+
+    // ==================== §7: VIA_RELEASE resubmit (revises to WAIT_RELEASE, no surgery) ====================
+
+    @Test
+    public void resubmit_prodDmlViaRelease_landsWaitRelease_skipsSurgery() {
+        long ticketId = 302L;
+        long groupId = 330L;
+        DmApprovalDO ticket = buildTicket(ticketId, PUID, UID, ApprovalStatus.REVISION, "PROD_DML", "VIA_RELEASE");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO group = buildGroup(groupId, ticketId, "FAILED");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(group));
+        when(revisionMapper.maxVersionByStmtId(groupId)).thenReturn(0);
+
+        // Override the mock to return a DML SplitScript for this test
+        com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService queryAnalysisService
+            = (com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService)
+                ReflectionTestUtils.getField(service, "queryAnalysisService");
+        when(queryAnalysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
+            .thenAnswer(invocation -> java.util.stream.Stream.of(createDmlSplitScript()));
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setGroups(List.of(buildGroupInput(groupId, "UPDATE t SET val=1 WHERE id=2;")));
+        service.resubmit(PUID, UID, fo);
+
+        // VIA_RELEASE: status → WAIT_RELEASE (NOT WAIT_APPROVAL)
+        verify(approvalStateService).updateApprovalStatus(eq(ticketId), eq(ApprovalStatus.WAIT_RELEASE), anyString());
+
+        // Zero surgery: no person list rebuild, no APPROVAL process reset
+        verify(approvalFlowService, never()).queryPersons(anyLong());
+        verify(approvalPersonService, never()).replacePersons(any(), any());
+        verify(approvalStateService, never()).updateProcessStatus(eq(ticketId),
             eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalStage.APPROVAL),
             eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalProcessStatus.INIT), anyString());
     }

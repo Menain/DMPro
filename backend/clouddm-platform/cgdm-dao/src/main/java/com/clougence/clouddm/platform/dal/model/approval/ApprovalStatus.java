@@ -50,6 +50,15 @@ public enum ApprovalStatus {
      *  Resubmit transitions back to WAIT_APPROVAL where the existing auto-advance chain picks up. */
     REVISION,
 
+    /** (non-terminal) PROD_DML VIA_RELEASE ticket waiting in the release ledger pool for a
+     *  production release to pick it up. Submit skips createProcess (no approval persons /
+     *  process rows), so there is no standalone approval or execution entry — the only forward
+     *  path is a release merging the stmt and the release execution chain completing it.
+     *  Not in isEndStatus, not in listUnFinishTicketIdList IN set (sweep ignores it),
+     *  scheduler Filter 2 skips PROD_DML + Filter 3 (status != WAIT_APPROVAL) skips it too.
+     *  Resubmit (revision loop) transitions back here; aggregate release DONE writes FINISHED. */
+    WAIT_RELEASE,
+
     /** (end status) The db owner can reject exec the sql in the last stage */
     REJECTED,
 

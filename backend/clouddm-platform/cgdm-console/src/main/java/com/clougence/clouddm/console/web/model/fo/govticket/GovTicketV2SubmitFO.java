@@ -46,6 +46,10 @@ public class GovTicketV2SubmitFO {
 
     private String              description;
 
+    /** PROD_DML only: DIRECT (default) = direct approval+execution; VIA_RELEASE = enter the
+     *  release ledger pool at WAIT_RELEASE (no approval process created). Ignored for PRE_DDL. */
+    private String              approvalMode;   // DIRECT | VIA_RELEASE
+
     @Getter
     @Setter
     @JsonIgnoreProperties(ignoreUnknown = false)

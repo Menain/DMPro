@@ -55,5 +55,7 @@ public enum GovEventType {
     /** Release-level return: entire release returned to RETURNED state (operator_uid = real user). */
     RELEASE_RETURNED,
     /** Release-level resubmit: RETURNED release re-merged and re-submitted to approval (operator_uid = real user). */
-    RELEASE_RESUBMITTED
+    RELEASE_RESUBMITTED,
+    /** VIA_RELEASE source ticket completed via release execution (operator_uid = SYSTEM; eventData{releaseId, releaseNo}). */
+    TICKET_VIA_RELEASE_DONE
 }

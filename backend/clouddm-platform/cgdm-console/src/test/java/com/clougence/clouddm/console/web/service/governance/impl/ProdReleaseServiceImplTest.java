@@ -303,6 +303,81 @@ public class ProdReleaseServiceImplTest {
         }
     }
 
+    // ==================== branch B: VIA_RELEASE PROD_DML merge eligibility ====================
+
+    @Test
+    public void createRelease_directProdDml_throwsNotViaRelease() {
+        long ticketId = 130L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.WAIT_APPROVAL, "PROD_DML", "DIRECT");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for DIRECT PROD_DML merge");
+        } catch (ErrorMessageException ex) {
+            assertTrue(ex.getMessage().contains(String.valueOf(ticketId)));
+        }
+    }
+
+    @Test
+    public void createRelease_viaReleaseWrongStatus_throwsNotWaitRelease() {
+        long ticketId = 131L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.WAIT_APPROVAL, "PROD_DML", "VIA_RELEASE");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for VIA_RELEASE ticket in wrong status");
+        } catch (ErrorMessageException ex) {
+            assertTrue(ex.getMessage().contains(String.valueOf(ticketId)));
+        }
+    }
+
+    @Test
+    public void createRelease_viaReleaseStmtNotPending_throws() {
+        long ticketId = 132L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.WAIT_RELEASE, "PROD_DML", "VIA_RELEASE");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO stmt = buildTicketStmt(230L, ticketId, "SUCCESS");
+        when(ticketStmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(stmt));
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for VIA_RELEASE ticket with non-PENDING stmt");
+        } catch (ErrorMessageException ex) {
+            assertTrue(ex.getMessage().contains(String.valueOf(ticketId)));
+        }
+    }
+
+    @Test
+    public void createRelease_viaReleaseFinished_throwsNotWaitRelease() {
+        // FINISHED VIA_RELEASE ticket (via-release-completed) is visible in ledger for traceability
+        // but NOT mergeable into a new release — only WAIT_RELEASE tickets can be merged.
+        long ticketId = 133L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PROD_DML", "VIA_RELEASE");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+
+        try {
+            service.createRelease(PUID, UID, fo);
+            fail("Expected ErrorMessageException for FINISHED VIA_RELEASE ticket");
+        } catch (ErrorMessageException ex) {
+            assertTrue(ex.getMessage().contains(String.valueOf(ticketId)));
+        }
+    }
+
     // ==================== createRelease tenant check (R1: open-to-all + cross-tenant block) ====================
 
     @Test
@@ -776,6 +851,10 @@ public class ProdReleaseServiceImplTest {
     // ==================== helpers ====================
 
     private DmApprovalDO buildTicket(long id, ApprovalStatus status, String ticketType) {
+        return buildTicket(id, status, ticketType, null);
+    }
+
+    private DmApprovalDO buildTicket(long id, ApprovalStatus status, String ticketType, String approvalMode) {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(id);
         ticket.setBizId("biz-" + id);
@@ -785,6 +864,7 @@ public class ProdReleaseServiceImplTest {
         ticket.setGmtCreate(new Date());
         ApprovalMO mo = new ApprovalMO();
         mo.setTicketType(ticketType);
+        mo.setApprovalMode(approvalMode);
         ticket.setTicketInfo(com.clougence.utils.JsonUtils.toJson(mo));
         return ticket;
     }

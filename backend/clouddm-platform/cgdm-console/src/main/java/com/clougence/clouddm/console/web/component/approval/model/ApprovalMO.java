@@ -37,6 +37,10 @@ public class ApprovalMO {
     private Long    serviceId;
     private List<Long> pairIds;
 
+    // PROD_DML submission path: DIRECT (default / null = legacy direct approval) or VIA_RELEASE
+    // (enter the release ledger pool at WAIT_RELEASE, no approval process created).
+    private String  approvalMode;   // DIRECT | VIA_RELEASE
+
     // P3 production release fields
     private Long    releaseId;
     private String  releaseNo;

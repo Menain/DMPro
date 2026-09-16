@@ -94,6 +94,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private static final String EXEC_STATUS_SUCCESS  = "SUCCESS";
     private static final String EXEC_STATUS_FAILED  = "FAILED";
     private static final String TICKET_TYPE_PRE_DDL  = "PRE_DDL";
+    private static final String TICKET_TYPE_PROD_DML = "PROD_DML";
+    private static final String APPROVAL_MODE_VIA_RELEASE = "VIA_RELEASE";
     private static final String STATUS_ENABLED       = "ENABLED";
     private static final String SYSTEM_OPERATOR      = "SYSTEM";
 
@@ -295,6 +297,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             .collect(Collectors.groupingBy(s -> s.getProdDsId() + "|" + s.getProdDbName()));
 
         // For each prod DB group, find the first PENDING stmt (smallest seq), build job
+        // Cache transactional resolution per source ticket (design §6 Q3 — DML source → true)
+        Map<Long, Boolean> txCache = new HashMap<>();
         for (Map.Entry<String, List<DmProdReleaseStmtDO>> entry : byDb.entrySet()) {
             DmProdReleaseStmtDO first = prodReleaseDal.stmtMapper().firstPendingStmt(
                 releaseId, entry.getValue().get(0).getProdDsId(), entry.getValue().get(0).getProdDbName());
@@ -348,7 +352,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             String jobBizId = DmTeamUtils.nextExecJobBizId();
             String languageTag = DmI18nUtils.getLocale().toLanguageTag();
             this.autoExecService.createReleaseStmtJob(first, jobBizId,
-                false, ErrorStrategy.NONE, languageTag, uid);
+                resolveStmtTransactional(first.getSourceTicketId(), txCache),
+                ErrorStrategy.NONE, languageTag, uid);
             this.autoExecService.startJob(jobBizId, uid);
         }
 
@@ -483,11 +488,12 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Reset stmt to PENDING
         prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_PENDING, null);
 
-        // Rebuild job
+        // Rebuild job — transactional resolved from source ticket type (design §6 Q3)
         String jobBizId = DmTeamUtils.nextExecJobBizId();
         String languageTag = DmI18nUtils.getLocale().toLanguageTag();
         this.autoExecService.createReleaseStmtJob(stmt, jobBizId,
-            false, ErrorStrategy.NONE, languageTag, uid);
+            resolveStmtTransactional(stmt.getSourceTicketId(), new HashMap<>()),
+            ErrorStrategy.NONE, languageTag, uid);
         this.autoExecService.startJob(jobBizId, uid);
     }
 
@@ -553,7 +559,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             // Set source ticket to REVISION (if not already — idempotent for multi-stmt same-ticket returns)
             DmApprovalDO sourceTicket = approvalDal.approvalMapper().queryById(sourceStmt.getTicketId());
             if (sourceTicket != null && sourceTicket.getTicketStatus() != ApprovalStatus.REVISION) {
-                // Source ticket must be FINISHED (it was merged) — transition to REVISION
+                // Source ticket was FINISHED (PRE_DDL, merged after pre-env exec) or WAIT_RELEASE
+                // (PROD_DML VIA_RELEASE, merged from the pool) — both transition to REVISION.
                 approvalStateService.updateApprovalStatus(
                     sourceTicket.getId(), ApprovalStatus.REVISION, "Release stmt returned for revision");
             }
@@ -991,6 +998,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Stmts grouped by (prodDsId, prodDbName)
         List<DmProdReleaseStmtDO> stmts = prodReleaseDal.stmtMapper().queryByReleaseId(releaseId);
         Map<String, ProdReleaseDetailVO.StmtGroup> groupMap = new LinkedHashMap<>();
+        Map<Long, String> sourceTicketTypeCache = new HashMap<>();
         for (DmProdReleaseStmtDO s : stmts) {
             String key = s.getProdDsId() + "|" + s.getProdDbName();
             ProdReleaseDetailVO.StmtGroup group = groupMap.computeIfAbsent(key, k -> {
@@ -1007,6 +1015,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             se.setHash(s.getHash());
             se.setSourceTicketId(s.getSourceTicketId());
             se.setSourceStmtId(s.getSourceStmtId());
+            se.setSourceTicketType(resolveSourceTicketType(s.getSourceTicketId(), sourceTicketTypeCache));
             se.setExecStatus(s.getExecStatus());
             se.setExecDetail(s.getExecDetail());
             se.setGmtCreate(DateFormatType.s_yyyyMMdd_HHmmss.format(s.getGmtCreate()));
@@ -1060,6 +1069,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 } else {
                     ste.setTicketTitle(ticket.getTicketTitle());
                     ste.setTicketStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
+                    ApprovalMO steMo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+                    ste.setTicketType(steMo != null ? steMo.getTicketType() : null);
                     String unavailReason = checkTicketAvailability(ticket);
                     ste.setAvailable(unavailReason == null);
                     ste.setUnavailableReason(unavailReason);
@@ -1077,26 +1088,39 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     /**
      * Read-only dry-run: check if a ticket is available for re-merge into a resubmitted release.
      * Returns null if available, or a human-readable reason if not.
-     * Mirrors collectSourceEntries' four conditions but without side effects (no exception throw).
+     * Mirrors collectSourceEntries' type-branch conditions but without side effects (no exception throw).
      */
     private String checkTicketAvailability(DmApprovalDO ticket) {
-        // Condition 1: FINISHED
-        if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) {
-            return "Ticket is not FINISHED (current: " + ticket.getTicketStatus() + ")";
-        }
-        // Condition 2: PRE_DDL
+        // Determine admission branch
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
-        if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) {
+        String ticketType = mo != null ? mo.getTicketType() : null;
+        String approvalMode = mo != null ? mo.getApprovalMode() : null;
+        boolean branchA = TICKET_TYPE_PRE_DDL.equals(ticketType);
+        boolean branchB = TICKET_TYPE_PROD_DML.equals(ticketType)
+            && APPROVAL_MODE_VIA_RELEASE.equals(approvalMode);
+
+        if (!branchA && !branchB) {
+            if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
+                return "Ticket is not a VIA_RELEASE PROD_DML ticket (DIRECT not mergeable)";
+            }
             return "Ticket is not PRE_DDL type";
         }
-        // Condition 3 + 4: each stmt must be SUCCESS and not already merged
+
+        // Condition 1: ticket status — FINISHED for branch A, WAIT_RELEASE for branch B
+        ApprovalStatus expectedStatus = branchA ? ApprovalStatus.FINISHED : ApprovalStatus.WAIT_RELEASE;
+        if (ticket.getTicketStatus() != expectedStatus) {
+            return "Ticket is not " + expectedStatus + " (current: " + ticket.getTicketStatus() + ")";
+        }
+
+        // Condition 2 + 3: each stmt must be in the expected exec_status and not already merged
         List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(ticket.getId());
         if (stmts == null || stmts.isEmpty()) {
             return "No statement groups found";
         }
+        String expectedStmtStatus = branchA ? EXEC_STATUS_SUCCESS : EXEC_STATUS_PENDING;
         for (DmTicketDbStmtDO stmt : stmts) {
-            if (!EXEC_STATUS_SUCCESS.equals(stmt.getExecStatus())) {
-                return "Statement group for " + stmt.getDbName() + " has not executed successfully";
+            if (!expectedStmtStatus.equals(stmt.getExecStatus())) {
+                return "Statement group for " + stmt.getDbName() + " is not " + expectedStmtStatus;
             }
             DmProdReleaseStmtDO existing = prodReleaseDal.stmtMapper().queryBySourceStmtId(stmt.getId());
             if (existing != null) {
@@ -1155,10 +1179,73 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     }
 
     /**
-     * Shared merge-validation core: validate each ticket's four conditions (FINISHED,
-     * PRE_DDL, all stmts SUCCESS, not already merged), resolve the prod pair, and collect
-     * source stmt entries. Used by both {@code createRelease} and {@code resubmitRelease}
-     * to prevent validation drift between the two paths.
+     * Resolve whether a release stmt job should execute transactionally based on the source
+     * ticket type (design §6 Q3): PROD_DML source → true (aligns with direct-execution path);
+     * PRE_DDL / unknown / query failure → false (fail-safe, preserves legacy semantics).
+     * Uses a local cache map so each source ticket is queried at most once per call site.
+     */
+    private boolean resolveStmtTransactional(Long sourceTicketId, Map<Long, Boolean> cache) {
+        if (sourceTicketId == null) {
+            return false;
+        }
+        if (cache.containsKey(sourceTicketId)) {
+            return cache.get(sourceTicketId);
+        }
+        boolean transactional = false;
+        try {
+            DmApprovalDO sourceTicket = approvalDal.approvalMapper().queryById(sourceTicketId);
+            if (sourceTicket != null) {
+                ApprovalMO mo = JsonUtils.toObj(sourceTicket.getTicketInfo(), ApprovalMO.class);
+                if (mo != null && TICKET_TYPE_PROD_DML.equals(mo.getTicketType())) {
+                    transactional = true;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[ProdRelease] Failed to resolve transactional for source ticket {}: {}",
+                sourceTicketId, e.getMessage());
+        }
+        cache.put(sourceTicketId, transactional);
+        return transactional;
+    }
+
+    /**
+     * Resolve the ticketType (PRE_DDL | PROD_DML) of a source ticket for display in release detail.
+     * Uses a local cache map so each source ticket is queried at most once per getDetail call.
+     */
+    private String resolveSourceTicketType(Long sourceTicketId, Map<Long, String> cache) {
+        if (sourceTicketId == null) {
+            return null;
+        }
+        if (cache.containsKey(sourceTicketId)) {
+            return cache.get(sourceTicketId);
+        }
+        String ticketType = null;
+        try {
+            DmApprovalDO sourceTicket = approvalDal.approvalMapper().queryById(sourceTicketId);
+            if (sourceTicket != null) {
+                ApprovalMO mo = JsonUtils.toObj(sourceTicket.getTicketInfo(), ApprovalMO.class);
+                if (mo != null) {
+                    ticketType = mo.getTicketType();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[ProdRelease] Failed to resolve source ticket type for {}: {}", sourceTicketId, e.getMessage());
+        }
+        cache.put(sourceTicketId, ticketType);
+        return ticketType;
+    }
+
+    /**
+     * Shared merge-validation core: validate each ticket's type-branch conditions, resolve
+     * the prod pair, and collect source stmt entries. Used by both {@code createRelease} and
+     * {@code resubmitRelease} to prevent validation drift between the two paths.
+     * <p>
+     * Two admission branches (union):
+     * <ul>
+     *   <li>Branch A (existing): PRE_DDL, FINISHED, all stmts SUCCESS</li>
+     *   <li>Branch B (new): PROD_DML, approvalMode=VIA_RELEASE, WAIT_RELEASE, all stmts PENDING</li>
+     * </ul>
+     * DIRECT PROD_DML (no VIA_RELEASE flag) matches neither branch and is rejected.
      * <p>
      * R1: tenant check — every ticket must belong to the caller's puid. Cross-tenant
      * merge is rejected with a clear error (closes the hole opened by opening create to all).
@@ -1178,28 +1265,52 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nDmMsgKeys.GOV_RELEASE_TICKET_TENANT_MISMATCH.name(), ticketId));
             }
-            // Condition 1: ticket status = FINISHED
-            if (ticket.getTicketStatus() != ApprovalStatus.FINISHED) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FINISHED.name(), ticketId));
-            }
-            // Condition 2: ticketType = PRE_DDL
+
+            // Determine admission branch from ticketInfo
             ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
-            if (mo == null || !TICKET_TYPE_PRE_DDL.equals(mo.getTicketType())) {
+            String ticketType = mo != null ? mo.getTicketType() : null;
+            String approvalMode = mo != null ? mo.getApprovalMode() : null;
+            boolean branchA = TICKET_TYPE_PRE_DDL.equals(ticketType);
+            boolean branchB = TICKET_TYPE_PROD_DML.equals(ticketType)
+                && APPROVAL_MODE_VIA_RELEASE.equals(approvalMode);
+
+            if (!branchA && !branchB) {
+                if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
+                    // PROD_DML but not VIA_RELEASE → DIRECT, not mergeable
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_VIA_RELEASE.name(), ticketId));
+                }
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_PRE_DDL.name(), ticketId));
+            }
+
+            // Condition 1: ticket status — FINISHED for branch A, WAIT_RELEASE for branch B
+            ApprovalStatus expectedStatus = branchA ? ApprovalStatus.FINISHED : ApprovalStatus.WAIT_RELEASE;
+            if (ticket.getTicketStatus() != expectedStatus) {
+                if (branchA) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_FINISHED.name(), ticketId));
+                }
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_TICKET_NOT_WAIT_RELEASE.name(), ticketId,
+                    ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : "null"));
             }
 
             // Get stmts for this ticket
             List<DmTicketDbStmtDO> stmts = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
             for (DmTicketDbStmtDO stmt : stmts) {
-                // Condition 3: stmt exec_status = SUCCESS
-                if (!EXEC_STATUS_SUCCESS.equals(stmt.getExecStatus())) {
+                // Condition 2: stmt exec_status — SUCCESS for branch A, PENDING for branch B
+                String expectedStmtStatus = branchA ? EXEC_STATUS_SUCCESS : EXEC_STATUS_PENDING;
+                if (!expectedStmtStatus.equals(stmt.getExecStatus())) {
+                    if (branchA) {
+                        throw new ErrorMessageException(DmI18nUtils.getMessage(
+                            I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_SUCCESS.name(), ticketId, stmt.getDbName()));
+                    }
                     throw new ErrorMessageException(DmI18nUtils.getMessage(
-                        I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_SUCCESS.name(), ticketId, stmt.getDbName()));
+                        I18nDmMsgKeys.GOV_RELEASE_STMT_NOT_PENDING.name(), ticketId, stmt.getDbName()));
                 }
 
-                // Condition 4: not already merged (uk_source_stmt check)
+                // Condition 3: not already merged (uk_source_stmt check — shared)
                 DmProdReleaseStmtDO existing = prodReleaseDal.stmtMapper().queryBySourceStmtId(stmt.getId());
                 if (existing != null) {
                     throw new ErrorMessageException(DmI18nUtils.getMessage(

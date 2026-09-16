@@ -74,6 +74,8 @@ import com.clougence.clouddm.platform.dal.access.ObjectCacheDao;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.access.entry.DsCacheEntry;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
+import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.dal.model.execution.*;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
@@ -105,6 +107,9 @@ import lombok.extern.slf4j.Slf4j;
 public class AutoExecServiceImpl implements AutoExecService {
     private static final int           AUTO_EXEC_TASK_INSERT_BATCH_SIZE = 100;
     private static final long          AUTO_EXEC_TASK_INSERT_MAX_BYTES  = 4L * 1024 * 1024;
+    private static final String        TICKET_TYPE_PROD_DML = "PROD_DML";
+    private static final String        APPROVAL_MODE_VIA_RELEASE = "VIA_RELEASE";
+    private static final String        SYSTEM_OPERATOR = "SYSTEM";
     private static final int           TASK_FETCH_BATCH_SIZE            = 100;
     @Resource
     private SystemDal                  systemDal;
@@ -532,7 +537,8 @@ public class AutoExecServiceImpl implements AutoExecService {
 
                 String nextJobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
                 String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
-                this.createReleaseStmtJob(next, nextJobBizId, false,
+                this.createReleaseStmtJob(next, nextJobBizId,
+                    resolveStmtTransactional(next.getSourceTicketId(), new HashMap<>()),
                     com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE, languageTag, job.getUid());
                 this.startJob(nextJobBizId, job.getUid());
                 return;
@@ -589,10 +595,16 @@ public class AutoExecServiceImpl implements AutoExecService {
             appendReleaseEvent(release.getId(),
                 com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_DONE,
                 "EXECUTING", "DONE", null, null);
+
+            // VIA_RELEASE source ticket writeback (design §6 Q4): all release stmts succeeded →
+            // write back VIA_RELEASE PROD_DML source tickets from WAIT_RELEASE to FINISHED.
+            // PRE_DDL source tickets are zero-touched (they were already FINISHED before merge).
+            writeBackViaReleaseSourceTickets(release);
         } else {
             this.releaseStateMachine.transit(release.getId(),
                 java.util.Set.of(com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.EXECUTING),
                 com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus.PARTIAL_FAILED);
+            // PARTIAL_FAILED: no writeback — release is still active (occupied), recovery via retry/returnStmt.
         }
 
         // Update approval ticket status
@@ -607,6 +619,85 @@ public class AutoExecServiceImpl implements AutoExecService {
                 }
             }
         }
+    }
+
+    /**
+     * Write back VIA_RELEASE PROD_DML source tickets from WAIT_RELEASE to FINISHED after a
+     * release completes successfully (design §6 Q4). Idempotent: only tickets currently in
+     * WAIT_RELEASE are touched; PRE_DDL source tickets (already FINISHED) are skipped.
+     */
+    private void writeBackViaReleaseSourceTickets(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release) {
+        List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO> stmts
+            = this.prodReleaseDal.stmtMapper().queryByReleaseId(release.getId());
+        if (stmts == null || stmts.isEmpty()) {
+            return;
+        }
+        // Distinct source ticket IDs
+        Set<Long> sourceTicketIds = new LinkedHashSet<>();
+        for (com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO s : stmts) {
+            if (s.getSourceTicketId() != null) {
+                sourceTicketIds.add(s.getSourceTicketId());
+            }
+        }
+        for (Long tid : sourceTicketIds) {
+            DmApprovalDO sourceTicket = this.approvalDal.approvalMapper().queryById(tid);
+            if (sourceTicket == null) continue;
+            // Idempotent guard: only WAIT_RELEASE tickets are eligible for writeback
+            if (sourceTicket.getTicketStatus() != ApprovalStatus.WAIT_RELEASE) continue;
+            ApprovalMO mo = JsonUtils.toObj(sourceTicket.getTicketInfo(), ApprovalMO.class);
+            if (mo == null) continue;
+            if (!TICKET_TYPE_PROD_DML.equals(mo.getTicketType())
+                || !APPROVAL_MODE_VIA_RELEASE.equals(mo.getApprovalMode())) continue;
+
+            this.approvalStateService.updateApprovalStatus(tid, ApprovalStatus.FINISHED,
+                "Completed via release " + release.getReleaseNo());
+
+            // TICKET_VIA_RELEASE_DONE event (SYSTEM operator; eventData{releaseId, releaseNo})
+            com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO event
+                = new com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO();
+            event.setTicketId(tid);
+            event.setReleaseId(release.getId());
+            event.setEventType(com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.TICKET_VIA_RELEASE_DONE.name());
+            event.setFromStatus(ApprovalStatus.WAIT_RELEASE.name());
+            event.setToStatus(ApprovalStatus.FINISHED.name());
+            event.setOperatorUid(SYSTEM_OPERATOR);
+            Map<String, Object> data = new HashMap<>();
+            data.put("releaseId", release.getId());
+            data.put("releaseNo", release.getReleaseNo());
+            event.setEventData(JsonUtils.toJson(data));
+            this.dbChangeEventDal.eventMapper().insert(event);
+        }
+    }
+
+    /**
+     * Resolve whether a release stmt job should execute transactionally based on the source
+     * ticket type (design §6 Q3): PROD_DML source → true (aligns with direct-execution path);
+     * PRE_DDL / unknown / query failure → false (fail-safe, preserves legacy semantics).
+     * Uses a local cache map so each source ticket is queried at most once per chain-advance
+     * callback.
+     */
+    private boolean resolveStmtTransactional(Long sourceTicketId, Map<Long, Boolean> cache) {
+        if (sourceTicketId == null) {
+            return false;
+        }
+        if (cache.containsKey(sourceTicketId)) {
+            return cache.get(sourceTicketId);
+        }
+        boolean transactional = false;
+        try {
+            DmApprovalDO sourceTicket = this.approvalDal.approvalMapper().queryById(sourceTicketId);
+            if (sourceTicket != null) {
+                ApprovalMO mo = JsonUtils.toObj(sourceTicket.getTicketInfo(), ApprovalMO.class);
+                if (mo != null && TICKET_TYPE_PROD_DML.equals(mo.getTicketType())) {
+                    transactional = true;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[AutoExec] Failed to resolve transactional for source ticket {}: {}",
+                sourceTicketId, e.getMessage());
+        }
+        cache.put(sourceTicketId, transactional);
+        return transactional;
     }
 
     private void appendReleaseEvent(long releaseId,

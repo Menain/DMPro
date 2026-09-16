@@ -111,6 +111,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private static final String EXEC_STATUS_FAILED  = "FAILED";
     private static final String TICKET_TYPE_PRE_DDL  = "PRE_DDL";
     private static final String TICKET_TYPE_PROD_DML = "PROD_DML";
+    private static final String APPROVAL_MODE_DIRECT      = "DIRECT";
+    private static final String APPROVAL_MODE_VIA_RELEASE  = "VIA_RELEASE";
     private static final String ENGINE_V2           = "v2";
     private static final String CONFIG_FULL_WIDTH_LINT_BLOCK = "govTicketFullWidthLintBlock";
 
@@ -187,6 +189,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         String ticketType = fo.getTicketType();
         validateTicketType(ticketType);
 
+        // Resolve approval mode: DIRECT (default) or VIA_RELEASE. Only PROD_DML may use VIA_RELEASE;
+        // null/blank/unknown values default to DIRECT (legacy behavior). PRE_DDL + VIA_RELEASE = 400.
+        String approvalMode = resolveApprovalMode(ticketType, fo.getApprovalMode());
+
         // Authoritative re-run precheck (blocking — any group failure rejects the whole ticket)
         List<GroupPrecheck> prechecks = new ArrayList<>();
         for (GovTicketV2SubmitFO.GroupInput gi : fo.getGroups()) {
@@ -210,8 +216,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         mo.setTicketType(ticketType);
         mo.setServiceId(fo.getServiceId());
         mo.setPairIds(prechecks.stream().map(g -> g.pairId).collect(Collectors.toList()));
+        mo.setApprovalMode(approvalMode);
 
-        // Determine approval type
+        // VIA_RELEASE: ticket enters the release ledger pool at WAIT_RELEASE — no approval process,
+        // no approval persons, no standalone execution entry (double-execution mutex by construction).
+        boolean viaRelease = APPROVAL_MODE_VIA_RELEASE.equals(approvalMode);
+
+        // Determine approval type (VIA_RELEASE still stores it for display; no process consumes it)
         ApprovalType approvalType = ApprovalType.Internal;
         if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
             var ticketConfig = dmEnvParamService.querySqlTicketInfoParam(puid, firstDs.getDsEnvId());
@@ -230,7 +241,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setTargetInfo("/" + firstDs.getInstanceId() + "/" + resolveDbName(ticketType, firstPair));
         ticket.setDescription(fo.getDescription());
         ticket.setTicketTitle(fo.getTicketTitle());
-        ticket.setTicketStatus(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setTicketStatus(viaRelease ? ApprovalStatus.WAIT_RELEASE : ApprovalStatus.WAIT_APPROVAL);
         ticket.setApproBiz(ApprovalBiz.DM_CHANGE);
         ticket.setApproType(approvalType);
         ticket.setEnvName(envDO != null ? envDO.getEnvName() : null);
@@ -239,12 +250,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setRawSql(first.sqlContent);
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         ticket.setLevels(List.of(firstDs.getDsEnvId().toString(), String.valueOf(firstDsId), resolveDbName(ticketType, firstPair)));
-        ticket.setStatusMessage("Waiting for approval");
+        ticket.setStatusMessage(viaRelease ? "Waiting for release merge" : "Waiting for approval");
 
         approvalDal.approvalMapper().insert(ticket);
 
-        // Create approval process
-        approvalFlowService.createProcess(ticket.getId(), ApprovalBiz.DM_CHANGE, true);
+        // Create approval process — skipped for VIA_RELEASE (no approval persons / process rows;
+        // canApproval=false by empty person list, approvalTicket rejects by status guard + NO_PERMISSION).
+        if (!viaRelease) {
+            approvalFlowService.createProcess(ticket.getId(), ApprovalBiz.DM_CHANGE, true);
+        }
 
         // Insert statement groups
         for (GroupPrecheck pc : prechecks) {
@@ -264,7 +278,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ChangeType ticketChangeType = ChangeType.merge(prechecks.stream()
             .map(pc -> ChangeType.valueOf(pc.result.getChangeType()))
             .collect(Collectors.toList()));
-        appendSubmitEvent(ticket.getId(), uid, ticketType, prechecks.size(), ticketChangeType);
+        appendSubmitEvent(ticket.getId(), uid, ticketType, prechecks.size(), ticketChangeType, approvalMode);
 
         GovTicketV2SubmitVO result = new GovTicketV2SubmitVO();
         result.setTicketId(ticket.getId());
@@ -427,6 +441,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
 
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
+        String approvalMode = mo != null ? mo.getApprovalMode() : null;
+        boolean viaRelease = APPROVAL_MODE_VIA_RELEASE.equals(approvalMode);
 
         // Load all groups and build a lookup by id
         List<DmTicketDbStmtDO> allGroups = ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
@@ -479,9 +495,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             ticketDbStmtDal.stmtMapper().updateSqlForRevision(pc.groupId, pc.sqlContent, pc.precheckResultJson);
         }
 
-        // Step 4: update dm_approval: ticket_status -> WAIT_APPROVAL; rawSql (first modified group's new text)
+        // Step 4: update dm_approval ticket_status. VIA_RELEASE returns to the release ledger pool
+        // (WAIT_RELEASE); all others return to WAIT_APPROVAL where the auto-advance / human-approval
+        // chain picks up.
         GroupPrecheck first = prechecks.get(0);
-        approvalStateService.updateApprovalStatus(ticketId, ApprovalStatus.WAIT_APPROVAL, "Resubmitted after revision");
+        ApprovalStatus resubmitTarget = viaRelease ? ApprovalStatus.WAIT_RELEASE : ApprovalStatus.WAIT_APPROVAL;
+        approvalStateService.updateApprovalStatus(ticketId, resubmitTarget, "Resubmitted after revision");
         // Update rawSql to the first modified group's SQL (display-compat; levels/ticketInfo frozen — pair set unchanged)
         DmApprovalDO ticketUpdate = new DmApprovalDO();
         ticketUpdate.setId(ticketId);
@@ -494,7 +513,9 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // invisible to all approvers (canApproval=false) and approvalTicket throws NO_PERMISSION.
         // PRE_DDL needs none of this — its auto-advance chain self-heals (systemAutoApprove resets
         // APPROVAL→FINISH, confirmTicketBySystem resets CONFIRM/EXECUTION).
-        if (TICKET_TYPE_PROD_DML.equals(ticketType)) {
+        // VIA_RELEASE needs none of this either — it has no approval surface to repair (no process rows,
+        // no person list); it goes straight back to WAIT_RELEASE (release ledger pool).
+        if (TICKET_TYPE_PROD_DML.equals(ticketType) && !viaRelease) {
             List<com.clougence.clouddm.console.web.model.vo.PrimaryUserVO> persons = approvalFlowService.queryPersons(ticketId);
             approvalPersonService.replacePersons(ticket, persons);
 
@@ -529,12 +550,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             }
         }
         ChangeType ticketChangeType = ChangeType.merge(allChangeTypes);
-        appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType);
+        appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType, approvalMode != null ? approvalMode : APPROVAL_MODE_DIRECT);
 
         // Step 7: resolveChangeType now reads the LATEST SUBMIT event (GovAutoAdvanceServiceImpl
         // change) — the scheduler will pick up the new changeType on the next cycle.
         // Step 8: PRE_DDL auto-advance will fire (ticket is WAIT_APPROVAL, PRE_DDL, in IN set);
-        // PROD_DML goes to human re-approval. No manual dispatch needed.
+        // PROD_DML DIRECT goes to human re-approval; PROD_DML VIA_RELEASE returns to the release
+        // ledger pool (WAIT_RELEASE) — no manual dispatch needed.
     }
 
     // ==================== groupList ====================
@@ -832,6 +854,26 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
     }
 
+    /**
+     * Resolve and validate the approval mode. PRE_DDL + VIA_RELEASE is rejected (400);
+     * null/blank/unknown values default to DIRECT (legacy behavior for both ticket types).
+     */
+    private String resolveApprovalMode(String ticketType, String rawMode) {
+        if (StringUtils.isBlank(rawMode)) {
+            return APPROVAL_MODE_DIRECT;
+        }
+        String mode = rawMode.trim();
+        if (!APPROVAL_MODE_DIRECT.equals(mode) && !APPROVAL_MODE_VIA_RELEASE.equals(mode)) {
+            // Unknown value → fail-safe to DIRECT (legacy behavior)
+            return APPROVAL_MODE_DIRECT;
+        }
+        if (APPROVAL_MODE_VIA_RELEASE.equals(mode) && TICKET_TYPE_PRE_DDL.equals(ticketType)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_VIA_RELEASE_PRE_DDL_INVALID.name()));
+        }
+        return mode;
+    }
+
     private DmDbPairDO resolvePair(long pairId) {
         return dbPairDal.pairMapper().selectById(pairId);
     }
@@ -853,18 +895,20 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         return pair.getProdDbName();
     }
 
-    private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount, ChangeType changeType) {
+    private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount, ChangeType changeType, String approvalMode) {
         DmDbChangeEventDO event = new DmDbChangeEventDO();
         event.setTicketId(ticketId);
         event.setEventType(GovEventType.SUBMIT.name());
         event.setFromStatus(null);
-        event.setToStatus(ApprovalStatus.WAIT_APPROVAL.name());
+        event.setToStatus(APPROVAL_MODE_VIA_RELEASE.equals(approvalMode)
+            ? ApprovalStatus.WAIT_RELEASE.name() : ApprovalStatus.WAIT_APPROVAL.name());
         event.setOperatorUid(uid);
 
         Map<String, Object> data = new HashMap<>();
         data.put("ticketType", ticketType);
         data.put("groupCount", groupCount);
         data.put("changeType", changeType.name());
+        data.put("approvalMode", approvalMode);
         event.setEventData(JsonUtils.toJson(data));
 
         dbChangeEventDal.eventMapper().insert(event);

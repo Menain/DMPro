@@ -56,6 +56,7 @@ public class ProdReleaseDetailVO {
         private String hash;
         private long   sourceTicketId;
         private long   sourceStmtId;
+        private String sourceTicketType;   // PRE_DDL | PROD_DML (from source ticket ticketInfo)
         private String execStatus;
         private String execDetail;
         private String gmtCreate;
@@ -83,6 +84,7 @@ public class ProdReleaseDetailVO {
 
         private long   ticketId;
         private String ticketTitle;
+        private String ticketType;       // PRE_DDL | PROD_DML
         private String ticketStatus;
         private boolean available;
         private String unavailableReason;

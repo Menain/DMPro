@@ -32,6 +32,8 @@ public class GovLedgerTicketVO {
     private String gmtCreate;
     private String execStatus;
     private String sqlSummary;
+    private String ticketType;     // PRE_DDL | PROD_DML
+    private String approvalMode;   // DIRECT | VIA_RELEASE (null for legacy tickets)
     private List<LedgerDbItemVO> preDbs;
     private List<String>         prodDbs;
     private boolean promoted;

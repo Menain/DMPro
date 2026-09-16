@@ -31,6 +31,8 @@ public class OpenDbChangeTicketVO {
 
     private long       ticketId;
     private String     ticketType;     // PRE_DDL | PROD_DML
+    private String     approvalMode;   // DIRECT | VIA_RELEASE (null for legacy direct tickets)
+    private String     ticketStatus;   // raw ApprovalStatus name (WAIT_RELEASE, WAIT_APPROVAL, FINISHED, ...)
     private String     title;
     private String     serviceName;
     private List<String> dbNames;     // all DB names covered by this ticket

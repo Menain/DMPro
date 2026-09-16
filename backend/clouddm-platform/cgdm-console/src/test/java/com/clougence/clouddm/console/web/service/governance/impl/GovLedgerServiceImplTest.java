@@ -293,6 +293,113 @@ public class GovLedgerServiceImplTest {
         assertEquals(0, result.size());
     }
 
+    // ==================== branch B: VIA_RELEASE PROD_DML pool ====================
+
+    @Test
+    public void list_viaReleaseWaitRelease_allPending_appears() {
+        long ticketId = 110L;
+        long stmtId = 210L;
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "prod_db", "PENDING");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.WAIT_RELEASE, "PROD_DML", 5L, "VIA_RELEASE");
+        when(approvalMapper.selectBatchIds(anyCollection())).thenReturn(List.of(ticket));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection())).thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(buildDs(1L, "ds"));
+        when(serviceMapper.selectBatchIds(anyCollection())).thenReturn(Collections.emptyList());
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(1, result.size());
+        GovLedgerTicketVO vo = result.get(0);
+        assertEquals("PROD_DML", vo.getTicketType());
+        assertEquals("VIA_RELEASE", vo.getApprovalMode());
+        assertEquals("PENDING", vo.getExecStatus());
+        assertFalse(vo.isPromoted());
+    }
+
+    @Test
+    public void list_viaReleaseFinished_allPending_appearsForTraceability() {
+        long ticketId = 111L;
+        long stmtId = 211L;
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "prod_db", "PENDING");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+
+        // Via-release-completed ticket: status=FINISHED but stmt rows still PENDING (release exec
+        // never touches source rows) — retained for traceability, distinguishable from direct.
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PROD_DML", 5L, "VIA_RELEASE");
+        when(approvalMapper.selectBatchIds(anyCollection())).thenReturn(List.of(ticket));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection())).thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(buildDs(1L, "ds"));
+        when(serviceMapper.selectBatchIds(anyCollection())).thenReturn(Collections.emptyList());
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(1, result.size());
+        assertEquals("PROD_DML", result.get(0).getTicketType());
+        assertEquals("VIA_RELEASE", result.get(0).getApprovalMode());
+    }
+
+    @Test
+    public void list_directProdDml_neverAppears() {
+        // Direct PROD_DML (FINISHED + all SUCCESS, no VIA_RELEASE flag) matches neither branch.
+        long ticketId = 112L;
+        long stmtId = 212L;
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "prod_db", "SUCCESS");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PROD_DML", 5L, "DIRECT");
+        when(approvalMapper.selectBatchIds(anyCollection())).thenReturn(List.of(ticket));
+        when(pairMapper.selectBatchIds(anyCollection())).thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(buildDs(1L, "ds"));
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(0, result.size());
+    }
+
+    @Test
+    public void list_viaReleaseWaitApproval_notInLedger() {
+        // VIA_RELEASE should never be in WAIT_APPROVAL (submit puts it in WAIT_RELEASE),
+        // but if somehow it were, it must not appear — wrong status for branch B.
+        long ticketId = 113L;
+        long stmtId = 213L;
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "prod_db", "PENDING");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.WAIT_APPROVAL, "PROD_DML", 5L, "VIA_RELEASE");
+        when(approvalMapper.selectBatchIds(anyCollection())).thenReturn(List.of(ticket));
+        when(pairMapper.selectBatchIds(anyCollection())).thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(buildDs(1L, "ds"));
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(0, result.size());
+    }
+
+    @Test
+    public void list_branchA_regression_preDdlStillAppears() {
+        long ticketId = 114L;
+        long stmtId = 214L;
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "pre_db", "SUCCESS");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL", 5L);
+        when(approvalMapper.selectBatchIds(anyCollection())).thenReturn(List.of(ticket));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection())).thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(buildDs(1L, "ds"));
+        when(serviceMapper.selectBatchIds(anyCollection())).thenReturn(Collections.emptyList());
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(1, result.size());
+        assertEquals("PRE_DDL", result.get(0).getTicketType());
+        assertEquals("SUCCESS", result.get(0).getExecStatus());
+    }
+
     // ==================== promoted ticket carries release info ====================
 
     @Test
@@ -391,6 +498,10 @@ public class GovLedgerServiceImplTest {
     }
 
     private DmApprovalDO buildTicket(long id, ApprovalStatus status, String ticketType, Long serviceId) {
+        return buildTicket(id, status, ticketType, serviceId, null);
+    }
+
+    private DmApprovalDO buildTicket(long id, ApprovalStatus status, String ticketType, Long serviceId, String approvalMode) {
         DmApprovalDO ticket = new DmApprovalDO();
         ticket.setId(id);
         ticket.setBizId("biz-" + id);
@@ -402,6 +513,7 @@ public class GovLedgerServiceImplTest {
         ApprovalMO mo = new ApprovalMO();
         mo.setTicketType(ticketType);
         mo.setServiceId(serviceId);
+        mo.setApprovalMode(approvalMode);
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         return ticket;
     }
