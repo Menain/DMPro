@@ -40,6 +40,7 @@ ext {
     OKHTTP_VERSION = globalConfig.getProperty("cg.lib.okhttp.version")
     FASTJSON_VERSION = globalConfig.getProperty("cg.lib.fastjson.version")
     GUAVA_VERSION = globalConfig.getProperty("cg.lib.guava.version")
+    TENCENTCLOUD_SDK_VERSION = globalConfig.getProperty("cg.lib.tencentcloud.sdk.dbbrain.version")
 }
 
 group = 'com.cdmgr'

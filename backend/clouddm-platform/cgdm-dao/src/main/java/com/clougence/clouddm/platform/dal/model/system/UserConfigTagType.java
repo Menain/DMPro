@@ -37,6 +37,7 @@ public enum UserConfigTagType {
     CC_IM_ALERT,
     CICD,
     QUERY_RESULT,
+    TENCENT_CLOUD,
     @Deprecated
     DATA_EXPORT,
     @Deprecated

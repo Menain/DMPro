@@ -108,4 +108,10 @@ public interface SecAuthCategory {
     // ----------------------------------------------------
     @AuthCategory(order = 8, i18nKey = SecAuthI18nKeys.CAT_KEY_RDP_DB_CHANGE_GOVERN)
     String CAT_RDP_DB_CHANGE_GOVERN      = "CAT_RDP_DB_CHANGE_GOVERN";
+
+    // ----------------------------------------------------
+    // Slow SQL
+    // ----------------------------------------------------
+    @AuthCategory(order = 9, parent = CAT_RDP, i18nKey = SecAuthI18nKeys.CAT_KEY_DM_SLOW_SQL)
+    String CAT_DM_SLOW_SQL              = "CAT_DM_SLOW_SQL";
 }

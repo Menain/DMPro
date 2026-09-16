@@ -288,6 +288,15 @@ public class RootUserConfig {
     @UserConfigDef(name = "taskMaxElementMegaByte", defaultValue = "1", valueRange = "-1 ~ 2147483647 MB, '-1' wont limit, default 1MB", descKey = I18nUserConfigMsgKeys.SQL_RESULT_TASK_MAX_ELEMENT_MB, configTagType = UserConfigTagType.QUERY_RESULT, confBelong = ConfBelong.CloudDM)
     private Integer       taskMaxElementMegaByte;
 
+    /**
+     * Tencent Cloud (DBbrain)
+     */
+
+    @UserConfigDef(name = "tencentCloudSecretId", descKey = I18nUserConfigMsgKeys.TENCENT_CLOUD_SECRET_ID, valueRange = "Tencent Cloud sub-account SecretId (QcloudDBBRAINReadOnlyAccess)", configTagType = UserConfigTagType.TENCENT_CLOUD, confBelong = ConfBelong.Common, isSecret = true)
+    private String        tencentCloudSecretId;
+    @UserConfigDef(name = "tencentCloudSecretKey", descKey = I18nUserConfigMsgKeys.TENCENT_CLOUD_SECRET_KEY, valueRange = "Tencent Cloud sub-account SecretKey", configTagType = UserConfigTagType.TENCENT_CLOUD, confBelong = ConfBelong.Common, isSecret = true)
+    private String        tencentCloudSecretKey;
+
     //    /**
     //     * CloudCanal IM config
     //     */

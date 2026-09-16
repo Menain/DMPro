@@ -136,6 +136,14 @@ public class DataSourceConfig {
             group = DsConfigGroup.ADVANCED, labelKey = ConfigI18nKey.CONFIG_DS_EXPORT_MAX_QUERY_TIMEOUT_SEC_LABEL, descKey = ConfigI18nKey.CONFIG_DS_EXPORT_MAX_QUERY_TIMEOUT_SEC_DESC, readOnly = false)
     private Integer        exportMaxQueryTimeoutSec;
 
+    // ------------------------------------------------------------------------------------------------------------------------ TENCENT CLOUD
+    @ConfigDef(name = Fields.tencentCloudInstanceId, //
+            group = DsConfigGroup.GENERAL, labelKey = ConfigI18nKey.CONFIG_DS_TENCENT_CLOUD_INSTANCE_ID_LABEL, descKey = ConfigI18nKey.CONFIG_DS_TENCENT_CLOUD_INSTANCE_ID_DESC, readOnly = false)
+    private String         tencentCloudInstanceId;
+    @ConfigDef(name = Fields.tencentCloudRegion, //
+            group = DsConfigGroup.GENERAL, labelKey = ConfigI18nKey.CONFIG_DS_TENCENT_CLOUD_REGION_LABEL, descKey = ConfigI18nKey.CONFIG_DS_TENCENT_CLOUD_REGION_DESC, readOnly = false)
+    private String         tencentCloudRegion;
+
     public void setDataSourceType(DataSourceType dataSourceType) {
         if (this.dataSourceType == null) {
             this.dataSourceType = Objects.requireNonNull(dataSourceType, "dataSourceType can not be null.");

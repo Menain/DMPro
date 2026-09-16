@@ -50,6 +50,7 @@ public interface SecAuthI18nKeys {
     String CAT_KEY_RDP_PREFERENCE_CONF              = "CAT_KEY_RDP_PREFERENCE_CONF";
     String CAT_KEY_RDP_THIRD_PARTY_CONF             = "CAT_KEY_RDP_THIRD_PARTY_CONF";
     String CAT_KEY_RDP_DB_CHANGE_GOVERN             = "CAT_KEY_RDP_DB_CHANGE_GOVERN";
+    String CAT_KEY_DM_SLOW_SQL                      = "CAT_KEY_DM_SLOW_SQL";
 
     // for Role Auth Label
     String AUTH_KEY_DM_QUERY_CONSOLE                = "AUTH_KEY_DM_QUERY_CONSOLE";
@@ -108,6 +109,7 @@ public interface SecAuthI18nKeys {
     String AUTH_KEY_RDP_DB_CHANGE_PROD_DML_DIRECT    = "AUTH_KEY_RDP_DB_CHANGE_PROD_DML_DIRECT";
     String AUTH_KEY_RDP_DB_CHANGE_GOVERN_READ        = "AUTH_KEY_RDP_DB_CHANGE_GOVERN_READ";
     String AUTH_KEY_GOV_DB_PAIR_MANAGE               = "AUTH_KEY_GOV_DB_PAIR_MANAGE";
+    String AUTH_KEY_DM_SLOW_SQL_READ                = "AUTH_KEY_DM_SLOW_SQL_READ";
 
     // for Role and Data
     String RDP_AUTH_DATA_DS_READ                    = "RDP_AUTH_DATA_DS_READ";
