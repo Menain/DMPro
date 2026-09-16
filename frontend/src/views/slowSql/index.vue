@@ -26,9 +26,14 @@
               @on-change="handleDateRangeChange"
             />
             <Select v-model="quickTime" :placeholder="$t('man-sql-kuai-jie-shi-jian')" style="width: 120px" @on-change="handleQuickTime">
-              <Option :value="1">{{ $t('yi-tian') }}</Option>
-              <Option :value="3">{{ $t('man-sql-san-tian') }}</Option>
-              <Option :value="7">{{ $t('yi-zhou') }}</Option>
+              <Option :value="5">{{ $t('5-fen-zhong') }}</Option>
+              <Option :value="30">{{ $t('30-fen-zhong') }}</Option>
+              <Option :value="60">{{ $t('1-xiao-shi') }}</Option>
+              <Option :value="180">{{ $t('3-xiao-shi') }}</Option>
+              <Option :value="360">{{ $t('6-xiao-shi') }}</Option>
+              <Option :value="1440">{{ $t('yi-tian') }}</Option>
+              <Option :value="4320">{{ $t('man-sql-san-tian') }}</Option>
+              <Option :value="10080">{{ $t('yi-zhou') }}</Option>
             </Select>
             <Input v-model="schemaFilter" :placeholder="$t('man-sql-ku-ming-guo-lv')" style="width: 160px" clearable @on-enter="handleQuery" />
             <Button type="primary" :loading="listLoading" :disabled="!canQuery" @click="handleQuery">
@@ -156,14 +161,14 @@ export default {
       instanceLoading: false,
       selectedDsId: null,
       dateRange: [],
-      quickTime: null,
+      quickTime: 60,
       schemaFilter: '',
       topSqlRows: [],
       totalCount: 0,
       currentPage: 1,
       pageSize: 20,
       listLoading: false,
-      sortBy: 'QueryTime',
+      sortBy: 'ExecTimes',
       orderBy: 'DESC',
       adviceModalVisible: false,
       adviceLoading: false,
@@ -178,7 +183,7 @@ export default {
       return [
         { title: this.$t('man-sql-mo-ban'), slot: 'sqlTemplate', minWidth: 300, ellipsis: true },
         { title: this.$t('ku-ming'), key: 'schema', width: 120, ellipsis: true, tooltip: true },
-        { title: this.$t('man-sql-zhi-xing-ci-shu'), key: 'execTimes', width: 100, sorter: true },
+        { title: this.$t('man-sql-zhi-xing-ci-shu'), key: 'execTimes', width: 100, sorter: true, defaultSortOrder: 'descend' },
         {
           title: this.$t('man-sql-zong-hao-shi'),
           key: 'queryTime',
@@ -208,7 +213,7 @@ export default {
   methods: {
     setDefaultTimeRange() {
       const end = new Date();
-      const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - 60 * 60 * 1000);
       this.dateRange = [start, end];
     },
     async loadInstances() {
@@ -232,12 +237,12 @@ export default {
       const end = new Date(range[1]);
       this.dateRange = this.clampDateRange(start, end);
     },
-    handleQuickTime(days) {
-      if (!days) {
+    handleQuickTime(minutes) {
+      if (!minutes) {
         return;
       }
       const end = new Date();
-      const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - minutes * 60 * 1000);
       this.dateRange = this.clampDateRange(start, end);
     },
     clampDateRange(start, end) {
@@ -291,7 +296,7 @@ export default {
           this.orderBy = sorter.order === 'ascend' ? 'ASC' : 'DESC';
         }
       } else {
-        this.sortBy = 'QueryTime';
+        this.sortBy = 'ExecTimes';
         this.orderBy = 'DESC';
       }
       this.currentPage = 1;

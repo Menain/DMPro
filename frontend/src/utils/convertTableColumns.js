@@ -11,6 +11,7 @@ export function convertTableColumns(columns = []) {
       ellipsis: col.ellipsis,
       sorter: col.sorter,
       sortDirections: col.sortDirections,
+      defaultSortOrder: col.defaultSortOrder,
       __slot: col.slot,
       __legacyRender: col.render,
       __legacyColumn: col,
