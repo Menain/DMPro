@@ -795,7 +795,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         ticketFO.setDbLevels(List.of(firstProdDs.getDsEnvId().toString(), String.valueOf(firstProdDsId),
             buildEntries.get(0).source.pair.getProdDbName()));
 
-        DmTicketResultVO ticketResult = approvalControlService.createSqlTicket(puid, uid, ticketFO, ApprovalBiz.DM_PROD_RELEASE);
+        // Owner of the new approval ticket stays the release creator: when a maintainer or the
+        // primary account resubmits on the creator's behalf, passing the operator uid here would
+        // drift owner_uid and make the release ticket vanish from the creator's "self created"
+        // ticket list. The operator is still recorded in the RELEASE_RESUBMITTED event below.
+        DmTicketResultVO ticketResult = approvalControlService.createSqlTicket(puid, release.getCreatorUid(), ticketFO, ApprovalBiz.DM_PROD_RELEASE);
 
         // Writeback releaseId/releaseNo into ticketInfo
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketResult.getTicketId());
