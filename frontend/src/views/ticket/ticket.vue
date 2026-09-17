@@ -76,6 +76,12 @@
           <a-form-item :label="$t('xu-qiu-miao-shu')" name="description">
             <Input type="textarea" v-model="ticketData.description" :rows="4" />
           </a-form-item>
+          <a-form-item :label="$t('hui-gun-sql')" class="rollback-sql-form-item">
+            <div class="rollback-sql-editor-wrapper">
+              <ticket-editor ref="rollBackSqlEditor" :data-source-type="ticketData.dataSourceType" />
+            </div>
+            <div class="rollback-sql-hint">{{ $t('hui-gun-sql-hint') }}</div>
+          </a-form-item>
         </a-form>
         <div class="create-ticket-form-btn">
           <Button type="primary" :loading="loading" :disabled="loading || !ticketData.ticketEnable" @click="handleSubmitTicket(false)">
@@ -425,9 +431,13 @@ export default {
     },
 
     layoutEditors() {
-      const editors = [this.$refs.rawSqlEditor];
+      const editors = [this.$refs.rawSqlEditor, this.$refs.rollBackSqlEditor];
       editors.forEach((editor) => {
-        editor?.monacoEditor?.layout();
+        if (Array.isArray(editor)) {
+          editor[0]?.monacoEditor?.layout();
+        } else {
+          editor?.monacoEditor?.layout();
+        }
       });
     },
 
@@ -534,6 +544,7 @@ export default {
           immediately: this.ticketData.immediately === 'immediately',
           templateIdentity: '',
           approTemplateName: '',
+          rollBackSql: this.$refs.rollBackSqlEditor?.getSql()?.trim() || '',
           force
         };
 
@@ -887,6 +898,22 @@ export default {
 
         .ivu-select {
           display: inline-block;
+        }
+      }
+
+      .rollback-sql-form-item {
+        .rollback-sql-editor-wrapper {
+          height: 120px;
+          border: 1px solid #eaeaea;
+          border-radius: 6px;
+          overflow: hidden;
+        }
+
+        .rollback-sql-hint {
+          margin-top: 4px;
+          font-size: 12px;
+          color: #707070;
+          line-height: 1.5;
         }
       }
 

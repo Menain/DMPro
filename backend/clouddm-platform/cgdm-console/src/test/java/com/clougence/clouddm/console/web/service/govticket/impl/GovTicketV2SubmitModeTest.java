@@ -224,6 +224,9 @@ public class GovTicketV2SubmitModeTest {
         ReflectionTestUtils.setField(service, "dmAuthServiceForBiz", dmAuthServiceForBiz);
         ReflectionTestUtils.setField(service, "govReturnNotifyService", govReturnNotifyService);
         ReflectionTestUtils.setField(service, "namingDao", namingDao);
+        // RollbackSqlGenerator is a pure-function component (no @Resource fields); inject a real instance.
+        ReflectionTestUtils.setField(service, "rollbackSqlGenerator",
+            new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator());
     }
 
     // ==================== DIRECT regression pin ====================

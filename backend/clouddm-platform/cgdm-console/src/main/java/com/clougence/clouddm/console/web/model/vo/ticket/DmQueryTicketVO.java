@@ -44,6 +44,7 @@ public class DmQueryTicketVO {
     private Long                        expectedAffectedRows;
     private Boolean                     immediately;
     private String                      rollBackSql;
+    private Boolean                     rollBackSqlGenerated;
     private String                      ticketMessage;
     private boolean                     autoExec;
     private List<TicketRuleCheckResult> checkedList;

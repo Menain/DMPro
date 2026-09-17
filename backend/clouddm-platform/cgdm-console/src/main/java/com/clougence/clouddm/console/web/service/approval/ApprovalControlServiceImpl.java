@@ -165,6 +165,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private PlatformTransactionManager  txManager;
     @Resource
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator rollbackSqlGenerator;
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.governance.ProdReleaseService prodReleaseService;
@@ -736,6 +738,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             String message = ticketInfo.getMessage();
             vo.setTicketMessage(message);
             vo.setAutoExec(ticketInfo.isAutoExec());
+            vo.setRollBackSqlGenerated(ticketInfo.getRollBackSqlGenerated());
         }
         return vo;
     }
@@ -1022,11 +1025,19 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             case INLINE -> ticket.setRawSql(fo.getRawSql());
             case ATTACHMENT -> ticket.setRawSql(null);
         }
-        ticket.setTicketInfo(JsonUtils.toJson(mo));
-        ticket.setLevels(dsLevels.dbLevels());
+        // Rollback SQL: applicant-provided takes priority; blank → system-generated backup template.
         if (StringUtils.isNotBlank(fo.getRollBackSql())) {
             ticket.setRollBackSql(fo.getRollBackSql());
+            mo.setRollBackSqlGenerated(false);
+        } else if (contentType == SqlContentType.INLINE && StringUtils.isNotBlank(fo.getRawSql())) {
+            String generated = rollbackSqlGenerator.generate(fo.getRawSql());
+            if (StringUtils.isNotBlank(generated)) {
+                ticket.setRollBackSql(generated);
+                mo.setRollBackSqlGenerated(true);
+            }
         }
+        ticket.setTicketInfo(JsonUtils.toJson(mo));
+        ticket.setLevels(dsLevels.dbLevels());
 
         this.approvalDal.approvalMapper().insert(ticket);
         if (contentType == SqlContentType.ATTACHMENT) {

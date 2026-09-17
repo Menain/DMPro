@@ -43,6 +43,10 @@ public class GovTicketV2ResubmitFO {
     /** Optional reason for the revision (stored in the version audit row). */
     private String reason;
 
+    /** Optional ticket-level rollback SQL. Blank + original was system-generated → regenerate from
+     *  the new SQL; blank + original was applicant-provided → keep existing value. */
+    private String rollBackSql;
+
     @Getter
     @Setter
     @JsonIgnoreProperties(ignoreUnknown = false)

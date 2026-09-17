@@ -162,6 +162,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GovReturnNotifyService govReturnNotifyService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator rollbackSqlGenerator;
 
     // ==================== check ====================
 
@@ -271,6 +273,21 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setContentType(com.clougence.clouddm.platform.dal.model.approval.SqlContentType.INLINE);
         ticket.setFeatures(List.of(ApprovalFeature.values()));
         ticket.setRawSql(first.sqlContent);
+        // Rollback SQL: applicant-provided takes priority; blank → system-generated backup template
+        // from the combined group SQL (ticket-level, zero DDL — stored on dm_approval.roll_back_sql).
+        if (StringUtils.isNotBlank(fo.getRollBackSql())) {
+            ticket.setRollBackSql(fo.getRollBackSql());
+            mo.setRollBackSqlGenerated(false);
+        } else {
+            String combinedSql = prechecks.stream()
+                .map(pc -> pc.sqlContent)
+                .collect(Collectors.joining(";"));
+            String generated = rollbackSqlGenerator.generate(combinedSql);
+            if (StringUtils.isNotBlank(generated)) {
+                ticket.setRollBackSql(generated);
+                mo.setRollBackSqlGenerated(true);
+            }
+        }
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         ticket.setLevels(List.of(firstDs.getDsEnvId().toString(), String.valueOf(firstDsId), resolveDbName(ticketType, firstPair)));
         ticket.setStatusMessage(viaRelease ? "Waiting for release merge" : "Waiting for approval");
@@ -524,10 +541,34 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         GroupPrecheck first = prechecks.get(0);
         ApprovalStatus resubmitTarget = viaRelease ? ApprovalStatus.WAIT_RELEASE : ApprovalStatus.WAIT_APPROVAL;
         approvalStateService.updateApprovalStatus(ticketId, resubmitTarget, "Resubmitted after revision");
-        // Update rawSql to the first modified group's SQL (display-compat; levels/ticketInfo frozen — pair set unchanged)
+        // Update rawSql to the first modified group's SQL (display-compat; levels/ticketInfo frozen — pair set unchanged).
+        // Rollback SQL resubmit handling (design D7):
+        //   - Applicant provided new rollback SQL → use it (rollBackSqlGenerated=false)
+        //   - Blank + original was system-generated → regenerate from the new combined SQL
+        //   - Blank + original was applicant-provided → keep existing value (rollBackSql not touched)
+        Map<Long, GroupPrecheck> precheckByGroupId = prechecks.stream()
+            .collect(Collectors.toMap(pc -> pc.groupId, pc -> pc));
+        String combinedResubmitSql = allGroups.stream()
+            .map(g -> {
+                GroupPrecheck pc = precheckByGroupId.get(g.getId());
+                return pc != null ? pc.sqlContent : g.getSqlContent();
+            })
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.joining(";"));
         DmApprovalDO ticketUpdate = new DmApprovalDO();
         ticketUpdate.setId(ticketId);
         ticketUpdate.setRawSql(first.sqlContent);
+        if (StringUtils.isNotBlank(fo.getRollBackSql())) {
+            ticketUpdate.setRollBackSql(fo.getRollBackSql());
+            mo.setRollBackSqlGenerated(false);
+        } else if (Boolean.TRUE.equals(mo.getRollBackSqlGenerated())) {
+            String generated = rollbackSqlGenerator.generate(combinedResubmitSql);
+            if (StringUtils.isNotBlank(generated)) {
+                ticketUpdate.setRollBackSql(generated);
+                mo.setRollBackSqlGenerated(true);
+            }
+        }
+        ticketUpdate.setTicketInfo(JsonUtils.toJson(mo));
         approvalDal.approvalMapper().updateById(ticketUpdate);
 
         // Step 5 (§0 fix): PROD_DML re-approval surgery — re-establish person list + reset APPROVAL process.
@@ -555,9 +596,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // For SUCCESS groups (not modified), use the stored precheck_result changeType;
         // for modified groups, use the fresh precheck changeType.
         List<ChangeType> allChangeTypes = new ArrayList<>();
-        // Build a map from groupId to precheck for direct lookup (avoids fragile pairId matching)
-        Map<Long, GroupPrecheck> precheckByGroupId = prechecks.stream()
-            .collect(Collectors.toMap(pc -> pc.groupId, pc -> pc));
+        // precheckByGroupId already built in Step 4 (avoids fragile pairId matching)
         for (DmTicketDbStmtDO g : allGroups) {
             GroupPrecheck pc = precheckByGroupId.get(g.getId());
             if (pc != null) {

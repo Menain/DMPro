@@ -44,4 +44,8 @@ public class ApprovalMO {
     // P3 production release fields
     private Long    releaseId;
     private String  releaseNo;
+
+    // Rollback SQL source flag: true = system-generated backup template;
+    // false/null = applicant-provided. Stored in ticketInfo JSON (zero DDL).
+    private Boolean rollBackSqlGenerated;
 }

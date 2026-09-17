@@ -541,6 +541,8 @@
             </Button>
             <Button v-if="ticketDetail.rollBackSql" type="text" @click="handleShowRollbackSqlModal">
               {{ $t('cha-kan-hui-gun-sql') }}
+              <Tag v-if="ticketDetail.rollBackSqlGenerated" size="small" color="warning">{{ $t('xi-tong-sheng-cheng') }}</Tag>
+              <Tag v-else size="small" color="success">{{ $t('shen-qing-ren-tian-xie') }}</Tag>
             </Button>
           </div>
         </div>
@@ -674,7 +676,12 @@
         <Button @click="handleCloseModal">{{ $t('qu-xiao') }}</Button>
       </template>
     </CCModal>
-    <CCModal v-model="showRollbackSqlModal" :title="$t('cha-kan-hui-gun-sql')" :width="1000">
+    <CCModal v-model="showRollbackSqlModal" :width="1000">
+      <template #title>
+        {{ $t('cha-kan-hui-gun-sql') }}
+        <Tag v-if="ticketDetail.rollBackSqlGenerated" size="small" color="warning">{{ $t('xi-tong-sheng-cheng') }}</Tag>
+        <Tag v-else size="small" color="success">{{ $t('shen-qing-ren-tian-xie') }}</Tag>
+      </template>
       <read-only-editor :text="ticketDetail.rollBackSql" key="rollback" :max-height="500" :ds-type="ticketDetail.dataSourceType" />
       <template #footer>
         <Button type="primary" @click="copyText(ticketDetail.rollBackSql)">
@@ -829,10 +836,15 @@
         () => {
           showResubmitModal = false;
           v2ResubmitReason = '';
+          v2ResubmitRollBackSql = '';
         }
       "
     >
       <Input v-model="v2ResubmitReason" type="textarea" :rows="3" :placeholder="$t('gov-v2-resubmit-reason-placeholder')" />
+      <div class="resubmit-rollback-section">
+        <label class="resubmit-rollback-label">{{ $t('hui-gun-sql') }}</label>
+        <Input v-model="v2ResubmitRollBackSql" type="textarea" :rows="4" :placeholder="$t('hui-gun-sql-resubmit-placeholder')" />
+      </div>
     </CCModal>
   </div>
 </template>
@@ -1117,6 +1129,7 @@ export default {
       v2ReturnReason: '',
       showReturnTicketModal: false,
       v2ResubmitReason: '',
+      v2ResubmitRollBackSql: '',
       showResubmitModal: false,
       v2ResubmitGroupId: null,
       v2ResubmitSqlMap: {},
@@ -2022,6 +2035,7 @@ export default {
               }
               this.ticketDetail.ticketMessage = resQuery.data?.ticketMessage || '';
               this.ticketDetail.rollBackSql = resQuery.data?.rollBackSql || '';
+              this.ticketDetail.rollBackSqlGenerated = resQuery.data?.rollBackSqlGenerated || false;
               this.ticketDetail.contentType = resQuery.data?.contentType || 'INLINE';
               this.ticketDetail.attachmentId = resQuery.data?.attachmentId;
               this.ticketDetail.attachmentFileName = resQuery.data?.attachmentFileName || '';
@@ -2114,6 +2128,7 @@ export default {
       }
       this.v2ResubmitGroupId = groupId;
       this.v2ResubmitReason = '';
+      this.v2ResubmitRollBackSql = '';
       this.showResubmitModal = true;
     },
     async handleResubmitSubmit() {
@@ -2133,13 +2148,15 @@ export default {
           data: {
             ticketId: this.ticketId,
             groups: [{ groupId, sqlContent }],
-            reason: this.v2ResubmitReason || undefined
+            reason: this.v2ResubmitReason || undefined,
+            rollBackSql: this.v2ResubmitRollBackSql?.trim() || undefined
           }
         });
         if (res.success) {
           this.$Message.success(this.$t('gov-v2-resubmit-success'));
           this.showResubmitModal = false;
           this.v2ResubmitReason = '';
+          this.v2ResubmitRollBackSql = '';
           this.v2ResubmitGroupId = null;
           await this.getTicketDetail();
           await this.loadV2GroupList();
@@ -4377,6 +4394,18 @@ export default {
     font-family: Menlo, Monaco, 'Courier New', monospace;
     font-size: 13px;
     word-break: break-all;
+  }
+}
+
+.resubmit-rollback-section {
+  margin-top: 12px;
+
+  .resubmit-rollback-label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #181d26;
   }
 }
 </style>

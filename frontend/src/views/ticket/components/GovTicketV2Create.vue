@@ -154,6 +154,12 @@ export default {
             editor?.monacoEditor?.layout();
           }
         });
+        const rbEditor = this.$refs.rollBackSqlEditor;
+        if (Array.isArray(rbEditor)) {
+          rbEditor[0]?.monacoEditor?.layout();
+        } else {
+          rbEditor?.monacoEditor?.layout();
+        }
       });
     },
     handleWindowResize() {
@@ -216,6 +222,7 @@ export default {
         serviceId: this.selectedServiceId,
         ticketTitle: this.ticketForm.ticketTitle,
         description: this.ticketForm.description,
+        rollBackSql: this.$refs.rollBackSqlEditor?.getSql()?.trim() || '',
         groups: this.selectedPairIds.map((pairId) => ({
           pairId,
           sqlContent: this.getSqlForPair(pairId)
@@ -397,6 +404,12 @@ export default {
           </a-form-item>
           <a-form-item :label="$t('xu-qiu-miao-shu')" name="description">
             <Input type="textarea" v-model="ticketForm.description" :rows="4" />
+          </a-form-item>
+          <a-form-item :label="$t('hui-gun-sql')" class="rollback-sql-form-item">
+            <div class="rollback-sql-editor-wrapper">
+              <ticket-editor ref="rollBackSqlEditor" data-source-type="MySQL" />
+            </div>
+            <div class="rollback-sql-hint">{{ $t('hui-gun-sql-hint') }}</div>
           </a-form-item>
         </a-form>
         <div class="create-ticket-form-btn">
@@ -603,6 +616,22 @@ export default {
       padding: 24px;
       border-radius: 10px;
       overflow-y: auto;
+
+      .rollback-sql-form-item {
+        .rollback-sql-editor-wrapper {
+          height: 120px;
+          border: 1px solid #eaeaea;
+          border-radius: 6px;
+          overflow: hidden;
+        }
+
+        .rollback-sql-hint {
+          margin-top: 4px;
+          font-size: 12px;
+          color: #707070;
+          line-height: 1.5;
+        }
+      }
 
       .create-ticket-form-btn {
         margin-top: 24px;

@@ -50,6 +50,9 @@ public class GovTicketV2SubmitFO {
      *  release ledger pool at WAIT_RELEASE (no approval process created). Ignored for PRE_DDL. */
     private String              approvalMode;   // DIRECT | VIA_RELEASE
 
+    /** Optional ticket-level rollback SQL. Blank → server generates a backup-template. */
+    private String              rollBackSql;
+
     @Getter
     @Setter
     @JsonIgnoreProperties(ignoreUnknown = false)
