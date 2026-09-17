@@ -23,26 +23,37 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.clougence.clouddm.api.common.exception.ErrorMessageException;
+import com.clougence.clouddm.console.web.component.approval.impl.ApprovalProviderServiceImpl;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
+import com.clougence.clouddm.console.web.component.approval.model.ExternalCommandMeta;
 import com.clougence.clouddm.console.web.component.auth.DmResAuthService;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
+import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
+import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
 import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
+import com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbPairDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
+import com.clougence.clouddm.platform.dal.mapper.dbchange.DmDbChangeEventMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbpair.DmDbPairMapper;
 import com.clougence.clouddm.platform.dal.mapper.dbpair.DmDbServiceMapper;
 import com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper;
@@ -50,12 +61,17 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbServiceDO;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
+import com.clougence.clouddm.sdk.approval.ApprovalInstanceStatus;
 import com.clougence.clouddm.sdk.security.auth.AuthKind;
 import com.clougence.utils.JsonUtils;
 
@@ -81,6 +97,11 @@ public class GovOpenApiServiceImplTest {
     private DmProdReleaseStmtMapper  releaseStmtMapper;
     private ProdReleaseService       prodReleaseService;
     private DmResAuthService         dmResAuthService;
+    private ApprovalProviderServiceImpl approvalProviderService;
+    private ApprovalControlService      approvalControlService;
+    private GovTicketV2Service          govTicketV2Service;
+    private DbChangeEventDal            dbChangeEventDal;
+    private DmDbChangeEventMapper       eventMapper;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -111,6 +132,13 @@ public class GovOpenApiServiceImplTest {
 
         prodReleaseService = mock(ProdReleaseService.class);
         dmResAuthService = mock(DmResAuthService.class);
+        approvalProviderService = mock(ApprovalProviderServiceImpl.class);
+        approvalControlService = mock(ApprovalControlService.class);
+        govTicketV2Service = mock(GovTicketV2Service.class);
+        dbChangeEventDal = mock(DbChangeEventDal.class);
+        eventMapper = mock(DmDbChangeEventMapper.class);
+        when(dbChangeEventDal.eventMapper()).thenReturn(eventMapper);
+        when(eventMapper.insert(any(DmDbChangeEventDO.class))).thenReturn(1);
 
         ReflectionTestUtils.setField(service, "dbPairDal", dbPairDal);
         ReflectionTestUtils.setField(service, "ticketDbStmtDal", ticketDbStmtDal);
@@ -118,6 +146,10 @@ public class GovOpenApiServiceImplTest {
         ReflectionTestUtils.setField(service, "prodReleaseDal", prodReleaseDal);
         ReflectionTestUtils.setField(service, "prodReleaseService", prodReleaseService);
         ReflectionTestUtils.setField(service, "dmResAuthService", dmResAuthService);
+        ReflectionTestUtils.setField(service, "approvalProviderService", approvalProviderService);
+        ReflectionTestUtils.setField(service, "approvalControlService", approvalControlService);
+        ReflectionTestUtils.setField(service, "govTicketV2Service", govTicketV2Service);
+        ReflectionTestUtils.setField(service, "dbChangeEventDal", dbChangeEventDal);
     }
 
     // ==================== Interface A: listTickets ====================
@@ -468,6 +500,217 @@ public class GovOpenApiServiceImplTest {
         assertNull(result);
     }
 
+    // ==================== Commands: approve / reject / cancel (T4 delegation) ====================
+
+    @Test
+    public void approveTicket_sameTenant_delegatesWithMeta() {
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+        fo.setApprover("alice");
+        fo.setComment("approved");
+        fo.setExternalFlowId("flow-001");
+
+        service.approveTicket(PUID, UID, fo);
+
+        ArgumentCaptor<ExternalCommandMeta> metaCaptor = ArgumentCaptor.forClass(ExternalCommandMeta.class);
+        verify(approvalProviderService).applyExternalApprovalResult(eq(100L), eq(ApprovalInstanceStatus.COMPLETED), metaCaptor.capture());
+        ExternalCommandMeta meta = metaCaptor.getValue();
+        assertEquals(UID, meta.getOperatorUid());
+        assertEquals("alice", meta.getApprover());
+        assertEquals("approved", meta.getComment());
+        assertEquals("flow-001", meta.getExternalFlowId());
+    }
+
+    @Test
+    public void rejectTicket_sameTenant_delegatesWithRefuse() {
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+        fo.setApprover("bob");
+
+        service.rejectTicket(PUID, UID, fo);
+
+        verify(approvalProviderService).applyExternalApprovalResult(eq(100L), eq(ApprovalInstanceStatus.REFUSE), any(ExternalCommandMeta.class));
+    }
+
+    @Test
+    public void cancelTicket_sameTenant_delegatesWithTerminated() {
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        service.cancelTicket(PUID, UID, fo);
+
+        verify(approvalProviderService).applyExternalApprovalResult(eq(100L), eq(ApprovalInstanceStatus.TERMINATED), any(ExternalCommandMeta.class));
+    }
+
+    // ==================== Command guards: cross-tenant not-found (T5) ====================
+
+    @Test
+    public void approveTicket_crossTenant_throwsNotFound() {
+        DmApprovalDO ticket = buildExternalTicket(100L, "other-puid", ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        try {
+            service.approveTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException for cross-tenant");
+        } catch (ErrorMessageException ex) {
+            // ok — not-found semantics
+        }
+        verify(approvalProviderService, never()).applyExternalApprovalResult(anyLong(), any(), any());
+    }
+
+    @Test
+    public void approveTicket_notFound_throwsNotFound() {
+        when(approvalMapper.queryById(999L)).thenReturn(null);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(999L);
+
+        try {
+            service.approveTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException for not-found");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalProviderService, never()).applyExternalApprovalResult(anyLong(), any(), any());
+    }
+
+    // ==================== Command: return (T6) ====================
+
+    @Test
+    public void returnTicket_openCommand_delegatesToGovTicketV2() {
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+        fo.setReason("execution failed");
+
+        service.returnTicket(PUID, UID, fo);
+
+        verify(govTicketV2Service).returnTicketOpenCommand(PUID, UID, 100L, "execution failed");
+    }
+
+    // ==================== Command: execute (T7) ====================
+
+    @Test
+    public void executeTicket_dmChangeTicket_confirmBySystemDelegated() {
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_CONFIRM);
+        ticket.setApproBiz(ApprovalBiz.DM_CHANGE);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        // Latest SUBMIT event carries changeType=DML
+        DmDbChangeEventDO submitEvent = new DmDbChangeEventDO();
+        submitEvent.setEventType(GovEventType.SUBMIT.name());
+        submitEvent.setEventData("{\"changeType\":\"DML\"}");
+        when(eventMapper.queryByTicketId(100L)).thenReturn(List.of(submitEvent));
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        service.executeTicket(PUID, UID, fo);
+
+        // Verify confirmTicketBySystem was called with a config where DML → transactional=true
+        ArgumentCaptor<DmAutoExecConfigFO> configCaptor = ArgumentCaptor.forClass(DmAutoExecConfigFO.class);
+        verify(approvalControlService).confirmTicketBySystem(eq(100L), configCaptor.capture());
+        DmAutoExecConfigFO config = configCaptor.getValue();
+        assertTrue("DML should be transactional", config.isEnableTransactional());
+
+        // Verify SYSTEM_CONFIRM event was appended with operator=service account uid
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.SYSTEM_CONFIRM.name(), event.getEventType());
+        assertEquals(UID, event.getOperatorUid());
+        assertEquals(ApprovalStatus.WAIT_CONFIRM.name(), event.getFromStatus());
+        assertEquals(ApprovalStatus.WAIT_EXEC.name(), event.getToStatus());
+
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("EXTERNAL_COMMAND", data.get("via"));
+    }
+
+    @Test
+    public void executeTicket_prodReleaseTicket_startExecutionBranch() {
+        DmApprovalDO ticket = buildExternalTicket(200L, PUID, ApprovalStatus.WAIT_CONFIRM);
+        ticket.setApproBiz(ApprovalBiz.DM_PROD_RELEASE);
+        when(approvalMapper.queryById(200L)).thenReturn(ticket);
+
+        // No SUBMIT event needed — release tickets default to DML
+        when(eventMapper.queryByTicketId(200L)).thenReturn(Collections.emptyList());
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(200L);
+
+        service.executeTicket(PUID, UID, fo);
+
+        // Verify confirmTicketBySystem was called (release branch is inside prepareExecJobAsSystemAsync)
+        verify(approvalControlService).confirmTicketBySystem(eq(200L), any(DmAutoExecConfigFO.class));
+        // SYSTEM_CONFIRM event appended with approBiz=DM_PROD_RELEASE
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertEquals("DM_PROD_RELEASE", data.get("approBiz"));
+    }
+
+    @Test
+    public void executeTicket_nonWaitConfirm_throwsInvalidStatus() {
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        try {
+            service.executeTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException for non-WAIT_CONFIRM status");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+    }
+
+    @Test
+    public void executeTicket_nonExternalChannel_throwsChannelMismatch() {
+        DmApprovalDO ticket = buildTicketWithApprovalType(100L, PUID, ApprovalStatus.WAIT_CONFIRM, ApprovalType.DingTalk);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        try {
+            service.executeTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException for non-External channel");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+    }
+
+    @Test
+    public void executeTicket_crossTenant_throwsNotFound() {
+        DmApprovalDO ticket = buildExternalTicket(100L, "other-puid", ApprovalStatus.WAIT_CONFIRM);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        try {
+            service.executeTicket(PUID, UID, fo);
+            fail("Expected ErrorMessageException for cross-tenant");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+    }
+
     // ==================== Helpers ====================
 
     private DmTicketDbStmtDO buildStmt(long id, long ticketId, long pairId, long dsId, String dbName, String sql, String execStatus) {
@@ -491,9 +734,30 @@ public class GovOpenApiServiceImplTest {
         t.setTicketTitle("ticket-" + id);
         t.setApproBiz(ApprovalBiz.DM_CHANGE);
         t.setTicketStatus(status);
+        t.setApproType(ApprovalType.Internal);
         ApprovalMO mo = new ApprovalMO();
         mo.setTicketType(ticketType);
         mo.setServiceId(serviceId);
+        t.setTicketInfo(JsonUtils.toJson(mo));
+        return t;
+    }
+
+    private DmApprovalDO buildExternalTicket(long id, String puid, ApprovalStatus status) {
+        DmApprovalDO t = buildTicketWithApprovalType(id, puid, status, ApprovalType.External);
+        return t;
+    }
+
+    private DmApprovalDO buildTicketWithApprovalType(long id, String puid, ApprovalStatus status, ApprovalType type) {
+        DmApprovalDO t = new DmApprovalDO();
+        t.setId(id);
+        t.setPrimaryUid(puid);
+        t.setOwnerUid(UID);
+        t.setTicketTitle("ticket-" + id);
+        t.setApproBiz(ApprovalBiz.DM_CHANGE);
+        t.setTicketStatus(status);
+        t.setApproType(type);
+        ApprovalMO mo = new ApprovalMO();
+        mo.setTicketType("PROD_DML");
         t.setTicketInfo(JsonUtils.toJson(mo));
         return t;
     }

@@ -19,10 +19,19 @@ import java.util.List;
 
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketDetailFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 
 /**
@@ -64,4 +73,77 @@ public interface GovOpenApiService {
      * Idempotent: RETURNED/terminal releases → clear error, zero side effects.
      */
     void returnRelease(String puid, String uid, DbChangeReleaseReturnFO fo);
+
+    /**
+     * Command: approve — advance a WAIT_APPROVAL External-channel ticket to WAIT_CONFIRM
+     * (release tickets also trigger handleApproved→APPROVED).
+     * Tenant-filtered: cross-tenant → not-found semantics. Channel guard: non-External →
+     * CHANNEL_MISMATCH. Status guard: non-WAIT_APPROVAL → INVALID_STATUS.
+     */
+    void approveTicket(String puid, String uid, DbChangeTicketCommandFO fo);
+
+    /**
+     * Command: reject — advance a WAIT_APPROVAL External-channel ticket to REJECTED terminal
+     * (release tickets also trigger handleRejected + stmt row deletion).
+     * Same tenant/channel/status guards as {@link #approveTicket}.
+     */
+    void rejectTicket(String puid, String uid, DbChangeTicketCommandFO fo);
+
+    /**
+     * Command: cancel — advance a WAIT_APPROVAL External-channel ticket to CANCELED terminal
+     * (release tickets also trigger handleCancelled + stmt row deletion).
+     * Same tenant/channel/status guards as {@link #approveTicket}.
+     */
+    void cancelTicket(String puid, String uid, DbChangeTicketCommandFO fo);
+
+    /**
+     * Command: return — execution-failure return to REVISION.
+     * Tenant-filtered (AK/SK is the credential); skips the console path's three-pronged
+     * owner/primary/DBA identity check. Status guard: EXEC_FAIL/WAIT_EXEC + FAILED group +
+     * not merged. IM notification to applicant is reused from the console path.
+     */
+    void returnTicket(String puid, String uid, DbChangeTicketCommandFO fo);
+
+    /**
+     * Command: execute — advance a WAIT_CONFIRM External-channel ticket to WAIT_EXEC and
+     * start the execution chain (ticket → createExecJob+startJob; release → startExecution).
+     * Tenant-filtered; channel guard (External only); status guard (WAIT_CONFIRM only).
+     * autoExecConfig is derived per ticket type DML transaction semantics.
+     */
+    void executeTicket(String puid, String uid, DbChangeTicketCommandFO fo);
+
+    /**
+     * Command: proxy ticket submit — create a governance ticket on behalf of a specified applicant.
+     * Resolves ownerAccount → uid (tenant-internal check); delegates to GovTicketV2Service.submit.
+     * Returns ticketId, bizId, and resulting ticketStatus.
+     */
+    OpenDbChangeTicketSubmitVO submitTicket(String puid, String uid, DbChangeTicketSubmitFO fo);
+
+    /**
+     * Command: proxy ticket resubmit — resubmit a REVISION ticket with modified SQL.
+     * Skips the owner-only check (AK/SK is the credential). For External-channel tickets,
+     * goes directly to WAIT_EXEC (Q2 方案 A). Returns ticketId, bizId, and resulting ticketStatus.
+     */
+    OpenDbChangeTicketSubmitVO resubmitTicket(String puid, String uid, DbChangeTicketResubmitFO fo);
+
+    /**
+     * Command: proxy release create — merge multiple executed tickets into a production release.
+     * Resolves creatorAccount (optional, defaults to service account). Delegates to
+     * ProdReleaseService.createRelease. Returns releaseId, releaseNo, and the release's ticketId.
+     */
+    OpenDbChangeReleaseCreateVO createRelease(String puid, String uid, DbChangeReleaseCreateFO fo);
+
+    /**
+     * Command: proxy release resubmit — resubmit a RETURNED release with a final ticket list.
+     * Skips the creator/primary/maintainer permission check (AK/SK is the credential).
+     * release.creatorUid unchanged; RELEASE_RESUBMITTED event operator = service account uid.
+     */
+    void resubmitRelease(String puid, String uid, DbChangeReleaseResubmitFO fo);
+
+    /**
+     * Read: ticket detail — base info + process list + activity list + event trail.
+     * Tenant-filtered: cross-tenant → null (not-found semantics). Desensitized: no AK/SK,
+     * no internal exception stacks, no console-specific permission flags.
+     */
+    OpenDbChangeTicketDetailVO ticketDetail(String puid, String uid, DbChangeTicketDetailFO fo);
 }

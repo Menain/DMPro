@@ -110,7 +110,8 @@ public class ProdReleaseApprovalHandler implements ApprovalHandler {
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void createApproval(long approvalId, ImSenderService sender) {
         DmApprovalDO ticketDO = approvalDal.approvalMapper().selectByIdForUpdate(approvalId);
-        if (ticketDO.getApproType() == ApprovalType.Internal) {
+        if (ticketDO.getApproType() == ApprovalType.Internal
+            || ticketDO.getApproType() == ApprovalType.External) {
             return; // only external approval need to create approval instance.
         }
 

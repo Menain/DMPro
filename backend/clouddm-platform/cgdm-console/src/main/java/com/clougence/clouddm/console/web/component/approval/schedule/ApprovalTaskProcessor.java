@@ -195,6 +195,11 @@ public class ApprovalTaskProcessor {
     public void processWaitApproval(DmApprovalDO approvalDO) {
         long ticketId = approvalDO.getId();
         DmApprovalProcessDO processDO = this.approvalDal.processMapper().queryByStage(ticketId, ApprovalStage.APPROVAL);
+        // External orchestration mode: no external instance to create, no polling.
+        // Approval status transitions are driven entirely by external commands.
+        if (approvalDO.getApproType() == ApprovalType.External) {
+            return;
+        }
         if (approvalDO.getApproType() != ApprovalType.Internal) {
             if (StringUtils.isEmpty(approvalDO.getApproIdentity())) {
                 // avoid create multiple approval processes in multiple consoles

@@ -57,5 +57,11 @@ public enum GovEventType {
     /** Release-level resubmit: RETURNED release re-merged and re-submitted to approval (operator_uid = real user). */
     RELEASE_RESUBMITTED,
     /** VIA_RELEASE source ticket completed via release execution (operator_uid = SYSTEM; eventData{releaseId, releaseNo}). */
-    TICKET_VIA_RELEASE_DONE
+    TICKET_VIA_RELEASE_DONE,
+    /** External command: approve — ticket WAIT_APPROVAL→WAIT_CONFIRM (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
+    EXTERNAL_APPROVED,
+    /** External command: reject — ticket WAIT_APPROVAL→REJECTED (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
+    EXTERNAL_REJECTED,
+    /** External command: cancel — ticket WAIT_APPROVAL→CANCELED (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
+    EXTERNAL_CANCELED
 }

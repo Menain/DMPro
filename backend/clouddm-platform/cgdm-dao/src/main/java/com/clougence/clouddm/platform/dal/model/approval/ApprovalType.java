@@ -31,7 +31,8 @@ public enum ApprovalType implements EnumOfCode<ApprovalType> {
     DingTalk(ApprovalProvider.DingTalk, "APPROVAL_DINGTALK"),
     Wechat(ApprovalProvider.Wechat, "APPROVAL_WECHAT"),
     Feishu(ApprovalProvider.Feishu, "APPROVAL_FEISHU"),
-    Custom(ApprovalProvider.Custom, "APPROVAL_CUSTOM"),;
+    Custom(ApprovalProvider.Custom, "APPROVAL_CUSTOM"),
+    External(ApprovalProvider.External, "APPROVAL_EXTERNAL"),;
 
     private final ApprovalProvider providerType;
     private final String           i18nKey;
@@ -69,6 +70,8 @@ public enum ApprovalType implements EnumOfCode<ApprovalType> {
                 return Custom;
             case Feishu:
                 return Feishu;
+            case External:
+                return External;
             case Internal:
                 return Internal;
             default:

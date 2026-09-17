@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.service.governance.impl;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,19 +28,42 @@ import org.springframework.stereotype.Service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
+import com.clougence.clouddm.console.web.component.approval.impl.ApprovalProviderServiceImpl;
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
+import com.clougence.clouddm.console.web.component.approval.model.ExternalCommandMeta;
 import com.clougence.clouddm.console.web.component.auth.DmResAuthService;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketSubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseResubmitFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketDetailFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
+import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
+import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2SubmitVO;
+import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
+import com.clougence.clouddm.console.web.model.fo.ticket.RdpQueryTicketDetailFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
+import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketBaseInfoVO;
+import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketProcessVO;
+import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketActivityVO;
+import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
 import com.clougence.clouddm.console.web.service.governance.GovOpenApiService;
 import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
+import com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
+import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.access.DbPairDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
 import com.clougence.clouddm.platform.dal.access.TicketDbStmtDal;
 import com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalMapper;
@@ -50,12 +74,20 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz;
 import com.clougence.clouddm.platform.dal.model.approval.ApprovalStatus;
+import com.clougence.clouddm.platform.dal.model.approval.ApprovalType;
 import com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO;
+import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.ChangeType;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbPairDO;
 import com.clougence.clouddm.platform.dal.model.dbpair.DmDbServiceDO;
+import com.clougence.clouddm.platform.dal.model.execution.AutoExecType;
 import com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
+import com.clougence.clouddm.api.console.autoexec.ErrorStrategy;
+import com.clougence.clouddm.sdk.approval.ApprovalInstanceStatus;
 import com.clougence.clouddm.sdk.security.auth.AuthKind;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
@@ -96,6 +128,16 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
     private ProdReleaseService   prodReleaseService;
     @Resource
     private DmResAuthService     dmResAuthService;
+    @Resource
+    private ApprovalProviderServiceImpl approvalProviderService;
+    @Resource
+    private ApprovalControlService      approvalControlService;
+    @Resource
+    private GovTicketV2Service           govTicketV2Service;
+    @Resource
+    private DbChangeEventDal             dbChangeEventDal;
+    @Resource
+    private AuthDal                       authDal;
 
     // ==================== Interface A: listTickets ====================
 
@@ -266,6 +308,175 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
 
         // Delegate to ProdReleaseService — permission scope = tenant match only (AK/SK is the credential)
         prodReleaseService.returnRelease(puid, uid, releaseId, fo.getReason());
+    }
+
+    // ==================== Commands: approve / reject / cancel ====================
+
+    @Override
+    public void approveTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
+        DmApprovalDO ticket = resolveTicketForCommand(puid, fo.getTicketId());
+        ExternalCommandMeta meta = buildCommandMeta(uid, fo);
+        approvalProviderService.applyExternalApprovalResult(ticket.getId(), ApprovalInstanceStatus.COMPLETED, meta);
+    }
+
+    @Override
+    public void rejectTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
+        DmApprovalDO ticket = resolveTicketForCommand(puid, fo.getTicketId());
+        ExternalCommandMeta meta = buildCommandMeta(uid, fo);
+        approvalProviderService.applyExternalApprovalResult(ticket.getId(), ApprovalInstanceStatus.REFUSE, meta);
+    }
+
+    @Override
+    public void cancelTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
+        DmApprovalDO ticket = resolveTicketForCommand(puid, fo.getTicketId());
+        ExternalCommandMeta meta = buildCommandMeta(uid, fo);
+        approvalProviderService.applyExternalApprovalResult(ticket.getId(), ApprovalInstanceStatus.TERMINATED, meta);
+    }
+
+    // ==================== Command: return ====================
+
+    @Override
+    public void returnTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
+        govTicketV2Service.returnTicketOpenCommand(puid, uid, fo.getTicketId(), fo.getReason());
+    }
+
+    // ==================== Command: execute ====================
+
+    @Override
+    public void executeTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
+        long ticketId = fo.getTicketId();
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            throw new ErrorMessageException("Ticket not found: " + ticketId);
+        }
+        // Status guard: must be WAIT_CONFIRM
+        if (ticket.getTicketStatus() != ApprovalStatus.WAIT_CONFIRM) {
+            throw new ErrorMessageException("Ticket " + ticketId + " is in status "
+                + ticket.getTicketStatus() + ", expected WAIT_CONFIRM for execute command");
+        }
+        // Channel guard: must be External
+        if (ticket.getApproType() != ApprovalType.External) {
+            throw new ErrorMessageException("Ticket " + ticketId + " uses approval channel "
+                + ticket.getApproType() + "; execute command requires the External orchestration channel");
+        }
+
+        // Derive autoExecConfig per ticket type DML transaction semantics (D15 routing, 09-15 contract).
+        // Release tickets (DM_PROD_RELEASE) use DML semantics (release stmts are always DML snapshots).
+        DmAutoExecConfigFO config = buildAutoExecConfigForTicket(ticket);
+
+        // Delegate to the SYSTEM confirm variant — skips checkJobOperationEnable (no user record for SYSTEM),
+        // state-machine guards retained. Release tickets go through prepareExecJobAsSystemAsync →
+        // startExecution (release branch added below). v2 tickets go through createExecJob + startJob.
+        approvalControlService.confirmTicketBySystem(ticketId, config);
+
+        // Audit event: SYSTEM_CONFIRM, operator = service account uid (NOT SYSTEM — Q4 调和:
+        // mechanism context stays SYSTEM, attribution in the event layer).
+        appendExecuteCommandEvent(ticketId, uid, ticket.getApproBiz());
+    }
+
+    private void appendExecuteCommandEvent(long ticketId, String operatorUid, ApprovalBiz approBiz) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.SYSTEM_CONFIRM.name());
+        event.setFromStatus(ApprovalStatus.WAIT_CONFIRM.name());
+        event.setToStatus(ApprovalStatus.WAIT_EXEC.name());
+        event.setOperatorUid(operatorUid);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("via", "EXTERNAL_COMMAND");
+        data.put("approBiz", approBiz.name());
+        event.setEventData(JsonUtils.toJson(data));
+
+        dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    /**
+     * Derive the autoExecConfig for the execute command.
+     * <p>
+     * Mirrors GovAutoAdvanceServiceImpl.buildAutoExecConfig (D15 routing):
+     * - DML → enableTransactional=true
+     * - DDL/MIXED → enableTransactional=false
+     * - errorStrategy=NONE always
+     * - autoExecType=IMMEDIATE always
+     * - snapshot=false always
+     * <p>
+     * ChangeType is resolved from the latest SUBMIT event (same as GovAutoAdvanceServiceImpl.resolveChangeType).
+     * Release tickets (DM_PROD_RELEASE) default to DML — release stmts are DML snapshots.
+     */
+    private DmAutoExecConfigFO buildAutoExecConfigForTicket(DmApprovalDO ticket) {
+        ChangeType changeType;
+        if (ticket.getApproBiz() == ApprovalBiz.DM_PROD_RELEASE) {
+            // Release stmts are always DML snapshots — no DDL in a release.
+            changeType = ChangeType.DML;
+        } else {
+            changeType = resolveChangeTypeFromSubmitEvent(ticket.getId());
+        }
+
+        DmAutoExecConfigFO config = new DmAutoExecConfigFO();
+        config.setAutoExecType(AutoExecType.IMMEDIATE);
+        config.setErrorStrategy(ErrorStrategy.NONE);
+        config.setEnableTransactional(changeType == ChangeType.DML);
+        config.setRetryWaitTime(null);
+        config.setRetryCount(null);
+        config.setExecTime(null);
+        config.setSnapshot(false);
+        return config;
+    }
+
+    /**
+     * Resolve ChangeType from the latest SUBMIT event (mirrors GovAutoAdvanceServiceImpl.resolveChangeType).
+     * Falls back to per-group precheck results if the SUBMIT event lacks changeType.
+     */
+    private ChangeType resolveChangeTypeFromSubmitEvent(long ticketId) {
+        List<DmDbChangeEventDO> events = dbChangeEventDal.eventMapper().queryByTicketId(ticketId);
+        DmDbChangeEventDO latestSubmit = null;
+        for (int i = events.size() - 1; i >= 0; i--) {
+            if (GovEventType.SUBMIT.name().equals(events.get(i).getEventType())) {
+                latestSubmit = events.get(i);
+                break;
+            }
+        }
+        if (latestSubmit != null) {
+            Map<String, Object> data = JsonUtils.toObj(latestSubmit.getEventData(), HashMap.class);
+            Object ct = data == null ? null : data.get("changeType");
+            if (ct != null) {
+                return ChangeType.valueOf(String.valueOf(ct));
+            }
+        }
+        // Legacy fallback: derive from per-group precheck results
+        List<ChangeType> groupTypes = new ArrayList<>();
+        for (DmTicketDbStmtDO stmt : ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId)) {
+            Map<String, Object> precheck = JsonUtils.toObj(stmt.getPrecheckResult(), HashMap.class);
+            Object ct = precheck == null ? null : precheck.get("changeType");
+            if (ct != null) {
+                groupTypes.add(ChangeType.valueOf(String.valueOf(ct)));
+            }
+        }
+        if (groupTypes.isEmpty()) {
+            throw new ErrorMessageException("No changeType available for ticket " + ticketId
+                + ": SUBMIT event lacks it and no statement group precheck carries it");
+        }
+        return ChangeType.merge(groupTypes);
+    }
+
+    // ==================== Command helpers ====================
+
+    /**
+     * Resolve a ticket for a three-state command (approve/reject/cancel).
+     * Tenant-filtered: cross-tenant → not-found semantics (existence not leaked).
+     * The WAIT_APPROVAL / isEndStatus / External channel guards are enforced inside
+     * applyExternalApprovalResult (meta != null path).
+     */
+    private DmApprovalDO resolveTicketForCommand(String puid, Long ticketId) {
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
+        if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            throw new ErrorMessageException("Ticket not found: " + ticketId);
+        }
+        return ticket;
+    }
+
+    private ExternalCommandMeta buildCommandMeta(String operatorUid, DbChangeTicketCommandFO fo) {
+        return new ExternalCommandMeta(operatorUid, fo.getApprover(), fo.getComment(), fo.getExternalFlowId());
     }
 
     // ==================== Helpers: dbName pair resolution ====================
@@ -481,5 +692,240 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         public int hashCode() {
             return java.util.Objects.hash(dsId, dbName);
         }
+    }
+
+    // ==================== Command: submit / resubmit (Step 8) ====================
+
+    @Override
+    public OpenDbChangeTicketSubmitVO submitTicket(String puid, String uid, DbChangeTicketSubmitFO fo) {
+        // Resolve ownerAccount → uid (tenant-internal check; not-found semantics)
+        String ownerUid = resolveAccountUid(puid, fo.getOwnerAccount());
+
+        // Build GovTicketV2SubmitFO from the open FO subset
+        GovTicketV2SubmitFO submitFO = new GovTicketV2SubmitFO();
+        submitFO.setTicketType(fo.getTicketType());
+        submitFO.setServiceId(fo.getServiceId());
+        submitFO.setTicketTitle(fo.getTicketTitle());
+        submitFO.setDescription(fo.getDescription());
+        submitFO.setApprovalMode(fo.getApprovalMode());
+        List<GovTicketV2SubmitFO.GroupInput> groups = new ArrayList<>();
+        if (fo.getGroups() != null) {
+            for (DbChangeTicketSubmitFO.GroupInput gi : fo.getGroups()) {
+                GovTicketV2SubmitFO.GroupInput g = new GovTicketV2SubmitFO.GroupInput();
+                g.setPairId(gi.getPairId());
+                g.setSqlContent(gi.getSqlContent());
+                groups.add(g);
+            }
+        }
+        submitFO.setGroups(groups);
+
+        // Delegate to GovTicketV2Service.submit (no owner identity check in submit — any tenant member can submit)
+        GovTicketV2SubmitVO submitResult = govTicketV2Service.submit(puid, ownerUid, submitFO);
+
+        // Build response VO — query the created ticket to get bizId and status
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(submitResult.getTicketId());
+        OpenDbChangeTicketSubmitVO vo = new OpenDbChangeTicketSubmitVO();
+        vo.setTicketId(submitResult.getTicketId());
+        vo.setTicketType(submitResult.getTicketType());
+        if (ticket != null) {
+            vo.setBizId(ticket.getBizId());
+            vo.setTicketStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
+        }
+        return vo;
+    }
+
+    @Override
+    public OpenDbChangeTicketSubmitVO resubmitTicket(String puid, String uid, DbChangeTicketResubmitFO fo) {
+        // Build GovTicketV2ResubmitFO from the open FO
+        GovTicketV2ResubmitFO resubmitFO = new GovTicketV2ResubmitFO();
+        resubmitFO.setTicketId(fo.getTicketId());
+        resubmitFO.setReason(fo.getReason());
+        resubmitFO.setRollBackSql(fo.getRollBackSql());
+        List<GovTicketV2ResubmitFO.GroupInput> groups = new ArrayList<>();
+        if (fo.getGroups() != null) {
+            for (DbChangeTicketResubmitFO.GroupInput gi : fo.getGroups()) {
+                GovTicketV2ResubmitFO.GroupInput g = new GovTicketV2ResubmitFO.GroupInput();
+                g.setGroupId(gi.getGroupId());
+                g.setSqlContent(gi.getSqlContent());
+                groups.add(g);
+            }
+        }
+        resubmitFO.setGroups(groups);
+
+        // Delegate to the open command resubmit (skips owner-only check)
+        govTicketV2Service.resubmitOpenCommand(puid, uid, resubmitFO);
+
+        // Build response VO
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(fo.getTicketId());
+        OpenDbChangeTicketSubmitVO vo = new OpenDbChangeTicketSubmitVO();
+        if (ticket != null) {
+            vo.setTicketId(ticket.getId());
+            vo.setBizId(ticket.getBizId());
+            vo.setTicketStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
+            ApprovalMO mo = parseTicketInfo(ticket);
+            if (mo != null) {
+                vo.setTicketType(mo.getTicketType());
+            }
+        }
+        return vo;
+    }
+
+    // ==================== Command: releases create / resubmit (Step 9) ====================
+
+    @Override
+    public OpenDbChangeReleaseCreateVO createRelease(String puid, String uid, DbChangeReleaseCreateFO fo) {
+        // Resolve creatorAccount (optional — defaults to service account uid)
+        String creatorUid = uid;
+        if (StringUtils.isNotBlank(fo.getCreatorAccount())) {
+            creatorUid = resolveAccountUid(puid, fo.getCreatorAccount());
+        }
+
+        // Build ProdReleaseCreateFO
+        com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO createFO =
+            new com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO();
+        createFO.setTicketIds(fo.getTicketIds());
+        createFO.setTitle(fo.getTitle());
+
+        // Delegate to ProdReleaseService.createRelease (full chain: eligibility/gates/tenant/lock/uk)
+        long releaseId = prodReleaseService.createRelease(puid, creatorUid, createFO);
+
+        // Build response VO — releaseId + releaseNo + approval ticketId
+        DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseId);
+        OpenDbChangeReleaseCreateVO vo = new OpenDbChangeReleaseCreateVO();
+        vo.setReleaseId(releaseId);
+        if (release != null) {
+            vo.setReleaseNo(release.getReleaseNo());
+            vo.setTicketId(release.getApprovalId()); // release's dm_approval id (Q9 command routing key)
+        }
+        return vo;
+    }
+
+    @Override
+    public void resubmitRelease(String puid, String uid, DbChangeReleaseResubmitFO fo) {
+        // Build ProdReleaseResubmitFO
+        com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmitFO resubmitFO =
+            new com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmitFO();
+        resubmitFO.setReleaseId(fo.getReleaseId());
+        resubmitFO.setTicketIds(fo.getTicketIds());
+        resubmitFO.setTitle(fo.getTitle());
+
+        // Delegate to the open command resubmit (skips creator/primary/maintainer check)
+        prodReleaseService.resubmitReleaseOpenCommand(puid, uid, resubmitFO);
+    }
+
+    // ==================== Read: ticket detail (Step 10) ====================
+
+    @Override
+    public OpenDbChangeTicketDetailVO ticketDetail(String puid, String uid, DbChangeTicketDetailFO fo) {
+        // Tenant check — cross-tenant returns null (not-found semantics)
+        DmApprovalDO ticket = approvalDal.approvalMapper().queryById(fo.getTicketId());
+        if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            return null;
+        }
+
+        // Delegate to console queryTicketBaseInfo (refreshCache External skip already in place — batch 1).
+        // Console-specific permission flags (canApproval/canExecute/canClose) are computed but not
+        // exposed in the open VO (desensitized).
+        RdpQueryTicketDetailFO baseFO = new RdpQueryTicketDetailFO();
+        baseFO.setTicketId(fo.getTicketId());
+        baseFO.setRefreshCache(false); // open API callers never trigger cache refresh
+        RdpTicketBaseInfoVO baseVO = approvalControlService.queryTicketBaseInfo(puid, uid, baseFO);
+
+        OpenDbChangeTicketDetailVO vo = new OpenDbChangeTicketDetailVO();
+        if (baseVO == null) {
+            return vo;
+        }
+        vo.setTicketId(baseVO.getId());
+        vo.setBizId(baseVO.getBizId());
+        vo.setTicketTitle(baseVO.getTicketTitle());
+        vo.setTicketType(baseVO.getTicketType());
+        vo.setTicketStatus(baseVO.getTicketStatus() != null ? baseVO.getTicketStatus().name() : null);
+        vo.setServiceName(baseVO.getServiceName());
+        vo.setApproType(baseVO.getApproType() != null ? baseVO.getApproType().name() : null);
+        vo.setApproIdentity(baseVO.getApproIdentity());
+        vo.setApproTemplateName(baseVO.getApproTemplateName());
+        vo.setDescription(baseVO.getDescription());
+        vo.setStatusMessage(baseVO.getStatusMessage());
+        vo.setOwnerUserName(baseVO.getUserName());
+        vo.setTargetInfo(baseVO.getTargetInfo());
+        vo.setGmtCreate(baseVO.getGmtCreate());
+        vo.setGmtModified(baseVO.getGmtModified());
+        vo.setFinishTime(baseVO.getFinishTime());
+        vo.setReleaseId(baseVO.getReleaseId() != null ? String.valueOf(baseVO.getReleaseId()) : null);
+        vo.setReleaseNo(baseVO.getReleaseNo());
+
+        // Process list with activities
+        List<OpenDbChangeTicketDetailVO.ProcessEntry> processEntries = new ArrayList<>();
+        if (baseVO.getTicketProcessVOList() != null) {
+            for (RdpTicketProcessVO procVO : baseVO.getTicketProcessVOList()) {
+                OpenDbChangeTicketDetailVO.ProcessEntry pe = new OpenDbChangeTicketDetailVO.ProcessEntry();
+                pe.setStage(procVO.getTicketStage() != null ? procVO.getTicketStage().name() : null);
+                pe.setProcessStatus(procVO.getTicketProcessStatus() != null ? procVO.getTicketProcessStatus().name() : null);
+                pe.setStartTime(procVO.getGmtCreate());
+                pe.setFinishTime(procVO.getFinishTime());
+                pe.setExecMsg(procVO.getStageContext());
+                if (procVO.isHasActivity() && procVO.getActivityList() != null) {
+                    List<OpenDbChangeTicketDetailVO.ActivityEntry> activities = new ArrayList<>();
+                    for (RdpTicketActivityVO actVO : procVO.getActivityList()) {
+                        OpenDbChangeTicketDetailVO.ActivityEntry ae = new OpenDbChangeTicketDetailVO.ActivityEntry();
+                        ae.setActivityTitle(actVO.getActivityTitle());
+                        ae.setActivityStatus(actVO.getActivityStatus() != null ? actVO.getActivityStatus().name() : null);
+                        ae.setStartTime(actVO.getStartTime());
+                        ae.setFinishTime(actVO.getFinishTime());
+                        ae.setRemark(actVO.getRemark());
+                        if (actVO.getApprovalUserList() != null && !actVO.getApprovalUserList().isEmpty()) {
+                            ae.setApprovalUser(String.join(", ", actVO.getApprovalUserList()));
+                        }
+                        activities.add(ae);
+                    }
+                    pe.setActivities(activities);
+                }
+                processEntries.add(pe);
+            }
+        }
+        vo.setProcessList(processEntries);
+
+        // Event trail
+        List<DmDbChangeEventDO> events = dbChangeEventDal.eventMapper().queryByTicketId(fo.getTicketId());
+        List<OpenDbChangeTicketDetailVO.EventEntry> eventEntries = new ArrayList<>();
+        if (events != null) {
+            for (DmDbChangeEventDO event : events) {
+                OpenDbChangeTicketDetailVO.EventEntry ee = new OpenDbChangeTicketDetailVO.EventEntry();
+                ee.setEventType(event.getEventType());
+                ee.setFromStatus(event.getFromStatus());
+                ee.setToStatus(event.getToStatus());
+                ee.setOperatorUid(event.getOperatorUid());
+                ee.setGmtCreate(event.getGmtCreate() != null
+                    ? com.clougence.utils.format.DateFormatType.s_yyyyMMdd_HHmmss.format(event.getGmtCreate()) : null);
+                ee.setEventData(event.getEventData());
+                eventEntries.add(ee);
+            }
+        }
+        vo.setEvents(eventEntries);
+
+        return vo;
+    }
+
+    // ==================== Account resolution helper ====================
+
+    /**
+     * Resolve a platform account name to its uid, with tenant-internal check.
+     * Cross-tenant resolution → not-found semantics (existence not leaked).
+     * @param puid caller's primary uid (tenant realm)
+     * @param account platform account name
+     * @return the resolved uid
+     * @throws ErrorMessageException if the account doesn't exist or doesn't belong to the caller's tenant
+     */
+    private String resolveAccountUid(String puid, String account) {
+        DmAuthUserDO user = authDal.userMapper().queryBySubAccount(account);
+        if (user == null) {
+            throw new ErrorMessageException("Account not found: " + account);
+        }
+        // Tenant-internal check: resolved user's primaryUid must equal caller's puid
+        String userPuid = user.getParentId() != null ? String.valueOf(user.getParentId()) : user.getUid();
+        if (!puid.equals(userPuid)) {
+            throw new ErrorMessageException("Account not found: " + account);
+        }
+        return user.getUid();
     }
 }

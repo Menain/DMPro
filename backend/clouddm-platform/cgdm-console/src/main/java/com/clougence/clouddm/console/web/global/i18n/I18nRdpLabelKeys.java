@@ -33,6 +33,7 @@ public enum I18nRdpLabelKeys {
     APPROVAL_WECHAT,
     APPROVAL_FEISHU,
     APPROVAL_CUSTOM,
+    APPROVAL_EXTERNAL,
 
     // -- for com.clougence.rdp.controller.model.enumeration.LoginAuthType
     LOGIN_PASSWORD,

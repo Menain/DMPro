@@ -243,7 +243,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             if (ticketConfig != null && StringUtils.isNotBlank(ticketConfig.getType())) {
                 approvalType = ApprovalType.valueOf(ticketConfig.getType());
             }
-            if (approvalType != ApprovalType.Internal) {
+            if (approvalType != ApprovalType.Internal && approvalType != ApprovalType.External) {
                 // checkApprovalAndReturnTemplate throws ErrorMessageException on missing template /
                 // disabled channel (TICKET_TEMPLATE_NOT_EXISTS / TICKET_APPROVAL_TYPE_NOT_ENABLE);
                 // production impl never returns null, so no defensive null-check (AUTH path precedent).
@@ -423,25 +423,47 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void returnTicket(String puid, String uid, GovTicketV2ReturnTicketFO fo) {
-        long ticketId = fo.getTicketId();
+        returnTicketInternal(puid, uid, fo.getTicketId(), fo.getReason(), false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void returnTicketOpenCommand(String puid, String uid, long ticketId, String reason) {
+        returnTicketInternal(puid, uid, ticketId, reason, true);
+    }
+
+    /**
+     * Shared return-to-REVISION logic for both the console path and the open command path.
+     * <p>
+     * Console path ({@code openCommand=false}): enforces the three-pronged identity check
+     * (owner ∨ primary ∨ DM_DAUTH_TICKET@bindDsId) — behavior bit-for-bit unchanged (regression pin).
+     * <p>
+     * Open command path ({@code openCommand=true}): skips the identity check; tenant-level auth
+     * (AK/SK is the credential). eventData.via = EXTERNAL_COMMAND. Status guards, REVISION transition,
+     * TICKET_RETURNED event, and IM afterCommit notify are fully reused.
+     */
+    private void returnTicketInternal(String puid, String uid, long ticketId, String reason, boolean openCommand) {
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
         if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), ticketId));
         }
         // DBA/admin proxy return (design §2): owner OR primary-account OR DM_DAUTH_TICKET@bindDsId
-        if (!uid.equals(ticket.getOwnerUid()) && !uid.equals(ticket.getPrimaryUid())) {
-            boolean hasDsAuth = false;
-            if (ticket.getBindDsId() != null) {
-                hasDsAuth = dmAuthServiceForBiz.checkResAuthWithoutError(
-                    puid, uid, ticket.getBindDsId(),
-                    new com.clougence.clouddm.console.web.util.DsResPathObj(ticket.getLevelPath()),
-                    SecDataAuthLabel.DM_DAUTH_TICKET, AuthKind.DataSource);
-            }
-            if (!hasDsAuth) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_AUTHORIZED_RETURN.name()));
+        // Console path only — open command path skips this (tenant match is the credential).
+        if (!openCommand) {
+            if (!uid.equals(ticket.getOwnerUid()) && !uid.equals(ticket.getPrimaryUid())) {
+                boolean hasDsAuth = false;
+                if (ticket.getBindDsId() != null) {
+                    hasDsAuth = dmAuthServiceForBiz.checkResAuthWithoutError(
+                        puid, uid, ticket.getBindDsId(),
+                        new com.clougence.clouddm.console.web.util.DsResPathObj(ticket.getLevelPath()),
+                        SecDataAuthLabel.DM_DAUTH_TICKET, AuthKind.DataSource);
+                }
+                if (!hasDsAuth) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_AUTHORIZED_RETURN.name()));
+                }
             }
         }
-        String via = uid.equals(ticket.getOwnerUid()) ? "OWNER" : "DBA";
+        String via = openCommand ? "EXTERNAL_COMMAND" : (uid.equals(ticket.getOwnerUid()) ? "OWNER" : "DBA");
         // Guard 1: ticket_status must be EXEC_FAIL or WAIT_EXEC (WAIT_EXEC + FAILED groups = race window)
         ApprovalStatus currentStatus = ticket.getTicketStatus();
         if (currentStatus != ApprovalStatus.EXEC_FAIL && currentStatus != ApprovalStatus.WAIT_EXEC) {
@@ -477,13 +499,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Action: ticket_status -> REVISION (updateStatusByEnum, NOT transitionTicketToTerminal)
         approvalStateService.updateApprovalStatus(ticketId, ApprovalStatus.REVISION, "Returned for revision");
 
-        // Event TICKET_RETURNED (real uid, NOT SYSTEM — NOT NULL contract; via=OWNER/DBA additive)
+        // Event TICKET_RETURNED (real uid, NOT SYSTEM — NOT NULL contract; via=OWNER/DBA/EXTERNAL_COMMAND additive)
         appendTicketReturnedEvent(ticketId, uid, currentStatus.name(), ApprovalStatus.REVISION.name(),
-            fo.getReason(), failedGroupIds, via);
+            reason, failedGroupIds, via);
 
-        // IM notify applicant (operator != applicant when DBA proxy return)
+        // IM notify applicant (operator != applicant when DBA proxy or external command return)
         govReturnNotifyService.notifyReturn(puid, uid, ticket.getOwnerUid(),
-            ticketId, ticket.getTicketTitle(), fo.getReason(), via);
+            ticketId, ticket.getTicketTitle(), reason, via);
     }
 
     // ==================== resubmit ====================
@@ -491,12 +513,39 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void resubmit(String puid, String uid, GovTicketV2ResubmitFO fo) {
+        resubmitInternal(puid, uid, fo, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void resubmitOpenCommand(String puid, String uid, GovTicketV2ResubmitFO fo) {
+        resubmitInternal(puid, uid, fo, true);
+    }
+
+    /**
+     * Shared resubmit logic for both the console path and the open command path.
+     * <p>
+     * Console path ({@code openCommand=false}): enforces the owner-only identity check
+     * — behavior bit-for-bit unchanged (regression pin).
+     * <p>
+     * Open command path ({@code openCommand=true}): skips the owner-only check;
+     * tenant-level auth (AK/SK is the credential).
+     * <p>
+     * External-channel tickets (approType==External, PROD_DML DIRECT) go directly to
+     * WAIT_EXEC (Q2 方案 A): APPROVAL→FINISH + CONFIRM→FINISH + EXECUTION→INIT +
+     * initializeExecutionProgress + per-group createGroupJob/startJob — single transaction,
+     * no intermediate WAIT_CONFIRM, no approval surface rebuild. The original external
+     * approval still stands (execution failure ≠ approval rejected).
+     * Internal/DingTalk channels use the legacy resubmit→WAIT_APPROVAL path (regression pin).
+     */
+    private void resubmitInternal(String puid, String uid, GovTicketV2ResubmitFO fo, boolean openCommand) {
         long ticketId = fo.getTicketId();
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
         if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_TICKET_NOT_FOUND.name(), ticketId));
         }
-        if (!uid.equals(ticket.getOwnerUid())) {
+        // Owner-only check — console path only. Open command path skips this (tenant match is the credential).
+        if (!openCommand && !uid.equals(ticket.getOwnerUid())) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_NOT_OWNER.name()));
         }
         // Guard: ticket_status must be REVISION
@@ -561,10 +610,18 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
 
         // Step 4: update dm_approval ticket_status. VIA_RELEASE returns to the release ledger pool
-        // (WAIT_RELEASE); all others return to WAIT_APPROVAL where the auto-advance / human-approval
-        // chain picks up.
+        // (WAIT_RELEASE); External PROD_DML DIRECT goes directly to WAIT_EXEC (Q2 方案 A —
+        // the original external approval still stands, execution failure ≠ approval rejected);
+        // all others return to WAIT_APPROVAL where the auto-advance / human-approval chain picks up.
         GroupPrecheck first = prechecks.get(0);
-        ApprovalStatus resubmitTarget = viaRelease ? ApprovalStatus.WAIT_RELEASE : ApprovalStatus.WAIT_APPROVAL;
+        ApprovalStatus resubmitTarget;
+        if (viaRelease) {
+            resubmitTarget = ApprovalStatus.WAIT_RELEASE;
+        } else if (ticket.getApproType() == ApprovalType.External) {
+            resubmitTarget = ApprovalStatus.WAIT_EXEC;
+        } else {
+            resubmitTarget = ApprovalStatus.WAIT_APPROVAL;
+        }
         approvalStateService.updateApprovalStatus(ticketId, resubmitTarget, "Resubmitted after revision");
         // Update rawSql to the first modified group's SQL (display-compat; levels/ticketInfo frozen — pair set unchanged).
         // Rollback SQL resubmit handling (design D7):
@@ -618,6 +675,77 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticketUpdate.setTicketInfo(JsonUtils.toJson(mo));
         approvalDal.approvalMapper().updateById(ticketUpdate);
 
+        // Compute recomputed changeType for all groups (used by both the External direct-to-exec path
+        // and the SUBMIT event). For modified groups, use the fresh precheck changeType; for SUCCESS
+        // groups (unmodified), use the stored precheck_result changeType.
+        List<ChangeType> allChangeTypes = new ArrayList<>();
+        for (DmTicketDbStmtDO g : allGroups) {
+            GroupPrecheck pc = precheckByGroupId.get(g.getId());
+            if (pc != null) {
+                allChangeTypes.add(ChangeType.valueOf(pc.result.getChangeType()));
+            } else {
+                Map<String, Object> storedPrecheck = JsonUtils.toObj(g.getPrecheckResult(), HashMap.class);
+                Object ct = storedPrecheck == null ? null : storedPrecheck.get("changeType");
+                if (ct != null) {
+                    allChangeTypes.add(ChangeType.valueOf(String.valueOf(ct)));
+                }
+            }
+        }
+        ChangeType ticketChangeType = ChangeType.merge(allChangeTypes);
+
+        // Step 5 (External direct-to-WAIT_EXEC): for External-channel PROD_DML DIRECT tickets, the
+        // resubmit bypasses the approval surface entirely (Q2 方案 A). The original external approval
+        // still stands (execution failure ≠ approval rejected). Single-transaction, no intermediate
+        // WAIT_CONFIRM, no handler.approvalApproved (no IM/release side effects). State transitions
+        // mirror GovAutoAdvanceServiceImpl.systemAutoConfirmForV2 (APPROVAL→FINISH, CONFIRM→FINISH,
+        // EXECUTION→INIT, initializeExecutionProgress) + per-group createGroupJob/startJob.
+        if (ticket.getApproType() == ApprovalType.External && !viaRelease) {
+            // APPROVAL process → FINISH (context notes the bypass; original approval record preserved)
+            ApprovalStageMO approvalFinMO = new ApprovalStageMO();
+            approvalFinMO.setExecMsg("External approval bypassed on resubmit (execution failure return)");
+            approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL,
+                ApprovalProcessStatus.FINISH, JsonUtils.toJson(approvalFinMO));
+
+            // CONFIRM process → FINISH (SYSTEM context, mirrors confirmTicketBySystemInTransaction L1294)
+            ApprovalStageMO confirmFinMO = new ApprovalStageMO();
+            confirmFinMO.setExecUserName(Collections.singletonList("SYSTEM"));
+            confirmFinMO.setExecMsg("External resubmit direct-to-exec (system confirm bypassed)");
+            approvalStateService.updateProcessStatus(ticketId, ApprovalStage.CONFIRM,
+                ApprovalProcessStatus.FINISH, JsonUtils.toJson(confirmFinMO));
+
+            // EXECUTION process → INIT (mirrors L1307) + initializeExecutionProgress (mirrors L1308)
+            ApprovalStageMO execInitMO = new ApprovalStageMO();
+            execInitMO.setExecMsg("External resubmit direct-to-exec");
+            approvalStateService.updateProcessStatus(ticketId, ApprovalStage.EXECUTION,
+                ApprovalProcessStatus.INIT, JsonUtils.toJson(execInitMO));
+            approvalStateService.initializeExecutionProgress(ticketId);
+
+            // Per-group createGroupJob + startJob (mirrors GovAutoAdvanceServiceImpl L178-196)
+            com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO execConfig = buildAutoExecConfig(ticketChangeType);
+            java.util.Locale locale = DmI18nUtils.getLocale();
+            String languageTag = locale.toLanguageTag();
+            for (DmTicketDbStmtDO group : allGroups) {
+                String execStatus = group.getExecStatus();
+                if (!EXEC_STATUS_PENDING.equals(execStatus) && !EXEC_STATUS_FAILED.equals(execStatus)) {
+                    continue; // skip non-eligible groups
+                }
+                try {
+                    schemaSnapshotService.captureIfMissing(group, ticketId);
+                    String jobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
+                    autoExecService.createGroupJob(group, jobBizId,
+                        execConfig.isEnableTransactional(), execConfig.getErrorStrategy(),
+                        languageTag, "SYSTEM");
+                    autoExecService.startJob(jobBizId, "SYSTEM");
+                } catch (Exception e) {
+                    log.error("[GovTicketV2] Failed to create group job for ticket {}, group {} (External resubmit)",
+                        ticketId, group.getId(), e);
+                }
+            }
+            // Mark dispatch time so PREPARATION step closes at the real dispatch moment
+            // (mirrors GovAutoAdvanceServiceImpl L206)
+            approvalStateService.markExecutionDispatched(ticket.getBizId());
+        }
+
         // Step 5 (§0 fix): PROD_DML re-approval surgery — re-establish person list + reset APPROVAL process.
         // The v1 comment below was aspirational: PROD_DML has no auto-advance chain (scheduler skips it),
         // and approvalTicket L165 physically deleted the person list. Without this surgery the ticket is
@@ -626,7 +754,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // APPROVAL→FINISH, confirmTicketBySystem resets CONFIRM/EXECUTION).
         // VIA_RELEASE needs none of this either — it has no approval surface to repair (no process rows,
         // no person list); it goes straight back to WAIT_RELEASE (release ledger pool).
-        if (TICKET_TYPE_PROD_DML.equals(ticketType) && !viaRelease) {
+        // External is also excluded — its direct-to-WAIT_EXEC path (above) handles all process transitions.
+        if (TICKET_TYPE_PROD_DML.equals(ticketType) && !viaRelease && ticket.getApproType() != ApprovalType.External) {
             List<com.clougence.clouddm.console.web.model.vo.PrimaryUserVO> persons = approvalFlowService.queryPersons(ticketId);
             approvalPersonService.replacePersons(ticket, persons);
 
@@ -639,27 +768,21 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // approvalApproved → WAIT_CONFIRM, then confirmTicket resets CONFIRM (L1146) and
         // EXECUTION (L1154-1162) on its own. (approval-chain.md Q5 step-by-step trace.)
 
-        // Step 6: append new SUBMIT event with recomputed changeType
-        // For SUCCESS groups (not modified), use the stored precheck_result changeType;
-        // for modified groups, use the fresh precheck changeType.
-        List<ChangeType> allChangeTypes = new ArrayList<>();
-        // precheckByGroupId already built in Step 4 (avoids fragile pairId matching)
-        for (DmTicketDbStmtDO g : allGroups) {
-            GroupPrecheck pc = precheckByGroupId.get(g.getId());
-            if (pc != null) {
-                // Modified group — use fresh precheck result
-                allChangeTypes.add(ChangeType.valueOf(pc.result.getChangeType()));
-            } else {
-                // Unmodified group (SUCCESS) — use stored precheck_result changeType
-                Map<String, Object> storedPrecheck = JsonUtils.toObj(g.getPrecheckResult(), HashMap.class);
-                Object ct = storedPrecheck == null ? null : storedPrecheck.get("changeType");
-                if (ct != null) {
-                    allChangeTypes.add(ChangeType.valueOf(String.valueOf(ct)));
-                }
-            }
+        // Step 6: append new SUBMIT event with recomputed changeType (computed above before the
+        // External direct-to-exec path — both paths share the same allChangeTypes/ticketChangeType).
+        // For External resubmit, the SUBMIT event's toStatus is WAIT_EXEC (direct-to-exec) and
+        // eventData carries via=EXTERNAL_RESUBMIT for audit distinction.
+        if (ticket.getApproType() == ApprovalType.External && !viaRelease) {
+            appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType,
+                approvalMode != null ? approvalMode : APPROVAL_MODE_DIRECT,
+                "EXTERNAL_RESUBMIT", ApprovalStatus.WAIT_EXEC);
+            // SYSTEM_CONFIRM event (mirrors GovAutoAdvanceServiceImpl L170-171): records the system
+            // confirm bypass. fromStatus=WAIT_CONFIRM (bypassed, never actually reached), toStatus=WAIT_EXEC.
+            appendSystemConfirmEvent(ticketId, uid, ticketChangeType);
+        } else {
+            appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType,
+                approvalMode != null ? approvalMode : APPROVAL_MODE_DIRECT);
         }
-        ChangeType ticketChangeType = ChangeType.merge(allChangeTypes);
-        appendSubmitEvent(ticketId, uid, ticketType, allGroups.size(), ticketChangeType, approvalMode != null ? approvalMode : APPROVAL_MODE_DIRECT);
 
         // Step 7: resolveChangeType now reads the LATEST SUBMIT event (GovAutoAdvanceServiceImpl
         // change) — the scheduler will pick up the new changeType on the next cycle.
@@ -1024,12 +1147,23 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     }
 
     private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount, ChangeType changeType, String approvalMode) {
+        appendSubmitEvent(ticketId, uid, ticketType, groupCount, changeType, approvalMode, null, null);
+    }
+
+    /**
+     * Overload for the External resubmit path: explicit toStatus (WAIT_EXEC for direct-to-exec)
+     * and via tag (EXTERNAL_RESUBMIT) for audit distinction. When via/toStatus are null, the
+     * legacy toStatus computation is used (regression pin for Internal/DingTalk/VIA_RELEASE).
+     */
+    private void appendSubmitEvent(long ticketId, String uid, String ticketType, int groupCount,
+                                   ChangeType changeType, String approvalMode, String via, ApprovalStatus toStatus) {
         DmDbChangeEventDO event = new DmDbChangeEventDO();
         event.setTicketId(ticketId);
         event.setEventType(GovEventType.SUBMIT.name());
         event.setFromStatus(null);
-        event.setToStatus(APPROVAL_MODE_VIA_RELEASE.equals(approvalMode)
-            ? ApprovalStatus.WAIT_RELEASE.name() : ApprovalStatus.WAIT_APPROVAL.name());
+        event.setToStatus(toStatus != null ? toStatus.name()
+            : (APPROVAL_MODE_VIA_RELEASE.equals(approvalMode)
+                ? ApprovalStatus.WAIT_RELEASE.name() : ApprovalStatus.WAIT_APPROVAL.name()));
         event.setOperatorUid(uid);
 
         Map<String, Object> data = new HashMap<>();
@@ -1037,9 +1171,51 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         data.put("groupCount", groupCount);
         data.put("changeType", changeType.name());
         data.put("approvalMode", approvalMode);
+        if (via != null) {
+            data.put("via", via);
+        }
         event.setEventData(JsonUtils.toJson(data));
 
         dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    /**
+     * SYSTEM_CONFIRM event for the External resubmit direct-to-exec path.
+     * Mirrors GovAutoAdvanceServiceImpl.appendEvent(L170-171): records the system confirm
+     * bypass (WAIT_CONFIRM→WAIT_EXEC). operatorUid = the caller uid (service account for
+     * open command, owner for console). eventData carries via=EXTERNAL_RESUBMIT + changeType.
+     */
+    private void appendSystemConfirmEvent(long ticketId, String uid, ChangeType changeType) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.SYSTEM_CONFIRM.name());
+        event.setFromStatus(ApprovalStatus.WAIT_CONFIRM.name());
+        event.setToStatus(ApprovalStatus.WAIT_EXEC.name());
+        event.setOperatorUid(uid);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("changeType", changeType.name());
+        data.put("via", "EXTERNAL_RESUBMIT");
+        event.setEventData(JsonUtils.toJson(data));
+
+        dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    /**
+     * Build autoExecConfig from ChangeType — mirrors GovAutoAdvanceServiceImpl.buildAutoExecConfig (D15 routing):
+     * DML → enableTransactional=true; DDL/MIXED → false; errorStrategy=NONE always; IMMEDIATE always.
+     */
+    private static com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO buildAutoExecConfig(ChangeType changeType) {
+        com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO config =
+            new com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO();
+        config.setAutoExecType(com.clougence.clouddm.platform.dal.model.execution.AutoExecType.IMMEDIATE);
+        config.setErrorStrategy(com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE);
+        config.setEnableTransactional(changeType == ChangeType.DML);
+        config.setRetryWaitTime(null);
+        config.setRetryCount(null);
+        config.setExecTime(null);
+        config.setSnapshot(false);
+        return config;
     }
 
     private void appendTicketReturnedEvent(long ticketId, String uid, String fromStatus, String toStatus,

@@ -31,6 +31,7 @@ import com.clougence.clouddm.console.web.global.mcp.McpApiProvider;
 import com.clougence.clouddm.console.web.global.mcp.model.McpTool;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
@@ -140,5 +141,218 @@ public class DbChangeOpenApi extends BasicApi {
 
         log.info("[DbChangeOpenApi] releaseReturn request id={}, completed", requestId);
         return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== Commands: approve / reject / cancel ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_APPROVE)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/approve", method = RequestMethod.POST)
+    public ResWebData<?> ticketApprove(@RequestBody @Valid DbChangeTicketCommandFO fo,
+                                       HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketApprove request id={}, uid={}, ticketId={}, approver={}, externalFlowId={}",
+            requestId, uid, fo.getTicketId(), fo.getApprover(), fo.getExternalFlowId());
+
+        govOpenApiService.approveTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketApprove request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_REJECT)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/reject", method = RequestMethod.POST)
+    public ResWebData<?> ticketReject(@RequestBody @Valid DbChangeTicketCommandFO fo,
+                                      HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketReject request id={}, uid={}, ticketId={}, approver={}",
+            requestId, uid, fo.getTicketId(), fo.getApprover());
+
+        govOpenApiService.rejectTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketReject request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_CANCEL)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/cancel", method = RequestMethod.POST)
+    public ResWebData<?> ticketCancel(@RequestBody @Valid DbChangeTicketCommandFO fo,
+                                      HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketCancel request id={}, uid={}, ticketId={}, approver={}",
+            requestId, uid, fo.getTicketId(), fo.getApprover());
+
+        govOpenApiService.cancelTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketCancel request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== Command: return ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_RETURN)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/return", method = RequestMethod.POST)
+    public ResWebData<?> ticketReturn(@RequestBody @Valid DbChangeTicketCommandFO fo,
+                                      HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketReturn request id={}, uid={}, ticketId={}, reason={}",
+            requestId, uid, fo.getTicketId(), fo.getReason());
+
+        govOpenApiService.returnTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketReturn request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== Command: execute ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_EXECUTE)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/execute", method = RequestMethod.POST)
+    public ResWebData<?> ticketExecute(@RequestBody @Valid DbChangeTicketCommandFO fo,
+                                       HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketExecute request id={}, uid={}, ticketId={}",
+            requestId, uid, fo.getTicketId());
+
+        govOpenApiService.executeTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketExecute request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== Command: submit ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_SUBMIT)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/submit", method = RequestMethod.POST)
+    public ResWebData<com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO> ticketSubmit(
+        @RequestBody @Valid com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketSubmitFO fo,
+        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketSubmit request id={}, uid={}, ownerAccount={}, ticketType={}, groupCount={}",
+            requestId, uid, fo.getOwnerAccount(), fo.getTicketType(),
+            fo.getGroups() != null ? fo.getGroups().size() : 0);
+
+        com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO result =
+            govOpenApiService.submitTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketSubmit request id={}, ticketId={}, ticketStatus={}",
+            requestId, result.getTicketId(), result.getTicketStatus());
+        return ResWebDataUtils.buildSuccess(result);
+    }
+
+    // ==================== Command: resubmit ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_RESUBMIT)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/resubmit", method = RequestMethod.POST)
+    public ResWebData<com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO> ticketResubmit(
+        @RequestBody @Valid com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketResubmitFO fo,
+        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketResubmit request id={}, uid={}, ticketId={}, groupCount={}",
+            requestId, uid, fo.getTicketId(),
+            fo.getGroups() != null ? fo.getGroups().size() : 0);
+
+        com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO result =
+            govOpenApiService.resubmitTicket(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketResubmit request id={}, ticketId={}, ticketStatus={}",
+            requestId, result.getTicketId(), result.getTicketStatus());
+        return ResWebDataUtils.buildSuccess(result);
+    }
+
+    // ==================== Command: releases/create ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_RELEASE_CREATE)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/releases/create", method = RequestMethod.POST)
+    public ResWebData<com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO> releaseCreate(
+        @RequestBody @Valid com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO fo,
+        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] releaseCreate request id={}, uid={}, creatorAccount={}, ticketCount={}",
+            requestId, uid, fo.getCreatorAccount(),
+            fo.getTicketIds() != null ? fo.getTicketIds().size() : 0);
+
+        com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO result =
+            govOpenApiService.createRelease(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] releaseCreate request id={}, releaseId={}, releaseNo={}",
+            requestId, result.getReleaseId(), result.getReleaseNo());
+        return ResWebDataUtils.buildSuccess(result);
+    }
+
+    // ==================== Command: releases/resubmit ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_RELEASE_RESUBMIT)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/releases/resubmit", method = RequestMethod.POST)
+    public ResWebData<?> releaseResubmit(
+        @RequestBody @Valid com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseResubmitFO fo,
+        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] releaseResubmit request id={}, uid={}, releaseId={}, ticketCount={}",
+            requestId, uid, fo.getReleaseId(),
+            fo.getTicketIds() != null ? fo.getTicketIds().size() : 0);
+
+        govOpenApiService.resubmitRelease(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] releaseResubmit request id={}, completed", requestId);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== Read: tickets/detail ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_TICKET_DETAIL)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/tickets/detail", method = RequestMethod.POST)
+    public ResWebData<com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketDetailVO> ticketDetail(
+        @RequestBody @Valid com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketDetailFO fo,
+        HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ticketDetail request id={}, uid={}, ticketId={}",
+            requestId, uid, fo.getTicketId());
+
+        com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketDetailVO result =
+            govOpenApiService.ticketDetail(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ticketDetail request id={}, ticketId={}, found={}",
+            requestId, fo.getTicketId(), result != null);
+        return ResWebDataUtils.buildSuccess(result);
     }
 }

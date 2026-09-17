@@ -23,7 +23,8 @@ public enum ApprovalProvider {
     DingTalk,
     Wechat,
     Feishu,
-    Custom,;
+    Custom,
+    External,;
 
     public static ApprovalProvider valueOfCode(String code) {
         if (StringUtils.isBlank(code)) {

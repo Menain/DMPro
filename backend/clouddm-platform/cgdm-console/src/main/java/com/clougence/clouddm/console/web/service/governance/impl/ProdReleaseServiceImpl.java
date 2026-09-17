@@ -682,6 +682,27 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void resubmitRelease(String puid, String uid, boolean isMaintainer, ProdReleaseResubmitFO fo) {
+        resubmitReleaseInternal(puid, uid, isMaintainer, fo, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void resubmitReleaseOpenCommand(String puid, String uid, ProdReleaseResubmitFO fo) {
+        resubmitReleaseInternal(puid, uid, false, fo, true);
+    }
+
+    /**
+     * Shared resubmit logic for console and open command paths.
+     * <p>
+     * Console path ({@code openCommand=false}): enforces the creator/primary/maintainer
+     * permission check — behavior bit-for-bit unchanged (regression pin).
+     * <p>
+     * Open command path ({@code openCommand=true}): skips the permission check; tenant-level
+     * auth (AK/SK is the credential). release.creatorUid unchanged; RELEASE_RESUBMITTED
+     * event operator = service account uid. 09-14 diff/gate_result semantics fully reused.
+     */
+    private void resubmitReleaseInternal(String puid, String uid, boolean isMaintainer,
+                                         ProdReleaseResubmitFO fo, boolean openCommand) {
         long releaseId = fo.getReleaseId();
 
         // Step 1: Row lock + tenant check
@@ -690,8 +711,9 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             throw new ErrorMessageException("Release not found: " + releaseId);
         }
 
-        // Step 1b: Permission — creator, primary account, or maintainer only
-        if (!uid.equals(release.getCreatorUid()) && !uid.equals(puid) && !isMaintainer) {
+        // Step 1b: Permission — creator, primary account, or maintainer only.
+        // Console path only — open command path skips this (tenant match is the credential).
+        if (!openCommand && !uid.equals(release.getCreatorUid()) && !uid.equals(puid) && !isMaintainer) {
             throw new ErrorMessageException("Release not found: " + releaseId);
         }
 

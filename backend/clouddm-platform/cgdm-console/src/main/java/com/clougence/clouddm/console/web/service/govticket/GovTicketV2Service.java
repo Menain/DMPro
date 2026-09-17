@@ -43,9 +43,16 @@ public interface GovTicketV2Service {
 
     /**
      * Return a ticket (EXEC_FAIL/WAIT_EXEC with FAILED groups) to REVISION for SQL editing.
-     * Only the submitter (uid == ownerUid) can return their own ticket.
+     * Console path: enforces the three-pronged identity check (owner ∨ primary ∨ DM_DAUTH_TICKET@bindDsId).
      */
     void returnTicket(String puid, String uid, GovTicketV2ReturnTicketFO fo);
+
+    /**
+     * Return a ticket (EXEC_FAIL/WAIT_EXEC with FAILED groups) to REVISION — open command variant.
+     * Skips the three-pronged identity check; tenant-level auth (AK/SK is the credential).
+     * eventData.via = EXTERNAL_COMMAND. Status guards / REVISION / IM notify are reused from the console path.
+     */
+    void returnTicketOpenCommand(String puid, String uid, long ticketId, String reason);
 
     /**
      * Resubmit a REVISION ticket with modified SQL per FAILED group.
@@ -54,6 +61,16 @@ public interface GovTicketV2Service {
      * where the existing scheduler auto-advance chain picks up.
      */
     void resubmit(String puid, String uid, GovTicketV2ResubmitFO fo);
+
+    /**
+     * Resubmit a REVISION ticket — open command variant.
+     * Skips the owner-only identity check; tenant-level auth (AK/SK is the credential).
+     * For External-channel tickets, the resubmit goes directly to WAIT_EXEC (Q2 方案 A),
+     * bypassing the approval surface entirely — the original external approval still stands
+     * (execution failure ≠ approval rejected). Internal/DingTalk channels use the same
+     * resubmit logic as the console path (regression pin).
+     */
+    void resubmitOpenCommand(String puid, String uid, GovTicketV2ResubmitFO fo);
 
     /** Available pairs for the ticket creation dropdown. */
     List<DbPairVO> availablePairs(String puid, String side);

@@ -539,6 +539,97 @@ public class GovTicketV2SubmitModeTest {
         verify(stmtMapper, never()).insert(any(DmTicketDbStmtDO.class));
     }
 
+    // ==================== External orchestration template exemption (T3) ====================
+
+    /**
+     * T3-a: DIRECT + External → submit succeeds, template fields null, no template check called.
+     * <p>
+     * External has no template concept (no SPI, no OA instance). The template check
+     * branch is skipped — External walks the same exemption path as Internal.
+     */
+    @Test
+    public void submit_prodDmlDirectExternal_templateFieldsNullNoCheck() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("External")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo);
+
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket = ticketCaptor.getValue();
+        assertEquals(ApprovalType.External, ticket.getApproType());
+        assertEquals(ApprovalStatus.WAIT_APPROVAL, ticket.getTicketStatus());
+        assertNull("External template identity must be null", ticket.getApproTemplateIdentity());
+        assertNull("External template name must be null", ticket.getApproTemplateName());
+
+        // Template check must NOT be called for External (exempted alongside Internal)
+        verify(approvalFlowService, never()).checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any());
+    }
+
+    /**
+     * T3-b: VIA_RELEASE + External → WAIT_RELEASE, template fields null (VIA_RELEASE stores type for display).
+     */
+    @Test
+    public void submit_prodDmlViaReleaseExternal_templateFieldsNull() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("External")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "VIA_RELEASE", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo);
+
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket = ticketCaptor.getValue();
+        assertEquals(ApprovalType.External, ticket.getApproType());
+        assertEquals(ApprovalStatus.WAIT_RELEASE, ticket.getTicketStatus());
+        assertNull(ticket.getApproTemplateIdentity());
+        assertNull(ticket.getApproTemplateName());
+        verify(approvalFlowService, never()).checkApprovalAndReturnTemplate(
+            anyString(), any(ApprovalType.class), anyString(), any());
+    }
+
+    /**
+     * T3-c: DingTalk template regression pin — template check still called, fields persisted.
+     *       (Confirms External exemption does not disturb the DingTalk branch.)
+     */
+    @Test
+    public void submit_prodDmlDirectDingTalk_templateCheckStillCalled_regressionPin() {
+        DmEnvParamTicketDesVO ticketConfig = DmEnvParamTicketDesVO.builder()
+            .openTicket(true)
+            .type("DingTalk")
+            .templateId("tpl-regression")
+            .build();
+        when(dmEnvParamService.querySqlTicketInfoParam(anyString(), anyLong())).thenReturn(ticketConfig);
+
+        DmApprovalTemplateDO templateDO = new DmApprovalTemplateDO();
+        templateDO.setTemplateName("DingTalk-Regression");
+        when(approvalFlowService.checkApprovalAndReturnTemplate(
+            eq(PUID), eq(ApprovalType.DingTalk), eq("tpl-regression"), any()))
+            .thenReturn(templateDO);
+
+        GovTicketV2SubmitFO fo = buildSubmitFO("PROD_DML", "DIRECT", "UPDATE t SET val=1 WHERE id=2;");
+        service.submit(PUID, UID, fo);
+
+        // DingTalk MUST still call checkApprovalAndReturnTemplate (not exempted)
+        verify(approvalFlowService).checkApprovalAndReturnTemplate(
+            eq(PUID), eq(ApprovalType.DingTalk), eq("tpl-regression"), any());
+
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        DmApprovalDO ticket = ticketCaptor.getValue();
+        assertEquals(ApprovalType.DingTalk, ticket.getApproType());
+        assertEquals("tpl-regression", ticket.getApproTemplateIdentity());
+        assertEquals("DingTalk-Regression", ticket.getApproTemplateName());
+    }
+
     // ==================== helpers ====================
 
     private GovTicketV2SubmitFO buildSubmitFO(String ticketType, String approvalMode, String sqlContent) {

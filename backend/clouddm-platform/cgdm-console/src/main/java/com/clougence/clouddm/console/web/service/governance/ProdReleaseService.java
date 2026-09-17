@@ -105,6 +105,14 @@ public interface ProdReleaseService {
     void resubmitRelease(String puid, String uid, boolean isMaintainer, ProdReleaseResubmitFO fo);
 
     /**
+     * Resubmit a RETURNED release — open command variant.
+     * Skips the creator/primary/maintainer permission check; tenant-level auth (AK/SK is the credential).
+     * release.creatorUid unchanged; RELEASE_RESUBMITTED event operator = service account uid.
+     * 09-14 diff/gate_result semantics are fully reused.
+     */
+    void resubmitReleaseOpenCommand(String puid, String uid, ProdReleaseResubmitFO fo);
+
+    /**
      * Cancel (discard) a RETURNED release (RETURNED → CANCELLED).
      * Terminal — no approval flow to cancel (already cancelled on return).
      * Permission: caller must be the release creator, the primary account (uid == puid),

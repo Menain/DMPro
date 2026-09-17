@@ -26,6 +26,7 @@ import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.ApprovalFlowService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
+import com.clougence.clouddm.console.web.component.approval.model.ExternalCommandMeta;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.config.RootUserConfig;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
@@ -34,9 +35,12 @@ import com.clougence.clouddm.console.web.model.vo.RdpApproTemplateVO;
 import com.clougence.clouddm.console.web.util.RdpConvertUtils;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
+import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.model.approval.*;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.DmDbChangeEventDO;
+import com.clougence.clouddm.platform.dal.model.dbchange.GovEventType;
 import com.clougence.clouddm.platform.dal.model.system.DmSysUserConfDO;
 import com.clougence.clouddm.platform.plugin.PluginManager;
 import com.clougence.clouddm.sdk.LifeSpiRequest;
@@ -75,6 +79,8 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
     private ImSenderService                         imSenderService;
     @Resource
     private ApprovalStateService                    approvalStateService;
+    @Resource
+    private DbChangeEventDal                        dbChangeEventDal;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -160,6 +166,15 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
         innerProvider.put("enable", true);
         innerProvider.put("desc", "");
         list.add(innerProvider);
+
+        // External orchestration mode: command-driven, no SPI plugin, always enabled
+        // (mirrors Internal row shape — no findSpi/status check, no config toggle)
+        Map<String, Object> externalProvider = new HashMap<>();
+        externalProvider.put("approvalType", ApprovalType.External.name());
+        externalProvider.put("i18n", DmI18nUtils.getMessage(ApprovalType.External.getI18nKey()));
+        externalProvider.put("enable", true);
+        externalProvider.put("desc", "");
+        list.add(externalProvider);
 
         List<String> serviceNames = PluginManager.getSpiNamesByType(ApprovalProviderSpi.class);
 
@@ -309,6 +324,12 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
             return;
         }
 
+        // External orchestration mode: no external SPI to poll, status driven by commands.
+        // Defensive early-exit — even if accidentally invoked, do not throw NOT_SUPPORT.
+        if (ticket.getApproType() == ApprovalType.External) {
+            return;
+        }
+
         try {
             ApprovalProviderSpi approvalService = PluginManager.findSpi(ApprovalProviderSpi.class, ticket.getApproType().name());
             if (approvalService == null) {
@@ -322,44 +343,10 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
                 this.approvalDal.activityMapper().updateContext(processDO.getId(), stringListEntry.getKey(), JsonUtils.toJson(stringListEntry.getValue()));
             }
 
-            switch (status) {
-                case CANCELED:
-                case TERMINATED: {
-                    // step1
-                    this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.CLOSED, null);
-                    // step2
-                    this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.CANCELED, null);
-                    this.approvalDal.processMapper().updateNotEndProcessByTicketId(ticketId, ApprovalProcessStatus.CLOSED);
-                    // step3
-                    this.approvalHandler(ticket.getApproBiz()).approvalCanceled(ticket.getId(), ticket.getApproBiz(), imSenderService);
-                    break;
-                }
-                case COMPLETED: {
-                    // step1
-                    this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.FINISH, null);
-                    // step2
-                    this.approvalHandler(ticket.getApproBiz()).approvalApproved(ticket.getId(), ticket.getApproBiz(), imSenderService);
-                    break;
-                }
-                case REFUSE: {
-                    // step1
-                    this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.REJECT, null);
-                    // step2
-                    this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.REJECTED, null);
-                    this.approvalDal.processMapper().updateNotEndProcessByTicketId(ticketId, ApprovalProcessStatus.REJECT);
-                    // step3
-                    this.approvalHandler(ticket.getApproBiz()).approvalRejected(ticket.getId(), ticket.getApproBiz(), imSenderService);
-                    break;
-                }
-                case FAILED: {
-                    // step1
-                    this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.FAILED, null);
-                    this.failedTicket(ticket);
-                    // step2
-                    this.approvalHandler(ticket.getApproBiz()).approvalFailed(ticket.getId(), ticket.getApproBiz(), imSenderService);
-                    break;
-                }
-            }
+            // Delegate to the extracted three-step state-migration method (meta=null →
+            // no guards, no activity synthesis, no externalFlowId, no audit event —
+            // behavior is bit-for-bit identical to the former inline switch block).
+            applyExternalApprovalResult(ticketId, status, null);
 
             this.approvalDal.processMapper().updateModified(processDO.getId());
         } catch (ThirdPartyApiException e) {
@@ -369,6 +356,206 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
                 throw e;
             }
         }
+    }
+
+    /**
+     * Three-step approval state migration, extracted from {@link #refreshApprovalStatus}.
+     * <p>
+     * Mirrors the original switch block (L325-362) bit-for-bit when {@code meta == null}
+     * (the DingTalk/Internal callback path). When {@code meta != null} (the open command
+     * API path), additionally performs: status guards, activity synthesis, externalFlowId
+     * persistence, and audit event recording.
+     * <p>
+     * The three steps per status branch:
+     * <ol>
+     *   <li>updateProcessStatus(ticketId, APPROVAL, FINISH|REJECT|CLOSED, context)</li>
+     *   <li>updateApprovalStatus(ticketId, WAIT_CONFIRM|REJECTED|CANCELED, msg) + process cleanup</li>
+     *   <li>handler(approBiz).approvalApproved|Rejected|Canceled(ticketId, approBiz, imSender)</li>
+     * </ol>
+     * <p>
+     * Row lock (selectByIdForUpdate) fronts the method for concurrent safety: when the
+     * scheduler sweep / detail-page refreshCache / open command race on the same ticket,
+     * the row lock serializes their mutations.
+     *
+     * @param ticketId the dm_approval.id
+     * @param status   the external approval instance status (COMPLETED/REFUSE/CANCELED/TERMINATED/FAILED)
+     * @param meta     command metadata (null for the DingTalk/Internal callback path;
+     *                 non-null for the open command API path with operator/approver/comment/externalFlowId)
+     */
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void applyExternalApprovalResult(long ticketId, ApprovalInstanceStatus status, ExternalCommandMeta meta) {
+        DmApprovalDO ticket = approvalDal.approvalMapper().selectByIdForUpdate(ticketId);
+
+        // Guards — only for the command path (meta != null). The callback path
+        // (meta == null) already checked isEndStatus/External in refreshApprovalStatus.
+        if (meta != null) {
+            if (ApprovalStatus.isEndStatus(ticket.getTicketStatus())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nRdpMsgKeys.GOV_OPEN_COMMAND_INVALID_STATUS.name(),
+                    ticketId, ticket.getTicketStatus(), status.name()));
+            }
+            if (ticket.getTicketStatus() != ApprovalStatus.WAIT_APPROVAL) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nRdpMsgKeys.GOV_OPEN_COMMAND_INVALID_STATUS.name(),
+                    ticketId, ticket.getTicketStatus(), status.name()));
+            }
+            if (ticket.getApproType() != ApprovalType.External) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nRdpMsgKeys.GOV_OPEN_COMMAND_CHANNEL_MISMATCH.name(),
+                    ticketId, ticket.getApproType()));
+            }
+        }
+
+        // Activity synthesis — only for the command path when approver/comment is present.
+        // activityId = "ext-" + timestamp (globally unique, never collides with SPI-sourced IDs).
+        if (meta != null && (StringUtils.isNotBlank(meta.getApprover()) || StringUtils.isNotBlank(meta.getComment()))) {
+            String activityId = "ext-" + System.currentTimeMillis();
+            ApprovalActivityStatus actStatus = mapToActivityStatus(status);
+            Map<String, Object> actContext = new HashMap<>();
+            if (StringUtils.isNotBlank(meta.getApprover())) {
+                actContext.put("userName", meta.getApprover());
+            }
+            if (StringUtils.isNotBlank(meta.getComment())) {
+                actContext.put("remark", meta.getComment());
+            }
+            actContext.put("finishTime", new java.util.Date());
+            this.approvalStateService.initializeActivity(
+                ticketId, ApprovalStage.APPROVAL, activityId,
+                "External Approval", 0, actStatus != null ? actStatus.name() : null,
+                JsonUtils.toJson(actContext));
+        }
+
+        // externalFlowId → approIdentity — only when the current approIdentity is empty
+        // (never overwrite an identity set by a prior createApproval or command).
+        if (meta != null && StringUtils.isNotBlank(meta.getExternalFlowId())
+            && StringUtils.isEmpty(ticket.getApproIdentity())) {
+            approvalDal.approvalMapper().updateThirdApprovalInfo(ticketId, meta.getExternalFlowId(), null);
+        }
+
+        // Three-step state migration (mirrors the former inline switch block).
+        switch (status) {
+            case CANCELED:
+            case TERMINATED: {
+                // step1
+                this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.CLOSED, null);
+                // step2
+                this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.CANCELED, null);
+                this.approvalDal.processMapper().updateNotEndProcessByTicketId(ticketId, ApprovalProcessStatus.CLOSED);
+                // step3
+                this.approvalHandler(ticket.getApproBiz()).approvalCanceled(ticket.getId(), ticket.getApproBiz(), imSenderService);
+                break;
+            }
+            case COMPLETED: {
+                // step1
+                this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.FINISH, null);
+                // step2
+                this.approvalHandler(ticket.getApproBiz()).approvalApproved(ticket.getId(), ticket.getApproBiz(), imSenderService);
+                break;
+            }
+            case REFUSE: {
+                // step1
+                this.approvalStateService.updateProcessStatus(ticketId, ApprovalStage.APPROVAL, ApprovalProcessStatus.REJECT, null);
+                // step2
+                this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.REJECTED, null);
+                this.approvalDal.processMapper().updateNotEndProcessByTicketId(ticketId, ApprovalProcessStatus.REJECT);
+                // step3
+                this.approvalHandler(ticket.getApproBiz()).approvalRejected(ticket.getId(), ticket.getApproBiz(), imSenderService);
+                break;
+            }
+            case FAILED: {
+                // step1
+                this.approvalStateService.updateApprovalStatus(ticket.getId(), ApprovalStatus.FAILED, null);
+                this.failedTicket(ticket);
+                // step2
+                this.approvalHandler(ticket.getApproBiz()).approvalFailed(ticket.getId(), ticket.getApproBiz(), imSenderService);
+                break;
+            }
+            default:
+                // RUNNING and other non-terminal statuses: no state migration.
+                break;
+        }
+
+        // Audit event — only for the command path (meta != null).
+        // operator = service account uid (NOT SYSTEM); eventData carries via + command metadata.
+        if (meta != null) {
+            GovEventType eventType = mapToEventType(status);
+            if (eventType != null) {
+                String fromStatus = ApprovalStatus.WAIT_APPROVAL.name();
+                String toStatus = mapToTicketStatus(status);
+                appendExternalCommandEvent(ticketId, eventType, fromStatus, toStatus, meta);
+            }
+        }
+    }
+
+    private ApprovalActivityStatus mapToActivityStatus(ApprovalInstanceStatus status) {
+        switch (status) {
+            case COMPLETED:
+                return ApprovalActivityStatus.COMPLETED;
+            case REFUSE:
+                return ApprovalActivityStatus.REFUSE;
+            case CANCELED:
+            case TERMINATED:
+                return ApprovalActivityStatus.CANCELED;
+            case FAILED:
+                return ApprovalActivityStatus.CLOSE;
+            default:
+                return null;
+        }
+    }
+
+    private GovEventType mapToEventType(ApprovalInstanceStatus status) {
+        switch (status) {
+            case COMPLETED:
+                return GovEventType.EXTERNAL_APPROVED;
+            case REFUSE:
+                return GovEventType.EXTERNAL_REJECTED;
+            case CANCELED:
+            case TERMINATED:
+                return GovEventType.EXTERNAL_CANCELED;
+            default:
+                return null;
+        }
+    }
+
+    private String mapToTicketStatus(ApprovalInstanceStatus status) {
+        switch (status) {
+            case COMPLETED:
+                return ApprovalStatus.WAIT_CONFIRM.name();
+            case REFUSE:
+                return ApprovalStatus.REJECTED.name();
+            case CANCELED:
+            case TERMINATED:
+                return ApprovalStatus.CANCELED.name();
+            case FAILED:
+                return ApprovalStatus.FAILED.name();
+            default:
+                return null;
+        }
+    }
+
+    private void appendExternalCommandEvent(long ticketId, GovEventType eventType,
+                                            String fromStatus, String toStatus, ExternalCommandMeta meta) {
+        DmDbChangeEventDO eventDO = new DmDbChangeEventDO();
+        eventDO.setTicketId(ticketId);
+        eventDO.setEventType(eventType.name());
+        eventDO.setFromStatus(fromStatus);
+        eventDO.setToStatus(toStatus);
+        eventDO.setOperatorUid(meta.getOperatorUid());
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("via", "EXTERNAL_COMMAND");
+        if (StringUtils.isNotBlank(meta.getApprover())) {
+            data.put("approver", meta.getApprover());
+        }
+        if (StringUtils.isNotBlank(meta.getComment())) {
+            data.put("comment", meta.getComment());
+        }
+        if (StringUtils.isNotBlank(meta.getExternalFlowId())) {
+            data.put("externalFlowId", meta.getExternalFlowId());
+        }
+        eventDO.setEventData(JsonUtils.toJson(data));
+
+        this.dbChangeEventDal.eventMapper().insert(eventDO);
     }
 
     private void failedTicket(DmApprovalDO ticket) {

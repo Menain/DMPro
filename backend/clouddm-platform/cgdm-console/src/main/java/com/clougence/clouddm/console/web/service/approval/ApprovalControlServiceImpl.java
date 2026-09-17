@@ -352,6 +352,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         if (cachedTicketDO != null &&   //
             fo.isRefreshCache() &&      //
             cachedTicketDO.getApproType() != ApprovalType.Internal &&//
+            cachedTicketDO.getApproType() != ApprovalType.External &&//
             cachedTicketDO.getTicketStatus() == ApprovalStatus.WAIT_APPROVAL) {
 
             CgFuture<Boolean> cgFuture = this.asyncTaskWithResultService.submitTask(        //
@@ -946,7 +947,7 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_TEMPLATE_NOT_EXISTS.name()));
         }
         ApprovalType approvalType = ApprovalType.valueOf(ticketConfig.getType());
-        if (approvalType != ApprovalType.Internal) {
+        if (approvalType != ApprovalType.Internal && approvalType != ApprovalType.External) {
             DmApprovalTemplateDO templateDO = this.approvalProviderService.checkApprovalAndReturnTemplate(puid, approvalType, ticketConfig.getTemplateId(), null);
             ticketConfig.setTemplateName(templateDO.getTemplateName());// update form cache.
         }
@@ -1367,6 +1368,19 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             DmApprovalDO dmTicketDO = this.approvalDal.approvalMapper().queryByBizId(rdpTicketDO.getBizId());
             if (dmTicketDO == null) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
+            }
+            // P3 release branch (SYSTEM path): DM_PROD_RELEASE tickets trigger ProdReleaseService.startExecution
+            // — mirrors prepareExecJobAsync L1099-1107. Without this branch, release tickets driven by
+            // confirmTicketBySystem (e.g. External execute command) would fall through to createExecJob
+            // which is the wrong path for release stmts. Manual confirmTicket path is untouched.
+            if (rdpTicketDO.getApproBiz() == com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_PROD_RELEASE) {
+                com.clougence.clouddm.console.web.component.approval.model.ApprovalMO releaseMo
+                    = com.clougence.utils.JsonUtils.toObj(dmTicketDO.getTicketInfo(),
+                        com.clougence.clouddm.console.web.component.approval.model.ApprovalMO.class);
+                if (releaseMo != null && releaseMo.getReleaseId() != null) {
+                    this.prodReleaseService.startExecution(releaseMo.getReleaseId(), fo.getConfirmUid());
+                }
+                return;
             }
             // Phase 7 touchpoint #2 (SYSTEM path): gate-two guard — same as prepareExecJobAsync
             com.clougence.clouddm.console.web.component.governance.GuardConclusion guardConclusion
