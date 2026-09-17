@@ -475,25 +475,43 @@ public class SchemaPatrolServiceImplTest {
     public void throttle_tableLimitExceeded_partial() throws Exception {
         DmDbPairDO pair = buildPair();
         when(systemDal.fetchSystemConf(eq("govSchemaPatrolTableLimit"), eq(Integer.class), anyInt())).thenReturn(1);
-        mockTableLists(List.of("t1", "t2", "t3"), List.of());
+        mockTableLists(List.of("t1", "t2", "t3"), List.of("t1", "t2", "t3"));
 
         SchemaPatrolServiceImpl.PairResult result = service.patrolPair(pair, RUN_ID);
 
         assertTrue(result.partial);
-        List<DmGovSchemaPatrolItemDO> items = captureItems();
-        assertEquals(1, items.size());
+        // only t1 compared (unmocked fetch → both sides null → equal → no item)
+        verify(dsSchemaService, times(2)).realTimeFetchSelectObject(any(), any(), anyString());
+        verify(itemMapper, never()).batchInsert(anyList());
     }
 
     @Test
     public void throttle_timeBudgetExceeded_partial() throws Exception {
         DmDbPairDO pair = buildPair();
         when(systemDal.fetchSystemConf(eq("govSchemaPatrolBudgetMinutes"), eq(Long.class), anyLong())).thenReturn(0L);
-        mockTableLists(List.of("t1", "t2"), List.of());
+        mockTableLists(List.of("t1", "t2"), List.of("t1", "t2"));
 
         SchemaPatrolServiceImpl.PairResult result = service.patrolPair(pair, RUN_ID);
 
         assertTrue(result.partial);
+        verify(dsSchemaService, never()).realTimeFetchSelectObject(any(), any(), anyString());
         verify(itemMapper, never()).batchInsert(anyList());
+    }
+
+    @Test
+    public void oneSidedTables_bypassThrottleAndFetch() throws Exception {
+        DmDbPairDO pair = buildPair();
+        // limit=1 would have blocked one-sided tables under the old throttle
+        when(systemDal.fetchSystemConf(eq("govSchemaPatrolTableLimit"), eq(Integer.class), anyInt())).thenReturn(1);
+        mockTableLists(List.of("t1", "t2", "t3"), List.of("p1"));
+
+        SchemaPatrolServiceImpl.PairResult result = service.patrolPair(pair, RUN_ID);
+
+        assertFalse(result.partial);
+        // 3 ONLY_PRE + 1 ONLY_PROD all emitted despite limit=1, with zero live fetches
+        List<DmGovSchemaPatrolItemDO> items = captureItems();
+        assertEquals(4, items.size());
+        verify(dsSchemaService, never()).realTimeFetchSelectObject(any(), any(), anyString());
     }
 
     // ==================== Group 4: Read-only red line ====================
@@ -544,14 +562,14 @@ public class SchemaPatrolServiceImplTest {
     public void executeRun_tableLimit_errorCarriesIncompleteNote() {
         DmDbPairDO pair = buildPair();
         when(systemDal.fetchSystemConf(eq("govSchemaPatrolTableLimit"), eq(Integer.class), anyInt())).thenReturn(1);
-        mockTableLists(List.of("t1", "t2", "t3"), List.of());
+        mockTableLists(List.of("t1", "t2", "t3"), List.of("t1", "t2", "t3"));
 
         service.executeRun(RUN_ID, List.of(pair));
 
-        // t1 (the compared ONLY_PRE table) is unexplained → unexplainedCount=1
+        // only t1 compared, equal fingerprints (unmocked fetch) → no items, no unexplained
         ArgumentCaptor<String> errCap = ArgumentCaptor.forClass(String.class);
-        verify(runMapper).updateStatus(eq(RUN_ID), eq("PARTIAL"), eq(1), eq(1), errCap.capture());
-        assertTrue(errCap.getValue().contains("table limit 1 hit, 2 of 3 tables not compared"));
+        verify(runMapper).updateStatus(eq(RUN_ID), eq("PARTIAL"), eq(1), eq(0), errCap.capture());
+        assertTrue(errCap.getValue().contains("table limit 1 hit, 2 of 3 common tables not compared"));
     }
 
     @Test
@@ -672,11 +690,12 @@ public class SchemaPatrolServiceImplTest {
     @Test
     public void patrolPair_cancelRequested_stopsBeforeTableProcessing() throws Exception {
         DmDbPairDO pair = buildPair();
-        mockTableLists(List.of("t1", "t2"), List.of());
+        mockTableLists(List.of("t1", "t2"), List.of("t1", "t2"));
         flag("cancelRequestedRunId").set(RUN_ID);
 
         service.patrolPair(pair, RUN_ID);
 
+        // cancel checkpoint guards the common-table fetch loop — no RPC, no items
         verify(itemMapper, never()).batchInsert(anyList());
         verify(dsSchemaService, never()).realTimeFetchSelectObject(any(), any(), anyString());
     }

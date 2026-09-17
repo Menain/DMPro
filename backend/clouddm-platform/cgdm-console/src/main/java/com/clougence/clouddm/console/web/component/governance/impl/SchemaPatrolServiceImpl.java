@@ -437,48 +437,35 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         common.addAll(preSet);
         common.retainAll(prodSet);
 
-        // Throttle config
-        int tableLimit = fetchConfig(CFG_TABLE_LIMIT, Integer.class, 500);
-        long sleepMs = fetchConfig(CFG_SLEEP_MS, Long.class, 50L);
-        long budgetMs = fetchConfig(CFG_BUDGET_MIN, Long.class, 10L) * 60_000L;
-
-        long startTime = System.currentTimeMillis();
         List<DmGovSchemaPatrolItemDO> items = new ArrayList<>();
-        int processed = 0;
-        boolean budgetExceeded = false;
 
-        // Process ONLY_PRE
+        // One-sided tables (ONLY_PRE / ONLY_PROD): existence is already known from
+        // the two table lists — no live fetch, no throttle, no cancel checkpoint;
+        // every one-sided table gets its diff item directly.
         for (String table : onlyPre) {
-            if (isCancelRequested(runId)) break;
-            if (processed >= tableLimit || budgetExceeded) break;
-            budgetExceeded = checkBudget(startTime, budgetMs);
-            if (budgetExceeded) break;
-            sleep(sleepMs);
-
             String detail = SchemaDriftDetailDiffer.onlyOneSideJson(true, false);
             ExplainResult explain = classifyExplain(table, DIFF_ONLY_PRE, ctx);
             items.add(buildItem(runId, pair, table, DIFF_ONLY_PRE, explain, detail));
-            processed++;
         }
-
-        // Process ONLY_PROD
         for (String table : onlyProd) {
-            if (isCancelRequested(runId)) break;
-            if (processed >= tableLimit || budgetExceeded) break;
-            budgetExceeded = checkBudget(startTime, budgetMs);
-            if (budgetExceeded) break;
-            sleep(sleepMs);
-
             String detail = SchemaDriftDetailDiffer.onlyOneSideJson(false, true);
             ExplainResult explain = classifyExplain(table, DIFF_ONLY_PROD, ctx);
             items.add(buildItem(runId, pair, table, DIFF_ONLY_PROD, explain, detail));
-            processed++;
         }
 
-        // Process common tables (MISMATCH check)
+        // Common tables (MISMATCH check): two live structure fetches per table —
+        // the only section issuing per-table RPCs, so throttling (sleep / table
+        // limit / time budget) and cancel checkpoints apply here only.
+        int tableLimit = fetchConfig(CFG_TABLE_LIMIT, Integer.class, 2000);
+        long sleepMs = fetchConfig(CFG_SLEEP_MS, Long.class, 50L);
+        long budgetMs = fetchConfig(CFG_BUDGET_MIN, Long.class, 30L) * 60_000L;
+
+        long startTime = System.currentTimeMillis();
+        int compared = 0;
+        boolean budgetExceeded = false;
         for (String table : common) {
             if (isCancelRequested(runId)) break;
-            if (processed >= tableLimit || budgetExceeded) break;
+            if (compared >= tableLimit || budgetExceeded) break;
             budgetExceeded = checkBudget(startTime, budgetMs);
             if (budgetExceeded) break;
             sleep(sleepMs);
@@ -496,21 +483,20 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
                 ExplainResult explain = classifyExplain(table, DIFF_MISMATCH, ctx);
                 items.add(buildItem(runId, pair, table, DIFF_MISMATCH, explain, detail));
             }
-            processed++;
+            compared++;
         }
 
-        int totalTables = onlyPre.size() + onlyProd.size() + common.size();
-        if (processed >= tableLimit) {
+        if (compared >= tableLimit) {
             log.info("[SchemaPatrol] Pair {} hit table limit ({}), marking PARTIAL", pair.getId(), tableLimit);
             result.partial = true;
             result.partialReasons.add(pairLabel(pair) + ": table limit " + tableLimit + " hit, "
-                + (totalTables - processed) + " of " + totalTables + " tables not compared");
+                + (common.size() - compared) + " of " + common.size() + " common tables not compared");
         }
         if (budgetExceeded) {
             log.info("[SchemaPatrol] Pair {} exceeded time budget ({}ms), marking PARTIAL", pair.getId(), budgetMs);
             result.partial = true;
             result.partialReasons.add(pairLabel(pair) + ": time budget " + (budgetMs / 60_000L)
-                + " min exhausted, " + (totalTables - processed) + " of " + totalTables + " tables not compared");
+                + " min exhausted, " + (common.size() - compared) + " of " + common.size() + " common tables not compared");
         }
 
         // Batch insert items
