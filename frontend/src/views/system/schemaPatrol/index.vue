@@ -10,7 +10,7 @@
               </Button>
             </div>
             <div class="right">
-              <Button :loading="loading" @click="loadRuns">
+              <Button :loading="loading" @click="loadRuns(true)">
                 {{ $t('cha-xun') }}
               </Button>
             </div>
@@ -32,6 +32,17 @@
               <template #action="{ row }">
                 <Button type="primary" size="small" ghost @click="handleViewDetail(row)">
                   {{ $t('xun-jian-xiang-qing') }}
+                </Button>
+                <Button
+                  v-if="row.status === 'RUNNING'"
+                  type="error"
+                  size="small"
+                  ghost
+                  :loading="stopLoadingId === row.id"
+                  class="stop-btn"
+                  @click="handleStop(row)"
+                >
+                  {{ $t('xun-jian-ting-zhi') }}
                 </Button>
               </template>
             </Table>
@@ -83,6 +94,7 @@ export default {
       runs: [],
       loading: false,
       runLoading: false,
+      stopLoadingId: null,
       currentPage: 1,
       pageSize: 20,
       total: 0,
@@ -104,7 +116,7 @@ export default {
         { title: this.$t('xun-jian-zhuang-tai'), slot: 'status', width: 100 },
         { title: this.$t('xun-jian-dui-shu'), slot: 'pairs', width: 100 },
         { title: this.$t('xun-jian-wei-jie-shi'), key: 'unexplainedCount', width: 100 },
-        { title: this.$t('xun-jian-xiang-qing'), slot: 'action', width: 100 }
+        { title: this.$t('xun-jian-xiang-qing'), slot: 'action', width: 170 }
       ];
     },
     itemColumns() {
@@ -121,16 +133,38 @@ export default {
     this.loadRuns();
   },
   methods: {
-    async loadRuns() {
+    async loadRuns(notify) {
       this.loading = true;
       try {
         const res = await this.$services.schemaPatrolRuns({ data: { page: this.currentPage, size: this.pageSize } });
         this.runs = res.data || [];
         this.total = res.total || this.runs.length;
+        if (notify === true) {
+          this.$Message.success(this.$t('xun-jian-shua-xin-cheng-gong'));
+        }
       } catch (e) {
         this.$Message.error(e.message || 'Failed to load runs');
       } finally {
         this.loading = false;
+      }
+    },
+    async handleStop(row) {
+      this.stopLoadingId = row.id;
+      try {
+        const res = await this.$services.schemaPatrolStop({ data: { runId: row.id } });
+        const result = res.data && res.data.result;
+        if (result === 'STOPPING') {
+          this.$Message.info(this.$t('xun-jian-ting-zhi-zhi-ling'));
+        } else if (result === 'STOPPED') {
+          this.$Message.success(this.$t('xun-jian-ting-zhi-cheng-gong'));
+        } else {
+          this.$Message.warning(this.$t('xun-jian-ren-wu-wei-yun-xing'));
+        }
+        this.loadRuns();
+      } catch (e) {
+        this.$Message.error(e.message || 'Failed to stop patrol');
+      } finally {
+        this.stopLoadingId = null;
       }
     },
     handlePageChange(page) {
@@ -179,7 +213,7 @@ export default {
       }
     },
     statusColor(status) {
-      const map = { RUNNING: 'processing', DONE: 'success', PARTIAL: 'warning', FAILED: 'error' };
+      const map = { RUNNING: 'processing', DONE: 'success', PARTIAL: 'warning', FAILED: 'error', CANCELLED: 'default' };
       return map[status] || 'default';
     },
     statusLabel(status) {
@@ -187,7 +221,8 @@ export default {
         RUNNING: 'xun-jian-zhuang-tai-running',
         DONE: 'xun-jian-zhuang-tai-done',
         PARTIAL: 'xun-jian-zhuang-tai-partial',
-        FAILED: 'xun-jian-zhuang-tai-failed'
+        FAILED: 'xun-jian-zhuang-tai-failed',
+        CANCELLED: 'xun-jian-zhuang-tai-cancelled'
       };
       return this.$t(map[status] || 'xun-jian-zhuang-tai-running');
     },
@@ -247,6 +282,9 @@ export default {
   .page-bar {
     text-align: right;
     padding: 8px 0;
+  }
+  .stop-btn {
+    margin-left: 8px;
   }
   .detail-header {
     display: flex;

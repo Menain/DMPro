@@ -35,6 +35,13 @@ import com.clougence.clouddm.console.web.model.vo.govpatrol.GovPatrolRunVO;
  */
 public interface SchemaPatrolService {
 
+    /** Stop signal accepted; the executor thread flips the run to CANCELLED at its next checkpoint. */
+    String STOP_RESULT_STOPPING    = "STOPPING";
+    /** Orphaned RUNNING row (no live executor thread) — marked CANCELLED synchronously. */
+    String STOP_RESULT_STOPPED     = "STOPPED";
+    /** Run does not exist or is not RUNNING — nothing to stop. */
+    String STOP_RESULT_NOT_RUNNING = "NOT_RUNNING";
+
     /**
      * Start a patrol run. Creates a RUNNING row, submits async execution,
      * and returns the run id immediately.
@@ -45,6 +52,22 @@ public interface SchemaPatrolService {
      * @return run id, or -1 if a RUNNING run already exists (collision rejection)
      */
     long startRun(String triggerType, String startedBy, Long pairId);
+
+    /**
+     * Request a RUNNING run to stop.
+     * <p>
+     * Live run (executing in this process): sets the cancellation flag; the
+     * executor thread observes it at per-pair / per-table checkpoints and
+     * writes CANCELLED asynchronously — diff items collected so far are kept.
+     * <p>
+     * Orphaned RUNNING row (left by a previous server process — the executor
+     * thread died with it): marked CANCELLED synchronously. Without this the
+     * collision guard would block new runs forever.
+     *
+     * @return {@link #STOP_RESULT_STOPPING}, {@link #STOP_RESULT_STOPPED}
+     *         or {@link #STOP_RESULT_NOT_RUNNING}
+     */
+    String stopRun(long runId);
 
     /**
      * Paginated list of patrol runs, newest first.

@@ -34,6 +34,7 @@ import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolRunDetailFO;
 import com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolRunListFO;
 import com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolRunNowFO;
+import com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolStopFO;
 import com.clougence.clouddm.console.web.model.vo.govpatrol.GovPatrolRunDetailVO;
 import com.clougence.clouddm.console.web.model.vo.govpatrol.GovPatrolRunVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
@@ -86,6 +87,16 @@ public class GovSchemaPatrolController {
         }
         Map<String, Object> result = new HashMap<>();
         result.put("runId", runId);
+        return ResWebDataUtils.buildSuccess(result);
+    }
+
+    @RequestAuth(GOV_DB_PAIR_MANAGE)
+    @RequestMapping(value = "/govPatrol/stop", method = RequestMethod.POST)
+    public ResWebData<?> stop(@Valid @RequestBody GovPatrolStopFO fo, HttpServletRequest request) {
+        String outcome = patrolService.stopRun(fo.getRunId());
+        Map<String, Object> result = new HashMap<>();
+        result.put("runId", fo.getRunId());
+        result.put("result", outcome);
         return ResWebDataUtils.buildSuccess(result);
     }
 }

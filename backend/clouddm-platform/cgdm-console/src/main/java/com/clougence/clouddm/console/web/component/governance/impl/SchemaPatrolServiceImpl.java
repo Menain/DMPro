@@ -24,6 +24,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.stereotype.Service;
 
@@ -100,6 +101,7 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
     private static final String STATUS_DONE       = "DONE";
     private static final String STATUS_PARTIAL    = "PARTIAL";
     private static final String STATUS_FAILED     = "FAILED";
+    private static final String STATUS_CANCELLED  = "CANCELLED";
 
     private static final String DIFF_ONLY_PRE     = "ONLY_PRE";
     private static final String DIFF_ONLY_PROD    = "ONLY_PROD";
@@ -133,12 +135,31 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
 
     private ExecutorService patrolExecutor;
 
+    /** Run id currently executing in this process's executor; -1 when idle. */
+    private final AtomicLong activeRunId         = new AtomicLong(-1);
+    /** Run id requested to stop; the executor thread observes it at checkpoints. */
+    private final AtomicLong cancelRequestedRunId = new AtomicLong(-1);
+
     // ==================== lifecycle ====================
 
     @Override
     public void init() {
         patrolExecutor = Executors.newSingleThreadExecutor(
             ThreadUtils.daemonThreadFactory(this.getClass().getClassLoader(), "SchemaPatrol-exec-%s"));
+        // Orphaned RUNNING rows: a run executing when the previous process died can
+        // never finish — without cleanup it permanently blocks startRun (collision
+        // guard) and the scheduler tick. Mark FAILED so patrol can run again.
+        try {
+            DmGovSchemaPatrolRunMapper runMapper = govSchemaPatrolDal.runMapper();
+            DmGovSchemaPatrolRunDO orphan;
+            while ((orphan = runMapper.queryRunning()) != null) {
+                runMapper.updateStatus(orphan.getId(), STATUS_FAILED, orphan.getPairsDone(),
+                    orphan.getUnexplainedCount(), "Interrupted by server restart");
+                log.info("[SchemaPatrol] Orphaned RUNNING run {} marked FAILED on startup", orphan.getId());
+            }
+        } catch (Exception e) {
+            log.warn("[SchemaPatrol] Startup orphan cleanup failed", e);
+        }
         log.info("SchemaPatrolService started");
     }
 
@@ -187,7 +208,9 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         runMapper.insertRun(run);
         long runId = run.getId();
 
-        // Async execute
+        // Async execute — activeRunId set before submit so stopRun never mistakes
+        // a queued run for an orphan (cleared in executeRun's finally).
+        activeRunId.set(runId);
         final List<DmDbPairDO> finalPairs = pairs;
         patrolExecutor.submit(() -> {
             try {
@@ -203,6 +226,27 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         });
 
         return runId;
+    }
+
+    @Override
+    public String stopRun(long runId) {
+        DmGovSchemaPatrolRunDO run = govSchemaPatrolDal.runMapper().queryById(runId);
+        if (run == null || !STATUS_RUNNING.equals(run.getStatus())) {
+            return STOP_RESULT_NOT_RUNNING;
+        }
+        if (activeRunId.get() == runId) {
+            // Live run in this process — signal the executor thread; it flips the
+            // status to CANCELLED at the next per-pair / per-table checkpoint.
+            cancelRequestedRunId.set(runId);
+            log.info("[SchemaPatrol] Stop requested for active run {}", runId);
+            return STOP_RESULT_STOPPING;
+        }
+        // Orphaned RUNNING row (executor thread died with a previous process) —
+        // nobody to signal, mark CANCELLED synchronously.
+        govSchemaPatrolDal.runMapper().updateStatus(runId, STATUS_CANCELLED,
+            run.getPairsDone(), run.getUnexplainedCount(), "Stopped by user");
+        log.info("[SchemaPatrol] Orphaned run {} marked CANCELLED by stop request", runId);
+        return STOP_RESULT_STOPPED;
     }
 
     // ==================== core patrol loop ====================
@@ -269,40 +313,61 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         DmGovSchemaPatrolRunMapper runMapper = govSchemaPatrolDal.runMapper();
         boolean partial = false;
         int totalUnexplained = 0;
+        int pairsDone = 0;
 
-        for (DmDbPairDO pair : pairs) {
-            try {
-                PairResult result = patrolPair(pair, runId);
-                totalUnexplained += result.unexplainedCount;
-                if (result.partial) {
+        try {
+            for (DmDbPairDO pair : pairs) {
+                if (isCancelRequested(runId)) {
+                    break;
+                }
+                try {
+                    PairResult result = patrolPair(pair, runId);
+                    totalUnexplained += result.unexplainedCount;
+                    if (result.partial) {
+                        partial = true;
+                    }
+                } catch (Exception e) {
+                    log.error("[SchemaPatrol] Pair {} (pre={},prod={}) failed: {}",
+                        pair.getId(), pair.getPreDbName(), pair.getProdDbName(), e.getMessage(), e);
                     partial = true;
                 }
-            } catch (Exception e) {
-                log.error("[SchemaPatrol] Pair {} (pre={},prod={}) failed: {}",
-                    pair.getId(), pair.getPreDbName(), pair.getProdDbName(), e.getMessage(), e);
-                partial = true;
+                try {
+                    runMapper.incrementPairsDone(runId);
+                } catch (Exception e) {
+                    log.warn("[SchemaPatrol] Failed to increment pairs_done for run {}", runId, e);
+                }
+                pairsDone++;
             }
+
+            String status;
+            String error = null;
+            if (isCancelRequested(runId)) {
+                status = STATUS_CANCELLED;
+                error = "Stopped by user";
+            } else {
+                status = partial ? STATUS_PARTIAL : STATUS_DONE;
+            }
+            runMapper.updateStatus(runId, status, pairsDone, totalUnexplained, error);
+
+            // Retention cleanup
+            int keepRuns = fetchConfig(CFG_KEEP_RUNS, Integer.class, 30);
             try {
-                runMapper.incrementPairsDone(runId);
+                govSchemaPatrolDal.itemMapper().deleteItemsByOldRuns(keepRuns);
+                runMapper.deleteOldRuns(keepRuns);
             } catch (Exception e) {
-                log.warn("[SchemaPatrol] Failed to increment pairs_done for run {}", runId, e);
+                log.warn("[SchemaPatrol] Retention cleanup failed for run {}", runId, e);
             }
+
+            log.info("[SchemaPatrol] Run {} completed: status={}, pairs={}/{}, unexplained={}",
+                runId, status, pairsDone, pairs.size(), totalUnexplained);
+        } finally {
+            cancelRequestedRunId.compareAndSet(runId, -1);
+            activeRunId.compareAndSet(runId, -1);
         }
+    }
 
-        String status = partial ? STATUS_PARTIAL : STATUS_DONE;
-        runMapper.updateStatus(runId, status, pairs.size(), totalUnexplained, null);
-
-        // Retention cleanup
-        int keepRuns = fetchConfig(CFG_KEEP_RUNS, Integer.class, 30);
-        try {
-            govSchemaPatrolDal.itemMapper().deleteItemsByOldRuns(keepRuns);
-            runMapper.deleteOldRuns(keepRuns);
-        } catch (Exception e) {
-            log.warn("[SchemaPatrol] Retention cleanup failed for run {}", runId, e);
-        }
-
-        log.info("[SchemaPatrol] Run {} completed: status={}, pairs={}, unexplained={}",
-            runId, status, pairs.size(), totalUnexplained);
+    private boolean isCancelRequested(long runId) {
+        return cancelRequestedRunId.get() == runId;
     }
 
     // ==================== per-pair patrol ====================
@@ -367,6 +432,7 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
 
         // Process ONLY_PRE
         for (String table : onlyPre) {
+            if (isCancelRequested(runId)) break;
             if (processed >= tableLimit || budgetExceeded) break;
             budgetExceeded = checkBudget(startTime, budgetMs);
             if (budgetExceeded) break;
@@ -380,6 +446,7 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
 
         // Process ONLY_PROD
         for (String table : onlyProd) {
+            if (isCancelRequested(runId)) break;
             if (processed >= tableLimit || budgetExceeded) break;
             budgetExceeded = checkBudget(startTime, budgetMs);
             if (budgetExceeded) break;
@@ -393,6 +460,7 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
 
         // Process common tables (MISMATCH check)
         for (String table : common) {
+            if (isCancelRequested(runId)) break;
             if (processed >= tableLimit || budgetExceeded) break;
             budgetExceeded = checkBudget(startTime, budgetMs);
             if (budgetExceeded) break;

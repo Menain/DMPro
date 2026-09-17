@@ -575,4 +575,93 @@ public class SchemaPatrolServiceImplTest {
         verify(itemMapper).deleteItemsByOldRuns(30);
         verify(runMapper).deleteOldRuns(30);
     }
+
+    // ==================== Group 5: stop & cancel ====================
+
+    private java.util.concurrent.atomic.AtomicLong flag(String fieldName) {
+        return (java.util.concurrent.atomic.AtomicLong) ReflectionTestUtils.getField(service, fieldName);
+    }
+
+    private DmGovSchemaPatrolRunDO buildRun(long id, String status) {
+        DmGovSchemaPatrolRunDO run = new DmGovSchemaPatrolRunDO();
+        run.setId(id);
+        run.setStatus(status);
+        run.setPairsDone(1);
+        run.setUnexplainedCount(2);
+        return run;
+    }
+
+    @Test
+    public void stopRun_activeRun_signalsCancelReturnsStopping() {
+        when(runMapper.queryById(RUN_ID)).thenReturn(buildRun(RUN_ID, "RUNNING"));
+        flag("activeRunId").set(RUN_ID);
+
+        String result = service.stopRun(RUN_ID);
+
+        assertEquals("STOPPING", result);
+        assertEquals(RUN_ID, flag("cancelRequestedRunId").get());
+        verify(runMapper, never()).updateStatus(anyLong(), anyString(), anyInt(), anyInt(), any());
+    }
+
+    @Test
+    public void stopRun_orphanRunning_marksCancelledSynchronously() {
+        when(runMapper.queryById(RUN_ID)).thenReturn(buildRun(RUN_ID, "RUNNING"));
+        // activeRunId stays -1 — the executor thread that owned this run is gone
+
+        String result = service.stopRun(RUN_ID);
+
+        assertEquals("STOPPED", result);
+        verify(runMapper).updateStatus(RUN_ID, "CANCELLED", 1, 2, "Stopped by user");
+    }
+
+    @Test
+    public void stopRun_notRunningOrMissing_returnsNotRunning() {
+        when(runMapper.queryById(RUN_ID)).thenReturn(buildRun(RUN_ID, "DONE"));
+        assertEquals("NOT_RUNNING", service.stopRun(RUN_ID));
+
+        when(runMapper.queryById(RUN_ID)).thenReturn(null);
+        assertEquals("NOT_RUNNING", service.stopRun(RUN_ID));
+
+        verify(runMapper, never()).updateStatus(anyLong(), anyString(), anyInt(), anyInt(), any());
+    }
+
+    @Test
+    public void executeRun_cancelRequested_skipsPairsAndMarksCancelled() {
+        DmDbPairDO pair = buildPair();
+        flag("cancelRequestedRunId").set(RUN_ID);
+
+        service.executeRun(RUN_ID, List.of(pair));
+
+        verifyNoInteractions(dsSchemaService);
+        verify(runMapper).updateStatus(RUN_ID, "CANCELLED", 0, 0, "Stopped by user");
+        verify(runMapper, never()).incrementPairsDone(RUN_ID);
+        // Flags cleared in finally so the next run starts clean
+        assertEquals(-1, flag("cancelRequestedRunId").get());
+        assertEquals(-1, flag("activeRunId").get());
+    }
+
+    @Test
+    public void patrolPair_cancelRequested_stopsBeforeTableProcessing() throws Exception {
+        DmDbPairDO pair = buildPair();
+        mockTableLists(List.of("t1", "t2"), List.of());
+        flag("cancelRequestedRunId").set(RUN_ID);
+
+        service.patrolPair(pair, RUN_ID);
+
+        verify(itemMapper, never()).batchInsert(anyList());
+        verify(dsSchemaService, never()).realTimeFetchSelectObject(any(), any(), anyString());
+    }
+
+    @Test
+    public void init_orphanedRunningOnStartup_markedFailed() {
+        DmGovSchemaPatrolRunDO orphan = buildRun(7L, "RUNNING");
+        when(runMapper.queryRunning()).thenReturn(orphan, (DmGovSchemaPatrolRunDO) null);
+
+        service.init();
+        try {
+            verify(runMapper).updateStatus(7L, "FAILED", 1, 2, "Interrupted by server restart");
+        } finally {
+            service.stop();
+        }
+    }
 }

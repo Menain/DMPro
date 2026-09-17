@@ -24,8 +24,10 @@ import com.clougence.clouddm.init.component.flyway.AbstractUpgradeJavaMigration;
  * <p>
  * Tables:
  * - dm_gov_schema_patrol_run: one row per patrol batch (AUTO or MANUAL trigger).
- *   status lifecycle: RUNNING -> DONE / PARTIAL / FAILED. retention cleanup keeps
- *   only the last N runs (govSchemaPatrolKeepRuns, default 30).
+ *   status lifecycle: RUNNING -> DONE / PARTIAL / FAILED / CANCELLED (user stop;
+ *   orphaned RUNNING rows from a dead process are failed on startup or cancelled
+ *   by an explicit stop). retention cleanup keeps only the last N runs
+ *   (govSchemaPatrolKeepRuns, default 30).
  * - dm_gov_schema_patrol_item: one row per (run, pair, table) that has a diff.
  *   diff_class = ONLY_PRE / ONLY_PROD / MISMATCH; explain_class =
  *   EXEMPT_ACTIVE / PENDING_RELEASE / UNEXPLAINED.

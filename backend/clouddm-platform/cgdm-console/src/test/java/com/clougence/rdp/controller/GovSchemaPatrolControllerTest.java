@@ -67,7 +67,15 @@ public class GovSchemaPatrolControllerTest {
     }
 
     @Test
-    public void allThreeEndpointsExist() throws Exception {
+    public void stopEndpoint_hasGovDbPairManageAuth() throws Exception {
+        Method method = GovSchemaPatrolController.class.getMethod("stop",
+            com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolStopFO.class,
+            jakarta.servlet.http.HttpServletRequest.class);
+        assertAuth(method);
+    }
+
+    @Test
+    public void allEndpointsExist() throws Exception {
         assertNotNull(GovSchemaPatrolController.class.getMethod("runs",
             com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolRunListFO.class,
             jakarta.servlet.http.HttpServletRequest.class));
@@ -76,6 +84,9 @@ public class GovSchemaPatrolControllerTest {
             jakarta.servlet.http.HttpServletRequest.class));
         assertNotNull(GovSchemaPatrolController.class.getMethod("runNow",
             com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolRunNowFO.class,
+            jakarta.servlet.http.HttpServletRequest.class));
+        assertNotNull(GovSchemaPatrolController.class.getMethod("stop",
+            com.clougence.clouddm.console.web.model.fo.govpatrol.GovPatrolStopFO.class,
             jakarta.servlet.http.HttpServletRequest.class));
     }
 }

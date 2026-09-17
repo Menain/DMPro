@@ -4663,5 +4663,11 @@
   "xun-jian-zhuang-tai-failed": "失败",
   "xun-jian-chu-fa-auto": "自动",
   "xun-jian-chu-fa-manual": "手动",
-  "xun-jian-kong-lie-biao": "暂无巡检记录"
+  "xun-jian-kong-lie-biao": "暂无巡检记录",
+  "xun-jian-ting-zhi": "停止",
+  "xun-jian-zhuang-tai-cancelled": "已停止",
+  "xun-jian-ting-zhi-zhi-ling": "停止指令已发送，任务将在当前表处理完成后停止",
+  "xun-jian-ting-zhi-cheng-gong": "巡检任务已停止",
+  "xun-jian-ren-wu-wei-yun-xing": "该任务未在运行",
+  "xun-jian-shua-xin-cheng-gong": "已刷新"
 }

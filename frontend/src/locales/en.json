@@ -4681,5 +4681,11 @@
   "xun-jian-zhuang-tai-failed": "Failed",
   "xun-jian-chu-fa-auto": "Auto",
   "xun-jian-chu-fa-manual": "Manual",
-  "xun-jian-kong-lie-biao": "No patrol runs yet"
+  "xun-jian-kong-lie-biao": "No patrol runs yet",
+  "xun-jian-ting-zhi": "Stop",
+  "xun-jian-zhuang-tai-cancelled": "Stopped",
+  "xun-jian-ting-zhi-zhi-ling": "Stop signal sent; the run stops after the current table finishes",
+  "xun-jian-ting-zhi-cheng-gong": "Patrol run stopped",
+  "xun-jian-ren-wu-wei-yun-xing": "This run is not active",
+  "xun-jian-shua-xin-cheng-gong": "Refreshed"
 }
