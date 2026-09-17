@@ -1817,6 +1817,218 @@ end
         <!--        <ruleDef id="rule_delete_004" ruleName="i18n::RULE_N_DELETE_ALLOW_SUB_QUERY" ruleDesc="i18n::RULE_N_DELETE_ALLOW_SUB_QUERY" ruleTarget="Delete" scriptType="DetectRules"><![CDATA[-->
         <!--        MyFamilyRuleDeleteAllowWithTest-->
         <!--]]></ruleDef>-->
+
+        <!-- high-risk operations (P0/P1/P2) : 不可逆删除 / 清空 / DCL / 管理类 -->
+        <ruleDef id="rule_table_013" ruleName="i18n::RULE_N_TABLE_ALLOW_DROP_TABLE"
+                 ruleDesc="i18n::RULE_D_TABLE_ALLOW_DROP_TABLE" ruleTarget="Table" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除表，默认禁止"
+
+if
+  @domain.sqlType == 'DROP_TABLE' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_catalog_004" ruleName="i18n::RULE_N_CATALOG_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_CATALOG_ALLOW_DROP" ruleTarget="Catalog" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除库（catalog），默认禁止"
+
+if
+  @domain.sqlType == 'DROP_CATALOG' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_schema_006" ruleName="i18n::RULE_N_SCHEMA_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_SCHEMA_ALLOW_DROP" ruleTarget="Schema" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除模式/数据库（schema/database），默认禁止"
+
+if
+  @domain.sqlType == 'DROP_SCHEMA' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_delete_006" ruleName="i18n::RULE_N_DELETE_ALLOW_TRUNCATE"
+                 ruleDesc="i18n::RULE_D_DELETE_ALLOW_TRUNCATE" ruleTarget="Delete" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 TRUNCATE 清空表，默认禁止"
+
+if
+  @domain.sqlType == 'TRUNCATE' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_view_001" ruleName="i18n::RULE_N_VIEW_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_VIEW_ALLOW_DROP" ruleTarget="View" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除视图，默认禁止"
+
+if
+  @domain.sqlType == 'DROP_VIEW' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_index_001" ruleName="i18n::RULE_N_INDEX_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_INDEX_ALLOW_DROP" ruleTarget="Index" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除索引，默认禁止"
+
+if
+  @domain.sqlType == 'DROP_INDEX' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_trigger_001" ruleName="i18n::RULE_N_TRIGGER_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_TRIGGER_ALLOW_DROP" ruleTarget="Trigger" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除触发器，默认禁止"
+
+if
+  @domain.sqlType == 'DROP_TRIGGER' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_dcl_001" ruleName="i18n::RULE_N_DCL_ALLOW_GRANT"
+                 ruleDesc="i18n::RULE_D_DCL_ALLOW_GRANT" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 GRANT 授权，默认禁止"
+
+if
+  @domain.sqlType == 'GRANT' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_dcl_002" ruleName="i18n::RULE_N_DCL_ALLOW_REVOKE"
+                 ruleDesc="i18n::RULE_D_DCL_ALLOW_REVOKE" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 REVOKE 收回权限，默认禁止"
+
+if
+  @domain.sqlType == 'REVOKE' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_dcl_003" ruleName="i18n::RULE_N_DCL_ALLOW_CREATE_USER"
+                 ruleDesc="i18n::RULE_D_DCL_ALLOW_CREATE_USER" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许创建用户，默认禁止"
+
+if
+  @domain.sqlType == 'CREATE_USER' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_dcl_004" ruleName="i18n::RULE_N_DCL_ALLOW_DROP_USER"
+                 ruleDesc="i18n::RULE_D_DCL_ALLOW_DROP_USER" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除用户，默认禁止"
+
+if
+  @domain.sqlType == 'DROP_USER' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_admin_001" ruleName="i18n::RULE_N_ADMIN_ALLOW_KILL"
+                 ruleDesc="i18n::RULE_D_ADMIN_ALLOW_KILL" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 KILL 连接，默认禁止"
+
+if
+  @domain.sqlType == 'KILL' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_admin_002" ruleName="i18n::RULE_N_ADMIN_ALLOW_PURGE"
+                 ruleDesc="i18n::RULE_D_ADMIN_ALLOW_PURGE" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 PURGE 清理日志，默认禁止"
+
+if
+  @domain.sqlType == 'PURGE' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_admin_003" ruleName="i18n::RULE_N_ADMIN_ALLOW_FLUSH"
+                 ruleDesc="i18n::RULE_D_ADMIN_ALLOW_FLUSH" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许 FLUSH 刷新，默认禁止"
+
+if
+  @domain.sqlType == 'MYSQL_FLUSH' and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
+        <ruleDef id="rule_prog_001" ruleName="i18n::RULE_N_PROG_ALLOW_DROP"
+                 ruleDesc="i18n::RULE_D_PROG_ALLOW_DROP" ruleTarget="" scriptType="DetectRules"><![CDATA[
+#define "allow" as string
+        default "false"
+        enum ["true", "false"]
+        hint "是否允许删除存储过程/函数等编程对象，默认禁止"
+
+if
+  @domain.sqlType in ['DROP_PROG_OBJ', 'DROP_PROCEDURE', 'DROP_FUNCTION'] and
+  !cast(#{allow} as bool)
+then
+  return false
+end
+]]></ruleDef>
     </queryRules>
     <sensitiveRules>
         <ruleDef id="rule_sensitive_001" ruleName="i18n::SEN_N_ALGORITHM" ruleDesc="i18n::SEN_D_ALGORITHM"
