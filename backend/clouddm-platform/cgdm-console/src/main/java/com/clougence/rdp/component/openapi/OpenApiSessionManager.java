@@ -46,6 +46,9 @@ public class OpenApiSessionManager implements HandlerInterceptor {
 
     private static final int   SIGNATURE_ERROR         = 497;
 
+    /** Maximum tolerated clock skew between client Timestamp and server clock (5 minutes). */
+    private static final long  MAX_TIMESTAMP_SKEW_MILLIS = 5L * 60 * 1000;
+
     private final String       OPEN_API_URI_PREFIX;
 
     @Resource
@@ -66,16 +69,22 @@ public class OpenApiSessionManager implements HandlerInterceptor {
         String signature = request.getParameter("Signature");
         String signatureMethod = request.getParameter("SignatureMethod");
         String signatureNonce = request.getParameter("SignatureNonce");
+        String timestamp = request.getParameter("Timestamp");
+        String bodyDigest = request.getParameter("BodyDigest");
 
-        if (StringUtils.isBlank(ak) || StringUtils.isBlank(signature) || StringUtils.isBlank(signatureMethod) || StringUtils.isBlank(signatureNonce)) {
+        if (StringUtils.isBlank(ak) || StringUtils.isBlank(signature) || StringUtils.isBlank(signatureMethod)
+                || StringUtils.isBlank(signatureNonce) || StringUtils.isBlank(timestamp) || StringUtils.isBlank(bodyDigest)) {
             // also support get parameter from header
             ak = request.getHeader("AccessKeyId");
             signature = request.getHeader("Signature");
             signatureMethod = request.getHeader("SignatureMethod");
             signatureNonce = request.getHeader("SignatureNonce");
+            timestamp = request.getHeader("Timestamp");
+            bodyDigest = request.getHeader("BodyDigest");
         }
 
-        if (StringUtils.isBlank(ak) || StringUtils.isBlank(signature) || StringUtils.isBlank(signatureMethod) || StringUtils.isBlank(signatureNonce)) {
+        if (StringUtils.isBlank(ak) || StringUtils.isBlank(signature) || StringUtils.isBlank(signatureMethod)
+                || StringUtils.isBlank(signatureNonce) || StringUtils.isBlank(timestamp) || StringUtils.isBlank(bodyDigest)) {
             responseSystemError(response, COMMON_PARAMS_HAS_EMTPY);
             return false;
         }
@@ -88,15 +97,39 @@ public class OpenApiSessionManager implements HandlerInterceptor {
 
         String sk = CryptService.INSTANCE.decryptUseDefaultKeyAndSalt(userDO.getSecretKey());
 
+        // Hard-cut 5-parameter signature (D3): Timestamp + BodyDigest join the signed
+        // set. Old 3-parameter signatures are missing Timestamp/BodyDigest and are
+        // rejected by the COMMON_PARAMS_HAS_EMTPY guard above (no compatibility branch).
         Map<String, String> paramToSign = new HashMap<>();
         paramToSign.put("SignatureMethod", signatureMethod);
         paramToSign.put("SignatureNonce", signatureNonce);
         paramToSign.put("AccessKeyId", ak);
+        paramToSign.put("Timestamp", timestamp);
+        paramToSign.put("BodyDigest", bodyDigest);
 
         String paramStr = OpenApiSigner.composeStringToSign(paramToSign);
         String regenSignature = OpenApiSigner.signString(paramStr, sk);
 
         if (!signature.equals(regenSignature)) {
+            responseSystemError(response, SIGNATURE_ERROR);
+            return false;
+        }
+
+        if (!OpenApiSigner.isTimestampFresh(timestamp, MAX_TIMESTAMP_SKEW_MILLIS)) {
+            responseSystemError(response, SIGNATURE_ERROR);
+            return false;
+        }
+
+        byte[] body;
+        if (request instanceof CachedBodyHttpServletRequest cached) {
+            body = cached.getCachedBody();
+        } else {
+            // Body was not cached by OpenApiBodyCachingFilter — integrity cannot be verified.
+            responseSystemError(response, SIGNATURE_ERROR);
+            return false;
+        }
+
+        if (!OpenApiSigner.bodyDigestMatches(bodyDigest, body)) {
             responseSystemError(response, SIGNATURE_ERROR);
             return false;
         }

@@ -17,9 +17,11 @@ package com.clougence.clouddm.console.web.global.jwtsession;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
 import org.springframework.web.servlet.config.annotation.CorsRegistration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
@@ -32,6 +34,7 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.handler.TimeCostInterceptor;
 import com.clougence.clouddm.console.web.global.mcp.McpSessionManager;
+import com.clougence.rdp.component.openapi.OpenApiBodyCachingFilter;
 import com.clougence.rdp.component.openapi.OpenApiSessionManager;
 import com.clougence.utils.StringUtils;
 
@@ -97,6 +100,21 @@ public class WebConfigurer implements WebMvcConfigurer, WebSocketConfigurer {
     @Bean
     public OpenApiSessionManager dmApiSessionManager() {
         return new OpenApiSessionManager(DmControllerUrlPrefix.OPEN_API_PREFIX);
+    }
+
+    @Bean
+    public OpenApiBodyCachingFilter dmOpenApiBodyCachingFilter() {
+        return new OpenApiBodyCachingFilter(DmControllerUrlPrefix.OPEN_API_PREFIX);
+    }
+
+    @Bean
+    public FilterRegistrationBean<OpenApiBodyCachingFilter> dmOpenApiBodyCachingFilterRegistration(OpenApiBodyCachingFilter filter) {
+        FilterRegistrationBean<OpenApiBodyCachingFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.addUrlPatterns(DmControllerUrlPrefix.OPEN_API_PREFIX + "/*");
+        // Highest precedence so the body is cached before any other filter/interceptor
+        // touches the InputStream (servlet InputStream is one-shot).
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        return registration;
     }
 
     @Bean
