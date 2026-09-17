@@ -4693,5 +4693,12 @@
   "xun-jian-ting-zhi-zhi-ling": "Stop signal sent; the run stops after the current table finishes",
   "xun-jian-ting-zhi-cheng-gong": "Patrol run stopped",
   "xun-jian-ren-wu-wei-yun-xing": "This run is not active",
-  "xun-jian-shua-xin-cheng-gong": "Refreshed"
+  "xun-jian-shua-xin-cheng-gong": "Refreshed",
+  "xun-jian-dao-chu": "Export CSV",
+  "xun-jian-diff-only-pre-tip": "Table exists on pre but not on prod — usually a new pre-side table not yet released",
+  "xun-jian-diff-only-prod-tip": "Table exists on prod but not on pre — possibly created out-of-band on prod; review carefully",
+  "xun-jian-diff-mismatch-tip": "Table exists on both sides but structures differ (columns, indexes, charset…) — see detail JSON",
+  "xun-jian-jie-shi-exempt-tip": "Explained by an in-flight production release (reference = release no.) — expected temporary drift",
+  "xun-jian-jie-shi-pending-tip": "Pre-side change executed but not yet merged into a release (reference = ticket id) — expected",
+  "xun-jian-jie-shi-unexplained-tip": "No release or ticket explains this diff — possible out-of-band change; review manually"
 }

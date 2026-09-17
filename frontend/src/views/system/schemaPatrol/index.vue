@@ -57,23 +57,30 @@
       </div>
     </div>
 
-    <Modal v-model="detailVisible" :title="$t('xun-jian-xiang-qing')" :width="900" footer-hide>
+    <Modal v-model="detailVisible" :title="$t('xun-jian-xiang-qing')" :width="1100" footer-hide>
       <div v-if="detailRun" class="detail-header">
         <span>{{ $t('xun-jian-shi-jian') }}: {{ formatTime(detailRun.gmtCreate) }}</span>
         <span>{{ $t('xun-jian-chu-fa') }}: {{ detailRun.triggerType === 'AUTO' ? $t('xun-jian-chu-fa-auto') : $t('xun-jian-chu-fa-manual') }}</span>
         <span>{{ $t('xun-jian-zhuang-tai') }}: {{ statusLabel(detailRun.status) }}</span>
         <span>{{ $t('xun-jian-wei-jie-shi') }}: {{ detailRun.unexplainedCount }}</span>
+        <Button size="small" class="export-btn" :disabled="!detailItems.length" @click="handleExportDetail">
+          {{ $t('xun-jian-dao-chu') }}
+        </Button>
       </div>
-      <Table v-if="detailItems.length" :columns="itemColumns" :data="detailItems" size="small" border stripe :max-height="400">
+      <Table v-if="detailItems.length" :columns="itemColumns" :data="detailItems" size="small" border stripe :max-height="480">
         <template #diffClass="{ row }">
-          <Tag :color="diffColor(row.diffClass)" size="small">
-            {{ diffLabel(row.diffClass) }}
-          </Tag>
+          <Tooltip :content="diffTip(row.diffClass)" max-width="320" transfer>
+            <Tag :color="diffColor(row.diffClass)" size="small">
+              {{ diffLabel(row.diffClass) }}
+            </Tag>
+          </Tooltip>
         </template>
         <template #explainClass="{ row }">
-          <Tag :color="explainColor(row.explainClass)" size="small">
-            {{ explainLabel(row.explainClass) }}
-          </Tag>
+          <Tooltip :content="explainTip(row.explainClass)" max-width="320" transfer>
+            <Tag :color="explainColor(row.explainClass)" size="small">
+              {{ explainLabel(row.explainClass) }}
+            </Tag>
+          </Tooltip>
         </template>
         <template #detailJson="{ row }">
           <pre v-if="row.detailJson" class="detail-json">{{ formatJson(row.detailJson) }}</pre>
@@ -121,11 +128,11 @@ export default {
     },
     itemColumns() {
       return [
-        { title: this.$t('xun-jian-biao-ming'), key: 'tableName', minWidth: 150 },
-        { title: this.$t('xun-jian-diff-lei-xing'), slot: 'diffClass', width: 130 },
-        { title: this.$t('xun-jian-jie-shi-lei-xing'), slot: 'explainClass', width: 130 },
-        { title: this.$t('xun-jian-jie-shi-yin-yong'), key: 'explainRef', width: 120 },
-        { title: this.$t('xun-jian-ming-xi'), slot: 'detailJson', minWidth: 300 }
+        { title: this.$t('xun-jian-biao-ming'), key: 'tableName', minWidth: 160 },
+        { title: this.$t('xun-jian-diff-lei-xing'), slot: 'diffClass', width: 150 },
+        { title: this.$t('xun-jian-jie-shi-lei-xing'), slot: 'explainClass', width: 150 },
+        { title: this.$t('xun-jian-jie-shi-yin-yong'), key: 'explainRef', width: 140 },
+        { title: this.$t('xun-jian-ming-xi'), slot: 'detailJson', minWidth: 320 }
       ];
     }
   },
@@ -230,6 +237,51 @@ export default {
       const map = { ONLY_PRE: 'blue', ONLY_PROD: 'red', MISMATCH: 'orange' };
       return map[diffClass] || 'default';
     },
+    diffTip(diffClass) {
+      const map = {
+        ONLY_PRE: 'xun-jian-diff-only-pre-tip',
+        ONLY_PROD: 'xun-jian-diff-only-prod-tip',
+        MISMATCH: 'xun-jian-diff-mismatch-tip'
+      };
+      return map[diffClass] ? this.$t(map[diffClass]) : '';
+    },
+    explainTip(explainClass) {
+      const map = {
+        EXEMPT_ACTIVE: 'xun-jian-jie-shi-exempt-tip',
+        PENDING_RELEASE: 'xun-jian-jie-shi-pending-tip',
+        UNEXPLAINED: 'xun-jian-jie-shi-unexplained-tip'
+      };
+      return map[explainClass] ? this.$t(map[explainClass]) : '';
+    },
+    handleExportDetail() {
+      const header = [
+        this.$t('xun-jian-biao-ming'),
+        this.$t('xun-jian-diff-lei-xing'),
+        this.$t('xun-jian-jie-shi-lei-xing'),
+        this.$t('xun-jian-jie-shi-yin-yong'),
+        this.$t('xun-jian-ming-xi')
+      ];
+      const rows = this.detailItems.map((it) => [
+        it.tableName || '',
+        this.diffLabel(it.diffClass),
+        this.explainLabel(it.explainClass),
+        it.explainRef || '',
+        it.detailJson || ''
+      ]);
+      const escapeCell = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+      const csv = [header, ...rows].map((r) => r.map(escapeCell).join(',')).join('\r\n');
+      // BOM so Excel detects UTF-8 (Chinese labels)
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+      const runId = this.detailRun ? this.detailRun.id : 'unknown';
+      const ts = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      link.download = `schema-patrol-run-${runId}-${ts}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(link.href);
+    },
     diffLabel(diffClass) {
       const map = { ONLY_PRE: 'xun-jian-diff-only-pre', ONLY_PROD: 'xun-jian-diff-only-prod', MISMATCH: 'xun-jian-diff-mismatch' };
       return this.$t(map[diffClass] || diffClass);
@@ -274,11 +326,6 @@ export default {
       }
     }
   }
-  .empty-tip {
-    text-align: center;
-    padding: 24px;
-    color: #999;
-  }
   .page-bar {
     text-align: right;
     padding: 8px 0;
@@ -286,27 +333,59 @@ export default {
   .stop-btn {
     margin-left: 8px;
   }
-  .detail-header {
-    display: flex;
-    gap: 24px;
-    margin-bottom: 12px;
-    padding: 8px 0;
-    border-bottom: 1px solid #eee;
-    span {
-      font-size: 13px;
-      color: #555;
-    }
+}
+
+// Modal content is teleported to <body> — these rules must stay TOP-LEVEL
+// (not nested under .schema-patrol-page) so the scoped attribute still matches.
+.empty-tip {
+  text-align: center;
+  padding: 24px;
+  color: #999;
+}
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eee;
+  span {
+    font-size: 13px;
+    color: #555;
   }
-  .detail-json {
-    background: #f5f5f5;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    max-height: 200px;
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-all;
-    margin: 0;
+  .export-btn {
+    margin-left: auto;
+  }
+}
+.detail-json {
+  background: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+// Classic always-visible scrollbars in the detail table's scroll region —
+// overlay scrollbars auto-hide and are hard to grab with the mouse.
+:deep(.ivu-table-overflowY) {
+  overflow-y: scroll !important;
+  &::-webkit-scrollbar {
+    width: 12px;
+  }
+  &::-webkit-scrollbar-track {
+    background: #f3f5f7;
+    border-radius: 6px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: #c2c7d0;
+    border-radius: 6px;
+    border: 2px solid #f3f5f7;
+    &:hover {
+      background: #a8aeb8;
+    }
   }
 }
 </style>
