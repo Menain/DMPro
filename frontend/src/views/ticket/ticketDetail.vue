@@ -99,6 +99,18 @@
                 <Tag v-else-if="ticketDetail.ticketType === 'PROD_DML'" color="warning">{{ $t('gov-v2-type-prod-dml') }}</Tag>
               </span>
             </div>
+            <div v-if="ticketDetail.riskLevel" class="ticket-meta-item">
+              <span class="ticket-meta-item__label ticket-meta-item__label--with-icon">
+                <Icon type="ios-warning-outline" />
+                {{ $t('risk-level-label') }}
+              </span>
+              <span class="ticket-meta-item__value">
+                <Tag v-if="ticketDetail.riskLevel === 'CRITICAL'" color="error">{{ $t('risk-level-critical') }}</Tag>
+                <Tag v-else-if="ticketDetail.riskLevel === 'HIGH'" color="warning">{{ $t('risk-level-high') }}</Tag>
+                <Tag v-else-if="ticketDetail.riskLevel === 'MEDIUM'" color="info">{{ $t('risk-level-medium') }}</Tag>
+                <Tag v-else color="default">{{ $t('risk-level-low') }}</Tag>
+              </span>
+            </div>
             <div v-if="ticketDetail.serviceName" class="ticket-meta-item">
               <span class="ticket-meta-item__label ticket-meta-item__label--with-icon">
                 <Icon type="ios-people-outline" />
@@ -544,6 +556,10 @@
               <Tag v-if="ticketDetail.rollBackSqlGenerated" size="small" color="warning">{{ $t('xi-tong-sheng-cheng') }}</Tag>
               <Tag v-else size="small" color="success">{{ $t('shen-qing-ren-tian-xie') }}</Tag>
             </Button>
+            <Button v-if="ticketDetail.impactScopeText" type="text" @click="showImpactScopeModal = true">
+              <Icon type="ios-information-circle-outline" />
+              {{ $t('impact-scope') }}
+            </Button>
           </div>
         </div>
         <read-only-editor
@@ -688,6 +704,17 @@
           {{ $t('fu-zhi-sql') }}
         </Button>
         <Button @click="handleCloseModal">{{ $t('guan-bi') }}</Button>
+      </template>
+    </CCModal>
+    <CCModal v-model="showImpactScopeModal" :width="700">
+      <template #title>
+        {{ $t('impact-scope') }}
+      </template>
+      <div class="impact-scope-content">
+        <pre>{{ ticketDetail.impactScopeText }}</pre>
+      </div>
+      <template #footer>
+        <Button @click="showImpactScopeModal = false">{{ $t('guan-bi') }}</Button>
       </template>
     </CCModal>
     <CCModal v-model="showTicketContentModal" :title="$t('gong-dan-nei-rong')" width="80vw" centered :draggable="false" class="responsive-sql-modal">
@@ -1066,6 +1093,7 @@ export default {
       showAutoExecuteModal: false,
       showManualExecuteModal: false,
       showRollbackSqlModal: false,
+      showImpactScopeModal: false,
       showTicketContentModal: false,
       sqlContentAction: '',
       showApprovalModal: false,
@@ -2036,6 +2064,8 @@ export default {
               this.ticketDetail.ticketMessage = resQuery.data?.ticketMessage || '';
               this.ticketDetail.rollBackSql = resQuery.data?.rollBackSql || '';
               this.ticketDetail.rollBackSqlGenerated = resQuery.data?.rollBackSqlGenerated || false;
+              this.ticketDetail.riskLevel = resQuery.data?.riskLevel || '';
+              this.ticketDetail.impactScopeText = resQuery.data?.impactScopeText || '';
               this.ticketDetail.contentType = resQuery.data?.contentType || 'INLINE';
               this.ticketDetail.attachmentId = resQuery.data?.attachmentId;
               this.ticketDetail.attachmentFileName = resQuery.data?.attachmentFileName || '';

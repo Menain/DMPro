@@ -177,6 +177,9 @@ public class ProdReleaseResubmitTest {
         ReflectionTestUtils.setField(service, "releaseSchemaDiffService", diffService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
         ReflectionTestUtils.setField(service, "govReturnNotifyService", govReturnNotifyService);
+        // RiskAssessmentService: real instance (aggregate is pure-function, no env-param needed for resubmit path)
+        ReflectionTestUtils.setField(service, "riskAssessmentService",
+            new com.clougence.clouddm.console.web.component.governance.RiskAssessmentService());
     }
 
     @Test

@@ -40,6 +40,10 @@ public class GovTicketV2CheckVO {
         private List<StmtPreview>   statements;
         private RulesCheckSummary   rulesCheck;
         private String              errorMessage;  // populated when checkStatus == FAIL
+
+        // Row estimation (design D3) — additive, null on legacy rows.
+        private Long    estimatedRows;    // sum of per-statement EXPLAIN estimates
+        private Boolean rowsEstimated;    // false if any statement failed/unsupported
     }
 
     @Getter

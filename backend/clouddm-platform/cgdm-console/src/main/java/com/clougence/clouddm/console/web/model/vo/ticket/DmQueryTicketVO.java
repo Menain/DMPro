@@ -45,6 +45,9 @@ public class DmQueryTicketVO {
     private Boolean                     immediately;
     private String                      rollBackSql;
     private Boolean                     rollBackSqlGenerated;
+    // Risk level + impact scope (design D4/D5: exposed for detail-page display)
+    private String                      riskLevel;
+    private String                      impactScopeText;
     private String                      ticketMessage;
     private boolean                     autoExec;
     private List<TicketRuleCheckResult> checkedList;

@@ -97,6 +97,12 @@ public class GovTicketV2FormAssembler {
         // Field: ticketDesc = multiline metadata
         form.setTicketDesc(buildTicketDesc(info, userDO, groups, ticketDO.getId()));
 
+        // Risk level + impact scope (design D5: external approval form fields)
+        if (info != null) {
+            form.setRiskLevel(info.getRiskLevel());
+            form.setImpactScopeText(info.getImpactScopeText());
+        }
+
         // flowName / changeName / branch = null (no CI/CD flow)
         return form;
     }

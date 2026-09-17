@@ -29,4 +29,9 @@ public class ChangeForm extends ApprovalForm {
     private String changeName;
     private String branch;
     private String executeSql;
+
+    // SQL risk level name (LOW/MEDIUM/HIGH/CRITICAL) for external approval routing.
+    private String riskLevel;
+    // Human-readable impact-scope summary for external approval form display.
+    private String impactScopeText;
 }

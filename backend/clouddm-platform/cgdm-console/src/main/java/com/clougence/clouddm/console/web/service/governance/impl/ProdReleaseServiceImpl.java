@@ -135,6 +135,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GovReturnNotifyService govReturnNotifyService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
 
     // ==================== create (merge transaction) ====================
 
@@ -245,13 +247,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
         DmTicketResultVO ticketResult = approvalControlService.createSqlTicket(puid, uid, ticketFO, ApprovalBiz.DM_PROD_RELEASE);
 
-        // Writeback releaseId/releaseNo into ticketInfo
+        // Writeback releaseId/releaseNo into ticketInfo + aggregated risk level (design D2)
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketResult.getTicketId());
         if (ticket != null) {
             ApprovalMO writeMO = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
             if (writeMO != null) {
                 writeMO.setReleaseId(release.getId());
                 writeMO.setReleaseNo(releaseNo);
+                // Aggregate risk from source tickets: level = max(source levels), scope = merged
+                com.clougence.clouddm.console.web.component.governance.RiskAssessment aggregatedRisk
+                    = aggregateSourceRiskLevels(puid, ticketIds);
+                writeMO.setRiskLevel(aggregatedRisk.getLevel().name());
+                writeMO.setImpactScope(JsonUtils.toJson(aggregatedRisk.getScope()));
+                writeMO.setImpactScopeText(aggregatedRisk.getReadableText());
                 ticket.setTicketInfo(JsonUtils.toJson(writeMO));
                 approvalDal.approvalMapper().updateById(ticket);
             }
@@ -801,13 +809,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // ticket list. The operator is still recorded in the RELEASE_RESUBMITTED event below.
         DmTicketResultVO ticketResult = approvalControlService.createSqlTicket(puid, release.getCreatorUid(), ticketFO, ApprovalBiz.DM_PROD_RELEASE);
 
-        // Writeback releaseId/releaseNo into ticketInfo
+        // Writeback releaseId/releaseNo into ticketInfo + aggregated risk level (design D2: resubmit 重算)
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketResult.getTicketId());
         if (ticket != null) {
             ApprovalMO writeMO = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
             if (writeMO != null) {
                 writeMO.setReleaseId(releaseId);
                 writeMO.setReleaseNo(releaseNo);
+                // Re-aggregate risk from final source ticket list
+                com.clougence.clouddm.console.web.component.governance.RiskAssessment aggregatedRisk
+                    = aggregateSourceRiskLevels(puid, finalTicketIds);
+                writeMO.setRiskLevel(aggregatedRisk.getLevel().name());
+                writeMO.setImpactScope(JsonUtils.toJson(aggregatedRisk.getScope()));
+                writeMO.setImpactScopeText(aggregatedRisk.getReadableText());
                 ticket.setTicketInfo(JsonUtils.toJson(writeMO));
                 approvalDal.approvalMapper().updateById(ticket);
             }
@@ -1256,6 +1270,42 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
      * R1: no per-database {@code checkResAuth(DM_DAUTH_TICKET)} — create is now open to
      * all same-tenant users.
      */
+    /**
+     * Aggregates risk levels from source tickets for release-level assessment (design D2).
+     * Level = max(source levels); ImpactScope merged (stmtCount/rows summed, tables merged).
+     */
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessment aggregateSourceRiskLevels(
+        String puid, List<Long> sourceTicketIds) {
+        java.util.List<com.clougence.clouddm.console.web.component.governance.RiskAssessment> sourceAssessments
+            = new java.util.ArrayList<>();
+        for (Long ticketId : sourceTicketIds) {
+            DmApprovalDO srcTicket = approvalDal.approvalMapper().queryById(ticketId);
+            if (srcTicket == null || com.clougence.utils.StringUtils.isBlank(srcTicket.getTicketInfo())) {
+                continue;
+            }
+            try {
+                ApprovalMO srcMo = JsonUtils.toObj(srcTicket.getTicketInfo(), ApprovalMO.class);
+                if (srcMo == null || srcMo.getRiskLevel() == null) {
+                    continue;
+                }
+                com.clougence.clouddm.console.web.component.governance.RiskLevel srcLevel
+                    = com.clougence.clouddm.console.web.component.governance.RiskLevel.valueOf(srcMo.getRiskLevel());
+                com.clougence.clouddm.console.web.component.governance.ImpactScope srcScope = null;
+                if (com.clougence.utils.StringUtils.isNotBlank(srcMo.getImpactScope())) {
+                    srcScope = JsonUtils.toObj(srcMo.getImpactScope(),
+                        com.clougence.clouddm.console.web.component.governance.ImpactScope.class);
+                }
+                sourceAssessments.add(
+                    com.clougence.clouddm.console.web.component.governance.RiskAssessment.of(
+                        srcLevel, srcScope != null ? srcScope : new com.clougence.clouddm.console.web.component.governance.ImpactScope(),
+                        srcMo.getImpactScopeText() != null ? srcMo.getImpactScopeText() : ""));
+            } catch (Exception e) {
+                // skip unreadable ticket
+            }
+        }
+        return riskAssessmentService.aggregate(sourceAssessments);
+    }
+
     private List<SourceStmtEntry> collectSourceEntries(String puid, List<Long> ticketIds) {
         List<SourceStmtEntry> sourceEntries = new ArrayList<>();
         for (Long ticketId : ticketIds) {

@@ -227,6 +227,19 @@ public class GovTicketV2SubmitModeTest {
         // RollbackSqlGenerator is a pure-function component (no @Resource fields); inject a real instance.
         ReflectionTestUtils.setField(service, "rollbackSqlGenerator",
             new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator());
+
+        // RiskAssessmentService: real instance with mocked env-param lookup (returns defaults)
+        com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService
+            = new com.clougence.clouddm.console.web.component.governance.RiskAssessmentService();
+        ReflectionTestUtils.setField(riskAssessmentService, "dmEnvParamService", dmEnvParamService);
+        ReflectionTestUtils.setField(service, "riskAssessmentService", riskAssessmentService);
+
+        // SqlRowEstimator: mock to avoid DB connections; returns unknown (degradation)
+        com.clougence.clouddm.console.web.component.governance.SqlRowEstimator sqlRowEstimator
+            = mock(com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.class);
+        when(sqlRowEstimator.estimate(any(), any(), any(), any(), anyLong()))
+            .thenReturn(com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult.unknown());
+        ReflectionTestUtils.setField(service, "sqlRowEstimator", sqlRowEstimator);
     }
 
     // ==================== DIRECT regression pin ====================

@@ -209,6 +209,19 @@ public class GovTicketV2ReturnReviseTest {
         ReflectionTestUtils.setField(service, "approvalPersonService", approvalPersonService);
         ReflectionTestUtils.setField(service, "dmAuthServiceForBiz", dmAuthServiceForBiz);
         ReflectionTestUtils.setField(service, "govReturnNotifyService", govReturnNotifyService);
+
+        // RiskAssessmentService: real instance with mocked env-param lookup (returns defaults)
+        com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService
+            = new com.clougence.clouddm.console.web.component.governance.RiskAssessmentService();
+        ReflectionTestUtils.setField(riskAssessmentService, "dmEnvParamService", dmEnvParamService);
+        ReflectionTestUtils.setField(service, "riskAssessmentService", riskAssessmentService);
+
+        // SqlRowEstimator: mock to avoid DB connections; returns unknown (degradation)
+        com.clougence.clouddm.console.web.component.governance.SqlRowEstimator sqlRowEstimator
+            = mock(com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.class);
+        when(sqlRowEstimator.estimate(any(), any(), any(), any(), anyLong()))
+            .thenReturn(com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult.unknown());
+        ReflectionTestUtils.setField(service, "sqlRowEstimator", sqlRowEstimator);
     }
 
     // ==================== State machine tests ====================

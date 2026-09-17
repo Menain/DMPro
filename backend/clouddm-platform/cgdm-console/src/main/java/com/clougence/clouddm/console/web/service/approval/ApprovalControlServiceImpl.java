@@ -167,6 +167,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator rollbackSqlGenerator;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.governance.ProdReleaseService prodReleaseService;
@@ -739,6 +741,8 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             vo.setTicketMessage(message);
             vo.setAutoExec(ticketInfo.isAutoExec());
             vo.setRollBackSqlGenerated(ticketInfo.getRollBackSqlGenerated());
+            vo.setRiskLevel(ticketInfo.getRiskLevel());
+            vo.setImpactScopeText(ticketInfo.getImpactScopeText());
         }
         return vo;
     }
@@ -949,6 +953,9 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
 
         Map<UmiTypes, Object> levelsParam = dsLevels.levelsParam();
         SqlContentType contentType = fo.getContentType();
+        // Fetch dsConfig + declare checkResult before switch so risk assessment can use them (design D2).
+        DataSourceConfig dsConfig = this.dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
+        SecRulesCheckResult v1CheckResult = new SecRulesCheckResult();
         DmTicketResultVO result = switch (contentType) {
             case INLINE -> {
                 if (StringUtils.isBlank(fo.getRawSql())) {
@@ -962,13 +969,11 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                     .requester(Requester.TICKET)
                     .unsupportedLevel(WarnLevel.FAILURE)
                     .build();
-                DataSourceConfig dsConfig = this.dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
-                SecRulesCheckResult checkResult = new SecRulesCheckResult();
                 try (StringReader reader = new StringReader(fo.getRawSql()); Stream<SecRulesCheckResult> results = this.queryAnalysisService.analysisRulesStream(//
                         dsConfig, reader, Collections.emptyList(), 1, 0, options)) {
-                    results.forEachOrdered(checkResult::merge);
+                    results.forEachOrdered(v1CheckResult::merge);
                 }
-                yield DmConvertUtils.convertToRuleCheckResult(checkResult);
+                yield DmConvertUtils.convertToRuleCheckResult(v1CheckResult);
             }
             case ATTACHMENT -> {
                 if (fo.getAttachmentId() == null) {
@@ -986,6 +991,31 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             }
         } else {
             result = new DmTicketResultVO();
+        }
+
+        // Risk assessment: temporary level without row count (design D2: v1 createSqlTicket writes
+        // temporary level; PRE_INIT completion writes back final level with rows).
+        // force=true: assessment uses checkResult from before clearing (design: 定级照常).
+        try {
+            java.util.List<java.util.Set<com.clougence.clouddm.sdk.sql.parser.SplitQueryType>> stmtTypes = new java.util.ArrayList<>();
+            if (contentType == SqlContentType.INLINE && StringUtils.isNotBlank(fo.getRawSql()) && dsConfig != null) {
+                try (StringReader splitReader = new StringReader(fo.getRawSql());
+                     Stream<com.clougence.clouddm.sdk.sql.parser.SplitScript> scripts
+                         = this.queryAnalysisService.analysisSplitStream(dsConfig, splitReader, Collections.emptyList(), 1, 0)) {
+                    scripts.forEachOrdered(s -> stmtTypes.add(s.getType()));
+                }
+            }
+            com.clougence.clouddm.console.web.component.governance.RiskAssessment v1Risk
+                = riskAssessmentService.assess(
+                    puid, dsDO.getDsEnvId(), stmtTypes, v1CheckResult, null,
+                    envDO != null ? envDO.getEnvName() : null,
+                    dsDO.getDataSourceType() != null ? dsDO.getDataSourceType().name() : null, Collections.emptyList());
+            mo.setRiskLevel(v1Risk.getLevel().name());
+            mo.setImpactScope(com.clougence.utils.JsonUtils.toJson(v1Risk.getScope()));
+            mo.setImpactScopeText(v1Risk.getReadableText());
+        } catch (Exception e) {
+            // Risk assessment failure must not block ticket creation (degradation: no level written)
+            log.warn("v1 risk assessment failed for ticket creation, degraded", e);
         }
 
         // query env bind param

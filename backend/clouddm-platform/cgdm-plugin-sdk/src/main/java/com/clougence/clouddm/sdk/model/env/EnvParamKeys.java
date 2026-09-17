@@ -26,4 +26,5 @@ public interface EnvParamKeys {
     String SQL_TICKET_INFO         = "ticket_info";
     String CHANGE_TICKET_INFO      = "ticket_info_of_change";
     String DM_ALLOW_ALL_STATEMENTS = "dm_allow_all_statements";
+    String SQL_RISK_LEVEL_CONFIG   = "sql_risk_level_config";
 }

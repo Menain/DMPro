@@ -48,4 +48,13 @@ public class ApprovalMO {
     // Rollback SQL source flag: true = system-generated backup template;
     // false/null = applicant-provided. Stored in ticketInfo JSON (zero DDL).
     private Boolean rollBackSqlGenerated;
+
+    // SQL risk level (LOW/MEDIUM/HIGH/CRITICAL). Null on legacy rows (approvalMode precedent).
+    private String  riskLevel;
+
+    // Impact scope as JSON text (structured ImpactScope per design D4). Null on legacy rows.
+    private String  impactScope;
+
+    // Human-readable impact-scope text for external approval form fields and detail-page display.
+    private String  impactScopeText;
 }

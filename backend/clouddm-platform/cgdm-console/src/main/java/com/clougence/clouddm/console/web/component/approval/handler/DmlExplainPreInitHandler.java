@@ -22,6 +22,7 @@ import com.clougence.clouddm.console.web.component.analysis.AnalysisQueryOptions
 import com.clougence.clouddm.console.web.component.analysis.QueryAnalysisFeature;
 import com.clougence.clouddm.console.web.component.analysis.QueryAnalysisService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalService;
+import com.clougence.clouddm.console.web.component.detectrule.SecRulesCheckResult;
 import com.clougence.clouddm.console.web.component.approval.model.*;
 import com.clougence.clouddm.console.web.component.config.RootUserConfig;
 import com.clougence.clouddm.console.web.component.config.UserConfigService;
@@ -76,6 +77,8 @@ public class DmlExplainPreInitHandler extends AbstractPreInitHandler {
     private SystemDal            systemDal;
     @Resource
     private UserConfigService    userConfigService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
 
     @Override
     protected String analysisType() {
@@ -120,12 +123,99 @@ public class DmlExplainPreInitHandler extends AbstractPreInitHandler {
             .mapToLong(Long::longValue)
             .sum();
         context.getApprovalDal().approvalMapper().updateExpectedAffectedRows(context.getApproval().getId(), expectedAffectedRows);
+
+        // Risk level writeback (design D2: PRE_INIT completion → final level with rows).
+        // Re-reads ticketInfo, re-assesses with estimatedRows, writes back final riskLevel/impactScope.
+        writeBackFinalRiskLevel(context, expectedAffectedRows);
     }
 
     private static ExplainPlanSpi findExplainSpi(DataSourceType dsType) {
         DsPluginInfo dsPlugin = PluginManager.findDsPlugin(dsType);
         List<ExplainPlanSpi> explains = dsPlugin == null ? Collections.emptyList() : dsPlugin.findSpi(ExplainPlanSpi.class);
         return explains.isEmpty() ? null : explains.get(0);
+    }
+
+    /**
+     * Writes back the final risk level to ticketInfo after EXPLAIN row estimation (design D2).
+     * Reconstructs statement types and rule hits from the stored ImpactScope, re-assesses with
+     * the estimated row count, and updates riskLevel/impactScope/impactScopeText in ticketInfo.
+     * Follows the releaseId/releaseNo writeback precedent (ProdReleaseServiceImpl pattern).
+     */
+    private void writeBackFinalRiskLevel(PreInitContext context, long expectedAffectedRows) {
+        try {
+            DmApprovalDO approval = context.getApproval();
+            // Re-read latest ticketInfo (may have changed since createSqlTicket)
+            DmApprovalDO latest = context.getApprovalDal().approvalMapper().queryById(approval.getId());
+            if (latest == null || StringUtils.isBlank(latest.getTicketInfo())) {
+                return;
+            }
+            ApprovalMO mo = JsonUtils.toObj(latest.getTicketInfo(), ApprovalMO.class);
+            if (mo == null) {
+                return;
+            }
+
+            // Reconstruct inputs from stored ImpactScope (avoids re-analysis)
+            java.util.List<java.util.Set<SplitQueryType>> stmtTypes = new java.util.ArrayList<>();
+            com.clougence.clouddm.console.web.component.governance.ImpactScope storedScope = null;
+            if (StringUtils.isNotBlank(mo.getImpactScope())) {
+                storedScope = JsonUtils.toObj(mo.getImpactScope(),
+                    com.clougence.clouddm.console.web.component.governance.ImpactScope.class);
+            }
+            SecRulesCheckResult reconstructedRules = new SecRulesCheckResult();
+            java.util.List<String> tables = new java.util.ArrayList<>();
+            if (storedScope != null) {
+                if (storedScope.getStmtTypes() != null) {
+                    for (String typeName : storedScope.getStmtTypes()) {
+                        java.util.Set<SplitQueryType> types = new java.util.HashSet<>();
+                        try {
+                            types.add(SplitQueryType.valueOf(typeName));
+                        } catch (Exception ignored) {
+                            // unknown type
+                        }
+                        stmtTypes.add(types);
+                    }
+                }
+                if (storedScope.getHitRules() != null) {
+                    for (com.clougence.clouddm.console.web.component.governance.ImpactScope.HitRuleRef hr : storedScope.getHitRules()) {
+                        try {
+                            com.clougence.clouddm.sdk.service.secrules.RuleLevel level
+                                = com.clougence.clouddm.sdk.service.secrules.RuleLevel.valueOf(hr.getLevel());
+                            reconstructedRules.addResult(hr.getRule(), level, null, hr.getMessage());
+                        } catch (Exception ignored) {
+                            // unknown level
+                        }
+                    }
+                }
+                if (storedScope.getTables() != null) {
+                    tables.addAll(storedScope.getTables());
+                }
+            }
+
+            // Re-assess with row count
+            String dsType = context.getDsConfig() != null && context.getDsConfig().getDataSourceType() != null
+                ? context.getDsConfig().getDataSourceType().name() : null;
+            long envId = 0;
+            if (latest.getLevels() != null && !latest.getLevels().isEmpty()) {
+                try {
+                    envId = Long.parseLong(latest.getLevels().get(0));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            com.clougence.clouddm.console.web.component.governance.RiskAssessment finalRisk
+                = riskAssessmentService.assess(
+                    approval.getPrimaryUid(), envId,
+                    stmtTypes, reconstructedRules, expectedAffectedRows,
+                    approval.getEnvName(), dsType, tables);
+
+            mo.setRiskLevel(finalRisk.getLevel().name());
+            mo.setImpactScope(JsonUtils.toJson(finalRisk.getScope()));
+            mo.setImpactScopeText(finalRisk.getReadableText());
+
+            latest.setTicketInfo(JsonUtils.toJson(mo));
+            context.getApprovalDal().approvalMapper().updateById(latest);
+        } catch (Exception e) {
+            log.warn("writeBackFinalRiskLevel failed for ticketId={}, degraded", context.getApproval().getId(), e);
+        }
     }
 
     private File createRequestCache(PreInitContext context) {

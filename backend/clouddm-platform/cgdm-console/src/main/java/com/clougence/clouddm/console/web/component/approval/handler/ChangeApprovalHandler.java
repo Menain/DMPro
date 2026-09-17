@@ -346,6 +346,9 @@ public class ChangeApprovalHandler implements ApprovalHandler {
         form.setFlowName(flowDO.getFlowName());
         form.setChangeName(changeDO.getChangeName());
         form.setBranch(changeDO.getChangeBranch());
+        // Risk level + impact scope (design D5: v1 CI/CD form fields)
+        form.setRiskLevel(info.getRiskLevel());
+        form.setImpactScopeText(info.getImpactScopeText());
         return form;
     }
 

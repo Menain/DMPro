@@ -164,6 +164,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private GovReturnNotifyService govReturnNotifyService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator rollbackSqlGenerator;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SqlRowEstimator sqlRowEstimator;
 
     // ==================== check ====================
 
@@ -287,6 +291,27 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 ticket.setRollBackSql(generated);
                 mo.setRollBackSqlGenerated(true);
             }
+        }
+        // Risk assessment (design D2: synchronous in submit transaction)
+        String dsType = firstDs != null && firstDs.getDataSourceType() != null ? firstDs.getDataSourceType().name() : null;
+        String envName = envDO != null ? envDO.getEnvName() : null;
+        com.clougence.clouddm.console.web.component.governance.RiskAssessment riskAssessment
+            = assessRiskFromPrechecks(puid, firstDs.getDsEnvId(), envName, dsType, prechecks);
+        mo.setRiskLevel(riskAssessment.getLevel().name());
+        mo.setImpactScope(com.clougence.utils.JsonUtils.toJson(riskAssessment.getScope()));
+        mo.setImpactScopeText(riskAssessment.getReadableText());
+        // Writeback expected_affected_rows (design D3)
+        Long totalRows = null;
+        for (GroupPrecheck pc : prechecks) {
+            if (pc.result.getEstimatedRows() != null) {
+                if (totalRows == null) {
+                    totalRows = 0L;
+                }
+                totalRows += pc.result.getEstimatedRows();
+            }
+        }
+        if (totalRows != null) {
+            ticket.setExpectedAffectedRows(totalRows);
         }
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         ticket.setLevels(List.of(firstDs.getDsEnvId().toString(), String.valueOf(firstDsId), resolveDbName(ticketType, firstPair)));
@@ -568,6 +593,28 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 mo.setRollBackSqlGenerated(true);
             }
         }
+        // Risk assessment recompute (design D2: REVISION resubmit 重算)
+        DmDsDO resubmitDs = dsDal.dsMapper().queryDsIdentityById(ticket.getBindDsId());
+        String resubmitDsType = resubmitDs != null && resubmitDs.getDataSourceType() != null ? resubmitDs.getDataSourceType().name() : null;
+        String resubmitEnvName = ticket.getEnvName();
+        long resubmitEnvId = resubmitDs != null ? resubmitDs.getDsEnvId() : 0;
+        com.clougence.clouddm.console.web.component.governance.RiskAssessment resubmitRisk
+            = assessRiskFromPrechecks(puid, resubmitEnvId, resubmitEnvName, resubmitDsType, prechecks);
+        mo.setRiskLevel(resubmitRisk.getLevel().name());
+        mo.setImpactScope(com.clougence.utils.JsonUtils.toJson(resubmitRisk.getScope()));
+        mo.setImpactScopeText(resubmitRisk.getReadableText());
+        Long resubmitTotalRows = null;
+        for (GroupPrecheck pc : prechecks) {
+            if (pc.result.getEstimatedRows() != null) {
+                if (resubmitTotalRows == null) {
+                    resubmitTotalRows = 0L;
+                }
+                resubmitTotalRows += pc.result.getEstimatedRows();
+            }
+        }
+        if (resubmitTotalRows != null) {
+            ticketUpdate.setExpectedAffectedRows(resubmitTotalRows);
+        }
         ticketUpdate.setTicketInfo(JsonUtils.toJson(mo));
         approvalDal.approvalMapper().updateById(ticketUpdate);
 
@@ -826,6 +873,17 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             return result;
         }
 
+        // Step 4: EXPLAIN row estimation (design D3) — degradation contract: never blocks submission.
+        try {
+            com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult estResult
+                = sqlRowEstimator.estimate(sqlContent, dsConfig, dsLevels, uid, dsId);
+            result.setEstimatedRows(estResult.estimatedRows());
+            result.setRowsEstimated(estResult.rowsEstimated());
+        } catch (Exception e) {
+            log.warn("[GovTicketV2] Row estimation failed for pair {}, degraded to unknown", pairId, e);
+            result.setRowsEstimated(false);
+        }
+
         result.setCheckStatus("PASS");
         return result;
     }
@@ -888,6 +946,14 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             rules.put("messages", Collections.emptyList());
         }
         json.put("rulesCheck", rules);
+
+        // Additive: estimatedRows + rowsEstimated (design D3; @JsonIgnoreProperties on old consumers)
+        if (gr.getEstimatedRows() != null) {
+            json.put("estimatedRows", gr.getEstimatedRows());
+        }
+        if (gr.getRowsEstimated() != null) {
+            json.put("rowsEstimated", gr.getRowsEstimated());
+        }
 
         json.put("checkedAt", OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
         json.put("engine", ENGINE_V2);
@@ -1009,5 +1075,66 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             this.result = result;
             this.precheckResultJson = precheckResultJson;
         }
+    }
+
+    // ==================== risk assessment ====================
+
+    /**
+     * Assesses risk level from v2 precheck results (design D2: synchronous in submit transaction).
+     * Reconstructs SecRulesCheckResult and statement types from the GroupResult VOs.
+     */
+    private com.clougence.clouddm.console.web.component.governance.RiskAssessment assessRiskFromPrechecks(
+        String puid, long envId, String envName, String dsType, List<GroupPrecheck> prechecks) {
+
+        java.util.List<java.util.Set<SplitQueryType>> allStmtTypes = new java.util.ArrayList<>();
+        SecRulesCheckResult mergedRules = new SecRulesCheckResult();
+        long totalEstimatedRows = 0;
+        boolean anyRowsEstimated = false;
+        java.util.List<String> tables = new java.util.ArrayList<>();
+
+        for (GroupPrecheck pc : prechecks) {
+            GovTicketV2CheckVO.GroupResult gr = pc.result;
+            if (gr == null) {
+                continue;
+            }
+            // Reconstruct statement types
+            if (gr.getStatements() != null) {
+                for (GovTicketV2CheckVO.StmtPreview sp : gr.getStatements()) {
+                    java.util.Set<SplitQueryType> types = new java.util.HashSet<>();
+                    if (sp.getType() != null) {
+                        try {
+                            types.add(SplitQueryType.valueOf(sp.getType()));
+                        } catch (Exception ignored) {
+                            // unknown type
+                        }
+                    }
+                    allStmtTypes.add(types);
+                }
+            }
+            // Reconstruct rules check result
+            if (gr.getRulesCheck() != null && gr.getRulesCheck().getMessages() != null) {
+                for (GovTicketV2CheckVO.RuleMessage rm : gr.getRulesCheck().getMessages()) {
+                    try {
+                        RuleLevel level = RuleLevel.valueOf(rm.getLevel());
+                        mergedRules.addResult(rm.getRule(), level, null, rm.getMessage());
+                    } catch (Exception ignored) {
+                        // unknown level
+                    }
+                }
+            }
+            // Sum estimated rows
+            if (gr.getEstimatedRows() != null) {
+                totalEstimatedRows += gr.getEstimatedRows();
+                anyRowsEstimated = true;
+            }
+            // Collect table names (use dbName as context)
+            if (StringUtils.isNotBlank(gr.getDbName())) {
+                tables.add(gr.getDbName());
+            }
+        }
+
+        Long estimatedRows = anyRowsEstimated ? totalEstimatedRows : null;
+        return riskAssessmentService.assess(
+            puid, envId, allStmtTypes, mergedRules, estimatedRows, envName, dsType, tables);
     }
 }
