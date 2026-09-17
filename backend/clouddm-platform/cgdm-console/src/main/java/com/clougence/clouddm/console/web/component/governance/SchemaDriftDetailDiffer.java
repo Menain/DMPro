@@ -136,7 +136,7 @@ public final class SchemaDriftDetailDiffer {
             } else if (preItem != null && prodItem == null) {
                 removed.add(name);
             } else if (preItem != null && !preItem.equals(prodItem)) {
-                List<String> fields = diffFields(preItem, prodItem);
+                Map<String, Object> fields = diffFields(preItem, prodItem);
                 if (!fields.isEmpty()) {
                     Map<String, Object> entry = new LinkedHashMap<>();
                     entry.put("name", name);
@@ -167,7 +167,7 @@ public final class SchemaDriftDetailDiffer {
             return;
         }
         if (!prePk.equals(prodPk)) {
-            List<String> fields = diffFields(prePk, prodPk);
+            Map<String, Object> fields = diffFields(prePk, prodPk);
             if (!fields.isEmpty()) {
                 Map<String, Object> entry = new LinkedHashMap<>();
                 entry.put("fields", fields);
@@ -201,15 +201,21 @@ public final class SchemaDriftDetailDiffer {
         return keys;
     }
 
-    private static List<String> diffFields(JsonNode a, JsonNode b) {
-        List<String> fields = new ArrayList<>();
+    /**
+     * Per-field differences as {fieldName: {"pre": v, "prod": v}} so the detail
+     * JSON is self-explanatory — a field-name-only list told readers THAT a
+     * column changed but not what it changed from/to. A null side means the
+     * field is absent on that side.
+     */
+    private static Map<String, Object> diffFields(JsonNode a, JsonNode b) {
+        Map<String, Object> fields = new LinkedHashMap<>();
         Iterator<String> names = a.fieldNames();
         while (names.hasNext()) {
             String name = names.next();
             JsonNode aVal = a.get(name);
             JsonNode bVal = b.get(name);
             if (bVal == null || !aVal.equals(bVal)) {
-                fields.add(name);
+                fields.put(name, preProdValues(aVal, bVal));
             }
         }
         // Check for fields only in b
@@ -217,10 +223,28 @@ public final class SchemaDriftDetailDiffer {
         while (bNames.hasNext()) {
             String name = bNames.next();
             if (a.get(name) == null) {
-                fields.add(name);
+                fields.put(name, preProdValues(null, b.get(name)));
             }
         }
         return fields;
+    }
+
+    private static Map<String, Object> preProdValues(JsonNode pre, JsonNode prod) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("pre", plainValue(pre));
+        entry.put("prod", plainValue(prod));
+        return entry;
+    }
+
+    /** Text nodes unwrap to plain strings; numbers/booleans/arrays serialize as-is. */
+    private static Object plainValue(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        if (node.isTextual()) {
+            return node.asText();
+        }
+        return node;
     }
 
     private static String textOrEmpty(JsonNode node) {

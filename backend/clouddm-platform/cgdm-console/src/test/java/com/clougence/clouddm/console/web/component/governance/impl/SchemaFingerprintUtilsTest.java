@@ -25,6 +25,8 @@ import org.junit.Test;
 
 import com.clougence.adapter.mysql.MyUmiAttributeNames;
 import com.clougence.clouddm.console.web.component.governance.SchemaFingerprintUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.clougence.schema.umi.special.rdb.RdbColumn;
 import com.clougence.schema.umi.special.rdb.RdbForeignKey;
 import com.clougence.schema.umi.special.rdb.RdbIndex;
@@ -208,6 +210,19 @@ public class SchemaFingerprintUtilsTest {
         assertNotNull(json);
         assertTrue(json.contains("InnoDB"));
         assertTrue(json.contains("user table"));
+    }
+
+    @Test
+    public void canonicalJson_isParsableJson_commentInsideColumnObject() throws Exception {
+        // Regression pin: canonicalColumn used to append "comment" AFTER the
+        // closing brace of the column object, making the whole canonical JSON
+        // unparsable — every MISMATCH detail then degraded to a differ error
+        // note ("was expecting comma to separate Array entries").
+        String json = SchemaFingerprintUtils.canonicalJson(buildSimpleTable());
+        JsonNode root = new ObjectMapper().readTree(json); // must not throw
+        assertEquals("user name", root.path("columns").get(1).path("comment").asText());
+        assertEquals("user table", root.path("tableComment").asText());
+        assertEquals("utf8mb4", root.path("characterSet").asText());
     }
 
     // ==================== BLOCK-level changes DO change fingerprint ====================

@@ -198,8 +198,14 @@ public final class SchemaFingerprintUtils {
     // ==================== canonical builders (column: full + block) ====================
 
     private static String canonicalColumn(RdbColumn col) {
-        // Full version includes comment (WARN-level)
-        return blockColumn(col) + "," + "\"comment\":\"" + escape(col.getComment()) + "\"";
+        // Full version includes comment (WARN-level). blockColumn() returns a
+        // CLOSED '{...}' object — the comment must be spliced INSIDE it.
+        // (Appending after the closing brace produced invalid JSON: every
+        // detail-differ parse then died with "was expecting comma to separate
+        // Array entries" and MISMATCH details degraded to an error note.)
+        String block = blockColumn(col);
+        return block.substring(0, block.length() - 1)
+            + ",\"comment\":\"" + escape(col.getComment()) + "\"}";
     }
 
     /**

@@ -17,10 +17,16 @@ package com.clougence.clouddm.console.web.component.governance.impl;
 
 import static org.junit.Assert.*;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import org.junit.Test;
 
+import com.clougence.adapter.mysql.MyUmiAttributeNames;
 import com.clougence.clouddm.console.web.component.governance.SchemaDriftDetailDiffer;
 import com.clougence.clouddm.console.web.component.governance.SchemaFingerprintUtils;
+import com.clougence.schema.umi.special.rdb.RdbColumn;
+import com.clougence.schema.umi.special.rdb.RdbTable;
 
 /**
  * Unit tests for SchemaDriftDetailDiffer (sub-task C, layer 3: diff detail).
@@ -101,6 +107,48 @@ public class SchemaDriftDetailDifferTest {
         assertNotNull(detail);
         assertTrue(detail.contains("\"changed\""));
         assertTrue(detail.contains("\"dataType\""));
+        // changed fields carry both side values, not just the field name
+        assertTrue(detail.contains("\"pre\":\"int\""));
+        assertTrue(detail.contains("\"prod\":\"bigint\""));
+    }
+
+    @Test
+    public void diffTableJson_canonicalJsonEndToEnd_producesRealDiff() {
+        // Regression pin: canonicalJson output used to be INVALID JSON (comment
+        // spliced outside the column object), so every real-table diff degraded
+        // to {"error":"Failed to build detail: ..."}. Run the full pipeline here.
+        RdbTable pre = miniTable("int");
+        RdbTable prod = miniTable("bigint");
+
+        String detail = SchemaDriftDetailDiffer.diffTableJson(
+            SchemaFingerprintUtils.canonicalJson(pre),
+            SchemaFingerprintUtils.canonicalJson(prod));
+
+        assertNotNull(detail);
+        assertFalse(detail.contains("\"error\""));
+        assertTrue(detail.contains("\"changed\""));
+        assertTrue(detail.contains("\"pre\":\"int\""));
+        assertTrue(detail.contains("\"prod\":\"bigint\""));
+    }
+
+    private RdbTable miniTable(String idType) {
+        RdbTable table = new RdbTable();
+        table.setName("foo");
+        table.setAttribute(MyUmiAttributeNames.CHARACTER_SET, "utf8mb4");
+        table.setAttribute(MyUmiAttributeNames.COLLATION, "utf8mb4_general_ci");
+        table.setAttribute(MyUmiAttributeNames.ENGINE, "InnoDB");
+        table.setComment("note: with \"quotes\" and colons");
+
+        Map<String, RdbColumn> cols = new LinkedHashMap<>();
+        RdbColumn id = new RdbColumn();
+        id.setName("id");
+        id.setIndex(1);
+        id.setAttribute(MyUmiAttributeNames.DATA_TYPE, idType);
+        id.setAttribute(MyUmiAttributeNames.COLUMN_TYPE, idType);
+        id.setComment("pk: 主键 \"id\"");
+        cols.put("id", id);
+        table.setColumns(cols);
+        return table;
     }
 
     @Test
