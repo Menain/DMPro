@@ -534,7 +534,36 @@ public class SchemaPatrolServiceImplTest {
 
         service.executeRun(RUN_ID, List.of(pair));
 
-        verify(runMapper).updateStatus(eq(RUN_ID), eq("PARTIAL"), eq(1), eq(0), isNull());
+        ArgumentCaptor<String> errCap = ArgumentCaptor.forClass(String.class);
+        verify(runMapper).updateStatus(eq(RUN_ID), eq("PARTIAL"), eq(1), eq(0), errCap.capture());
+        assertTrue(errCap.getValue().contains("patrol failed"));
+        assertTrue(errCap.getValue().contains("fail"));
+    }
+
+    @Test
+    public void executeRun_tableLimit_errorCarriesIncompleteNote() {
+        DmDbPairDO pair = buildPair();
+        when(systemDal.fetchSystemConf(eq("govSchemaPatrolTableLimit"), eq(Integer.class), anyInt())).thenReturn(1);
+        mockTableLists(List.of("t1", "t2", "t3"), List.of());
+
+        service.executeRun(RUN_ID, List.of(pair));
+
+        // t1 (the compared ONLY_PRE table) is unexplained → unexplainedCount=1
+        ArgumentCaptor<String> errCap = ArgumentCaptor.forClass(String.class);
+        verify(runMapper).updateStatus(eq(RUN_ID), eq("PARTIAL"), eq(1), eq(1), errCap.capture());
+        assertTrue(errCap.getValue().contains("table limit 1 hit, 2 of 3 tables not compared"));
+    }
+
+    @Test
+    public void patrolPair_dsMissing_reasonRecorded() throws Exception {
+        DmDbPairDO pair = buildPair();
+        when(dsMapper.queryDsIdentityById(PRE_DS_ID)).thenReturn(null);
+
+        SchemaPatrolServiceImpl.PairResult result = service.patrolPair(pair, RUN_ID);
+
+        assertTrue(result.partial);
+        assertEquals(1, result.partialReasons.size());
+        assertTrue(result.partialReasons.get(0).contains("datasource not found"));
     }
 
     @Test
@@ -633,7 +662,7 @@ public class SchemaPatrolServiceImplTest {
         service.executeRun(RUN_ID, List.of(pair));
 
         verifyNoInteractions(dsSchemaService);
-        verify(runMapper).updateStatus(RUN_ID, "CANCELLED", 0, 0, "Stopped by user");
+        verify(runMapper).updateStatus(RUN_ID, "CANCELLED", 0, 0, "Stopped by user: 1 of 1 pairs not patrolled");
         verify(runMapper, never()).incrementPairsDone(RUN_ID);
         // Flags cleared in finally so the next run starts clean
         assertEquals(-1, flag("cancelRequestedRunId").get());

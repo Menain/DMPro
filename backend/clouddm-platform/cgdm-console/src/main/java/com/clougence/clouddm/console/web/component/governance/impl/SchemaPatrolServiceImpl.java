@@ -315,6 +315,7 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         int totalUnexplained = 0;
         int pairsDone = 0;
 
+        List<String> incompleteReasons = new ArrayList<>();
         try {
             for (DmDbPairDO pair : pairs) {
                 if (isCancelRequested(runId)) {
@@ -325,11 +326,13 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
                     totalUnexplained += result.unexplainedCount;
                     if (result.partial) {
                         partial = true;
+                        incompleteReasons.addAll(result.partialReasons);
                     }
                 } catch (Exception e) {
                     log.error("[SchemaPatrol] Pair {} (pre={},prod={}) failed: {}",
                         pair.getId(), pair.getPreDbName(), pair.getProdDbName(), e.getMessage(), e);
                     partial = true;
+                    incompleteReasons.add(pairLabel(pair) + ": patrol failed — " + truncate(e.getMessage(), 200));
                 }
                 try {
                     runMapper.incrementPairsDone(runId);
@@ -343,9 +346,16 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
             String error = null;
             if (isCancelRequested(runId)) {
                 status = STATUS_CANCELLED;
-                error = "Stopped by user";
+                int notPatrolled = pairs.size() - pairsDone;
+                incompleteReasons.add(0, notPatrolled > 0
+                    ? "Stopped by user: " + notPatrolled + " of " + pairs.size() + " pairs not patrolled"
+                    : "Stopped by user");
             } else {
                 status = partial ? STATUS_PARTIAL : STATUS_DONE;
+            }
+            if (!incompleteReasons.isEmpty()) {
+                // error column doubles as the incomplete-parts note (varchar 1024, zero DDL)
+                error = truncate(String.join("\n", incompleteReasons), 1000);
             }
             runMapper.updateStatus(runId, status, pairsDone, totalUnexplained, error);
 
@@ -370,6 +380,11 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
         return cancelRequestedRunId.get() == runId;
     }
 
+    /** "Pair 3 (pre_db <-> prod_db)" — label used in incomplete-parts notes. */
+    private static String pairLabel(DmDbPairDO pair) {
+        return "Pair " + pair.getId() + " (" + pair.getPreDbName() + " <-> " + pair.getProdDbName() + ")";
+    }
+
     // ==================== per-pair patrol ====================
 
     PairResult patrolPair(DmDbPairDO pair, long runId) throws Exception {
@@ -388,6 +403,8 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
             log.warn("[SchemaPatrol] DS not found for pair {}: pre={}, prod={}",
                 pair.getId(), preDsId, prodDsId);
             result.partial = true;
+            result.partialReasons.add(pairLabel(pair) + ": datasource not found (pre dsId="
+                + preDsId + ", prod dsId=" + prodDsId + ")");
             return result;
         }
 
@@ -482,13 +499,18 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
             processed++;
         }
 
+        int totalTables = onlyPre.size() + onlyProd.size() + common.size();
         if (processed >= tableLimit) {
             log.info("[SchemaPatrol] Pair {} hit table limit ({}), marking PARTIAL", pair.getId(), tableLimit);
             result.partial = true;
+            result.partialReasons.add(pairLabel(pair) + ": table limit " + tableLimit + " hit, "
+                + (totalTables - processed) + " of " + totalTables + " tables not compared");
         }
         if (budgetExceeded) {
             log.info("[SchemaPatrol] Pair {} exceeded time budget ({}ms), marking PARTIAL", pair.getId(), budgetMs);
             result.partial = true;
+            result.partialReasons.add(pairLabel(pair) + ": time budget " + (budgetMs / 60_000L)
+                + " min exhausted, " + (totalTables - processed) + " of " + totalTables + " tables not compared");
         }
 
         // Batch insert items
@@ -685,6 +707,8 @@ public class SchemaPatrolServiceImpl implements SchemaPatrolService, UnifiedPost
     static class PairResult {
         int  unexplainedCount;
         boolean partial;
+        /** Human-readable reasons for partial completion (surfaced via run.error → detail modal). */
+        final List<String> partialReasons = new ArrayList<>();
     }
 
     static class ExplainResult {

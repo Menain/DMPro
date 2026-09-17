@@ -4682,5 +4682,6 @@
   "xun-jian-diff-mismatch-tip": "两边都有这张表，但结构不一致（列、索引、字符集等）——具体差异见明细 JSON",
   "xun-jian-jie-shi-exempt-tip": "该差异由进行中的生产发布单解释（引用列为发布单号）——预期内的临时差异",
   "xun-jian-jie-shi-pending-tip": "预发已执行、但尚未合并进发布单的变更（引用列为工单 ID）——预期内差异",
-  "xun-jian-jie-shi-unexplained-tip": "找不到能解释该差异的发布单或工单——可能是绕过流程的改动，需人工核查"
+  "xun-jian-jie-shi-unexplained-tip": "找不到能解释该差异的发布单或工单——可能是绕过流程的改动，需人工核查",
+  "xun-jian-wei-wan-cheng-yuan-yin": "未完成部分说明"
 }

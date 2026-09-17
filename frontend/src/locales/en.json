@@ -4700,5 +4700,6 @@
   "xun-jian-diff-mismatch-tip": "Table exists on both sides but structures differ (columns, indexes, charset…) — see detail JSON",
   "xun-jian-jie-shi-exempt-tip": "Explained by an in-flight production release (reference = release no.) — expected temporary drift",
   "xun-jian-jie-shi-pending-tip": "Pre-side change executed but not yet merged into a release (reference = ticket id) — expected",
-  "xun-jian-jie-shi-unexplained-tip": "No release or ticket explains this diff — possible out-of-band change; review manually"
+  "xun-jian-jie-shi-unexplained-tip": "No release or ticket explains this diff — possible out-of-band change; review manually",
+  "xun-jian-wei-wan-cheng-yuan-yin": "Incomplete parts"
 }

@@ -67,6 +67,10 @@
           {{ $t('xun-jian-dao-chu') }}
         </Button>
       </div>
+      <Alert v-if="detailRun && detailRun.error" type="warning" class="detail-incomplete">
+        <span class="detail-incomplete-title">{{ $t('xun-jian-wei-wan-cheng-yuan-yin') }}</span>
+        <pre class="detail-incomplete-text">{{ detailRun.error }}</pre>
+      </Alert>
       <Table v-if="detailItems.length" :columns="itemColumns" :data="detailItems" size="small" border stripe :max-height="480">
         <template #diffClass="{ row }">
           <Tooltip :content="diffTip(row.diffClass)" max-width="320" transfer>
@@ -367,6 +371,20 @@ export default {
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
+}
+.detail-incomplete {
+  margin-bottom: 12px;
+  .detail-incomplete-title {
+    font-weight: 500;
+  }
+  .detail-incomplete-text {
+    margin: 4px 0 0;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 140px;
+    overflow: auto;
+  }
 }
 // Classic always-visible scrollbars in the detail table's scroll region —
 // overlay scrollbars auto-hide and are hard to grab with the mouse.
