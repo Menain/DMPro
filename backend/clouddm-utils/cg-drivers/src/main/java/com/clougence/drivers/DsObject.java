@@ -84,9 +84,13 @@ public class DsObject<T> implements Closeable {
             try {
                 if (this.closeable != null) {
                     this.closeable.eAccept(this.target);
-                    logger.log(Level.SEVERE, "close ignored, the 'close' interface was not set.");
-                } else {
                     logger.log(Level.INFO, "close dsObject.");
+                } else {
+                    // No close capability on the wrapped target — the close request
+                    // is genuinely ignored; surface it loudly. (These two log lines
+                    // were swapped historically: every NORMAL close logged SEVERE
+                    // "close ignored", flooding ERROR logs on session churn.)
+                    logger.log(Level.SEVERE, "close ignored, the 'close' interface was not set.");
                 }
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "close failed " + e.getMessage(), e);
