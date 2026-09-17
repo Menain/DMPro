@@ -177,6 +177,9 @@ public class OidcApi {
 
     private static final String OIDC_Mail     = "email";
     private static final String OIDC_Phone    = "phone_number";
+    // Casdoor embeds its raw user object into tokens, where the phone number arrives as the
+    // non-standard "phone" claim and "phone_number" is absent; read it as a fallback.
+    private static final String OIDC_Phone_Casdoor = "phone";
     private static final String OIDC_Picture  = "picture";
 
     public UserData fetchUserInfo(String idToken) {
@@ -190,7 +193,11 @@ public class OidcApi {
         userData.setExternalUID(externalUID);
         userData.setUserName(decodedJWT.getClaim(OIDC_UserName).asString());
         userData.setEmail(decodedJWT.getClaim(OIDC_Mail).asString());
-        userData.setPhone(decodedJWT.getClaim(OIDC_Phone).asString());
+        String phone = decodedJWT.getClaim(OIDC_Phone).asString();
+        if (StringUtils.isBlank(phone)) {
+            phone = decodedJWT.getClaim(OIDC_Phone_Casdoor).asString();
+        }
+        userData.setPhone(phone);
         userData.setBindAccount(decodedJWT.getClaim(OIDC_Account).asString());
         userData.setAccessToken(idToken);
         return userData;

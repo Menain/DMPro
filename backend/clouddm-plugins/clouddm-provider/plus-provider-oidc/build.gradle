@@ -28,6 +28,7 @@ dependencies {
 
     // for test
     testImplementation project(':cgdm-plugin-sdk')
+    testImplementation project(':cgdm-share-libs')
 }
 
 description = 'plus-provider-oidc'
