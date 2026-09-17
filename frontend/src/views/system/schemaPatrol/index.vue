@@ -11,7 +11,7 @@
             </div>
             <div class="right">
               <Button :loading="loading" @click="loadRuns(true)">
-                {{ $t('cha-xun') }}
+                {{ $t('shua-xin') }}
               </Button>
             </div>
           </div>
