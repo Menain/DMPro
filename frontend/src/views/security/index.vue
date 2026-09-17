@@ -3,8 +3,10 @@
     <AppPageTabs :model-value="activeSection" :tabs="sectionTabs" @change="handleSectionClick" />
     <div class="entry-note">{{ entryNote }}</div>
     <div class="security-rule-content">
-      <SpecList v-if="activeSection === 'security'" />
-      <RuleList v-if="activeSection === 'template'" />
+      <!-- :key 强制 kind 变化时重建子组件:两入口共用本壳,路由切换复用实例,
+           子组件 created 一次性拉数据,不重建会残留上一入口的列表 -->
+      <SpecList v-if="activeSection === 'security'" :key="effectiveRuleKind" />
+      <RuleList v-if="activeSection === 'template'" :key="effectiveRuleKind" />
     </div>
   </div>
 </template>

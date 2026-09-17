@@ -942,7 +942,7 @@ export default {
           </RadioGroup>
         </FormItem>
         <FormItem :label="$t('fan-wei')">
-          <Select v-model="rangeForm.rangeType" @on-change="handleScopeChange" clearable style="width: 384px">
+          <Select v-model="rangeForm.rangeType" @on-change="handleScopeChange" style="width: 384px">
             <Option v-for="mode in scopeSelectList" :value="mode.name" :key="mode.name">
               {{ mode.i18n }}
             </Option>
