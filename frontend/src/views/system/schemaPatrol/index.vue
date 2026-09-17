@@ -72,6 +72,11 @@
         <pre class="detail-incomplete-text">{{ detailRun.error }}</pre>
       </Alert>
       <Table v-if="detailItems.length" :columns="itemColumns" :data="detailItems" size="small" border stripe :max-height="480">
+        <template #dbPair="{ row }">
+          <Tooltip :content="'Pair ' + row.pairId" transfer>
+            <span>{{ pairLabel(row) }}</span>
+          </Tooltip>
+        </template>
         <template #diffClass="{ row }">
           <Tooltip :content="diffTip(row.diffClass)" max-width="320" transfer>
             <Tag :color="diffColor(row.diffClass)" size="small">
@@ -132,6 +137,7 @@ export default {
     },
     itemColumns() {
       return [
+        { title: this.$t('xun-jian-ku-ying-she'), slot: 'dbPair', minWidth: 200 },
         { title: this.$t('xun-jian-biao-ming'), key: 'tableName', minWidth: 160 },
         { title: this.$t('xun-jian-diff-lei-xing'), slot: 'diffClass', width: 150 },
         { title: this.$t('xun-jian-jie-shi-lei-xing'), slot: 'explainClass', width: 150 },
@@ -216,6 +222,9 @@ export default {
       if (!t) return '';
       return new Date(t).toLocaleString();
     },
+    pairLabel(row) {
+      return `${row.preDbName} ↔ ${row.prodDbName}`;
+    },
     formatJson(json) {
       try {
         return JSON.stringify(JSON.parse(json), null, 2);
@@ -259,6 +268,7 @@ export default {
     },
     handleExportDetail() {
       const header = [
+        this.$t('xun-jian-ku-ying-she'),
         this.$t('xun-jian-biao-ming'),
         this.$t('xun-jian-diff-lei-xing'),
         this.$t('xun-jian-jie-shi-lei-xing'),
@@ -266,6 +276,7 @@ export default {
         this.$t('xun-jian-ming-xi')
       ];
       const rows = this.detailItems.map((it) => [
+        this.pairLabel(it),
         it.tableName || '',
         this.diffLabel(it.diffClass),
         this.explainLabel(it.explainClass),
