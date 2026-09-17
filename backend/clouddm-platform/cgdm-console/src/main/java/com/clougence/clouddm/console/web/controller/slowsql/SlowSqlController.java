@@ -1,6 +1,6 @@
 package com.clougence.clouddm.console.web.controller.slowsql;
 
-import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.DM_SLOW_SQL_READ;
+import static com.clougence.clouddm.console.web.global.jwtsession.RequestAuth.AuthStrategy.Ignore;
 
 import java.util.List;
 
@@ -35,19 +35,19 @@ public class SlowSqlController {
     private SlowSqlService slowSqlService;
 
     @RequestMapping(value = "/listInstances", method = RequestMethod.POST)
-    @RequestAuth(DM_SLOW_SQL_READ)
+    @RequestAuth(strategy = Ignore)
     public ResWebData<List<SlowSqlInstanceVO>> listInstances() {
         return ResWebDataUtils.buildSuccess(slowSqlService.listInstances());
     }
 
     @RequestMapping(value = "/listTopSqls", method = RequestMethod.POST)
-    @RequestAuth(DM_SLOW_SQL_READ)
+    @RequestAuth(strategy = Ignore)
     public ResWebData<SlowSqlTopListVO> listTopSqls(@RequestBody SlowSqlTopQueryFO fo) {
         return ResWebDataUtils.buildSuccess(slowSqlService.listTopSqls(fo));
     }
 
     @RequestMapping(value = "/sqlAdvice", method = RequestMethod.POST)
-    @RequestAuth(DM_SLOW_SQL_READ)
+    @RequestAuth(strategy = Ignore)
     public ResWebData<SlowSqlAdviceVO> sqlAdvice(@RequestBody SlowSqlAdviceFO fo) {
         return ResWebDataUtils.buildSuccess(slowSqlService.sqlAdvice(fo));
     }

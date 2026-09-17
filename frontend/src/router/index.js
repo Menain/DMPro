@@ -139,8 +139,7 @@ const routes = [
       {
         path: 'slowSql',
         name: 'SlowSql',
-        component: () => import(/* webpackChunkName: "slow-sql" */ '../views/slowSql/index'),
-        meta: { requiredAuth: 'DM_SLOW_SQL_READ' }
+        component: () => import(/* webpackChunkName: "slow-sql" */ '../views/slowSql/index')
       },
       {
         path: 'dmdatasource',
