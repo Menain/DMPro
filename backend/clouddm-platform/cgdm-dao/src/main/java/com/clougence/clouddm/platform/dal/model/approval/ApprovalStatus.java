@@ -39,7 +39,10 @@ public enum ApprovalStatus {
     /** Means sqls in the ticket is running */
     RUNNING,
 
-    /** If the related sql exec failed with lead ticket to this status */
+    /** If the related sql exec failed with lead ticket to this status.
+     *  Not in listUnFinishTicketIdList IN set (scheduler branch was an empty
+     *  no-op — sweeping it only churned gmt_modified); exits solely via user
+     *  actions: retryJob → WAIT_EXEC, or close/cancel. */
     EXEC_FAIL,
 
     /** If the relate sql exec pause with lead ticket to this status **/

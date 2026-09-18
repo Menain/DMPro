@@ -110,7 +110,9 @@ public class ApprovalTaskScheduler {
             }
         }
         if (submitted > 0) {
-            log.info("[Rdp TicketTask] submitted " + submitted + " task.");
+            // DEBUG: this fires on every sweep round (~5s) while any ticket is
+            // in flight — routine heartbeat noise at INFO level.
+            log.debug("[Rdp TicketTask] submitted " + submitted + " task.");
         }
     }
 

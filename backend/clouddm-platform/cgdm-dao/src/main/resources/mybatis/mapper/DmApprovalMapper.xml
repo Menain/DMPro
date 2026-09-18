@@ -366,13 +366,17 @@
         FOR UPDATE
     </select>
 
+    <!-- EXEC_FAIL is deliberately NOT in the sweep set: its only exits are user
+         actions (retryJob -> WAIT_EXEC, close/cancel), the scheduler branch is an
+         empty no-op, and re-submitting it forever just churned gmt_modified and
+         flooded the dispatch log (idle spin). Do not add it back. -->
     <select id="listUnFinishTicketIdList" resultType="java.lang.Long">
         SELECT
             id
         FROM
             dm_approval
         WHERE
-            ticket_status                      IN ('PRE_INIT_WAIT', 'PRE_INIT_RUN', 'WAIT_APPROVAL', 'WAIT_CONFIRM', 'WAIT_EXEC', 'RUNNING', 'EXEC_FAIL')
+            ticket_status                      IN ('PRE_INIT_WAIT', 'PRE_INIT_RUN', 'WAIT_APPROVAL', 'WAIT_CONFIRM', 'WAIT_EXEC', 'RUNNING')
             AND
             DATE_SUB(NOW(), INTERVAL 5 SECOND) <![CDATA[ >= ]]> gmt_modified
         ORDER BY gmt_modified ASC
