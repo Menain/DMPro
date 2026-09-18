@@ -356,6 +356,23 @@ public class SessionManageServiceImplTest {
     }
 
     @Test
+    public void kill_notOwnerOfThread_surfacesNoPrivilegeMessage_sessionClosed() {
+        processlistResult = queryResult(PROCESSLIST_COLS,
+                new String[][] { row("300", "other_user", "10.1.1.9:5555", "orders", "Query", "300", "Sending data", "SELECT * FROM t") });
+        killResult = messageResult(MessageLevel.Error, "You are not owner of thread 123");
+        try {
+            service.kill(PUID, UID, killFO("300"));
+            fail("missing SUPER/CONNECTION_ADMIN must map to the dedicated no-privilege message");
+        } catch (ErrorMessageException e) {
+            // CONNECTION_ADMIN appears in both the zh and en bundle values — locale-robust assertion
+            assertTrue(e.getMessage().contains("CONNECTION_ADMIN"));
+            assertTrue("original DB error must be carried in {0}", e.getMessage().contains("You are not owner of thread 123"));
+        }
+        assertTrue(executedSqls.contains("KILL 300"));
+        verify(queryService).closeSession(UID, DIAG_SESSION);
+    }
+
+    @Test
     public void kill_success_returnsAuditObjWithTruncatedInfo_andClosesSession() {
         String longInfo = "x".repeat(900);
         processlistResult = queryResult(PROCESSLIST_COLS,

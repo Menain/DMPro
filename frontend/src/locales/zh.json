@@ -4706,5 +4706,7 @@
   "hui-hua-bao-hu-platform-self": "平台当前连接，禁止终止",
   "hui-hua-bao-hu-system-user": "系统用户会话，禁止终止",
   "hui-hua-bao-hu-replication-thread": "复制线程会话，禁止终止",
-  "hui-hua-bao-hu-default": "该会话受保护，禁止终止"
+  "hui-hua-bao-hu-default": "该会话受保护，禁止终止",
+  "hui-hua-zong-lian-jie-shu": "{0} 总连接数: {1}",
+  "hui-hua-lai-yuan-ip": "按来源 IP:"
 }

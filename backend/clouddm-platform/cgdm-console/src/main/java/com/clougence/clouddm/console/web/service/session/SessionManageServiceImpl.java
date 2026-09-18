@@ -108,6 +108,9 @@ public class SessionManageServiceImpl implements SessionManageService {
     static final String              SQL_PROCESSLIST        = "SHOW FULL PROCESSLIST";
     static final String              SQL_KILL_PREFIX        = "KILL ";
 
+    /** Lowercased MySQL error fragment meaning the DS account lacks SUPER/CONNECTION_ADMIN for other users' threads. */
+    static final String              KILL_NOT_OWNER_ERROR   = "you are not owner of thread";
+
     /** System users that must never be killed (lowercase, exact match). */
     static final Set<String>         SYSTEM_USERS           = Set.of("event_scheduler", "system user", "sql/main");
     /** Replication dump commands (lowercase, exact match). */
@@ -232,7 +235,7 @@ public class SessionManageServiceImpl implements SessionManageService {
             ResultList killResult = executeSql(uid, sessionId, buildRequest(dsConfig, SQL_KILL_PREFIX + targetId));
             String failure = firstFailureMessage(killResult);
             if (failure != null) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_KILL_FAILED.name(), failure));
+                throw new ErrorMessageException(DmI18nUtils.getMessage(resolveKillFailureKey(failure).name(), failure));
             }
 
             SessionKillAuditObj auditObj = new SessionKillAuditObj();
@@ -432,6 +435,18 @@ public class SessionManageServiceImpl implements SessionManageService {
             rows.add(mapped);
         }
         return rows;
+    }
+
+    /**
+     * Picks the kill-failure i18n key: "You are not owner of thread" is MySQL's way of saying the
+     * datasource connection account lacks SUPER/CONNECTION_ADMIN to kill other users' threads — a
+     * DB-side grant issue unrelated to platform roles, surfaced with a dedicated actionable message.
+     */
+    static I18nDmMsgKeys resolveKillFailureKey(String failureMessage) {
+        if (failureMessage.toLowerCase(Locale.ROOT).contains(KILL_NOT_OWNER_ERROR)) {
+            return I18nDmMsgKeys.SESSION_KILL_NO_PRIVILEGE;
+        }
+        return I18nDmMsgKeys.SESSION_KILL_FAILED;
     }
 
     /** First failure message of a ResultList (ActionServiceImpl / SqlRowEstimator judgement), or null when all ok. */

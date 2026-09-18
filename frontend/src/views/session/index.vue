@@ -16,9 +16,15 @@
                 {{ inst.dsName }}
               </Option>
             </Select>
-            <Input v-model="userFilter" :placeholder="$t('hui-hua-guo-lv-yong-hu')" style="width: 140px" clearable />
-            <Input v-model="dbFilter" :placeholder="$t('hui-hua-guo-lv-ku-ming')" style="width: 140px" clearable />
-            <Input v-model="commandFilter" :placeholder="$t('hui-hua-guo-lv-ming-ling')" style="width: 140px" clearable />
+            <Select v-model="userFilter" filterable clearable :placeholder="$t('hui-hua-guo-lv-yong-hu')" style="width: 160px">
+              <Option v-for="opt in userOptions" :key="opt.value" :value="opt.value" :label="opt.label">{{ opt.label }}</Option>
+            </Select>
+            <Select v-model="dbFilter" filterable clearable :placeholder="$t('hui-hua-guo-lv-ku-ming')" style="width: 160px">
+              <Option v-for="opt in dbOptions" :key="opt.value" :value="opt.value" :label="opt.label">{{ opt.label }}</Option>
+            </Select>
+            <Select v-model="commandFilter" filterable clearable :placeholder="$t('hui-hua-guo-lv-ming-ling')" style="width: 160px">
+              <Option v-for="opt in commandOptions" :key="opt.value" :value="opt.value" :label="opt.label">{{ opt.label }}</Option>
+            </Select>
             <InputNumber v-model="minTimeFilter" :min="0" :placeholder="$t('hui-hua-zui-xiao-shi-chang')" style="width: 140px" />
           </div>
           <div class="session-toolbar__actions">
@@ -37,10 +43,34 @@
           {{ $t('hui-hua-shi-li-kong-ti-shi') }}
         </div>
 
+        <div v-if="sessions.length > 0" class="session-stats">
+          <div class="session-stats__total">{{ $t('hui-hua-zong-lian-jie-shu', [selectedDsName, sessions.length]) }}</div>
+          <div class="session-stats__ip-row">
+            <span class="session-stats__ip-label">{{ $t('hui-hua-lai-yuan-ip') }}</span>
+            <span class="session-stats__ip-list">
+              <span v-for="item in visibleIpStats" :key="item.ip" class="session-stats__ip-item">{{ item.ip }} ({{ item.count }})</span>
+            </span>
+            <Button v-if="hasMoreIpStats" type="text" size="small" @click="ipStatsExpanded = !ipStatsExpanded">
+              {{ ipStatsExpanded ? $t('shou-qi-quan-bu') : $t('zhan-kai-quan-bu') }}
+            </Button>
+          </div>
+        </div>
+
         <div class="table-container">
-          <Table size="small" border stripe :loading="listLoading" :columns="tableColumns" :data="filteredSessions" row-key="id">
+          <Table
+            size="small"
+            border
+            stripe
+            :loading="listLoading"
+            :columns="tableColumns"
+            :data="pagedSessions"
+            row-key="id"
+            @on-sort-change="handleSortChange"
+          >
             <template #info="{ row }">
-              <Poptip v-if="row.info" trigger="hover" placement="bottom" transfer :width="500" :word-wrap="true">
+              <span v-if="!row.info">-</span>
+              <!-- Per-row Poptip is expensive on large lists: only long SQL gets the hover-fulltext popup. -->
+              <Poptip v-else-if="isLongInfo(row.info)" trigger="hover" placement="bottom" transfer :width="500" :word-wrap="true">
                 <span class="session-sql-cell">{{ row.info }}</span>
                 <template #content>
                   <pre class="session-popover-pre">{{ row.info }}</pre>
@@ -49,7 +79,7 @@
                   </Button>
                 </template>
               </Poptip>
-              <span v-else>-</span>
+              <span v-else class="session-sql-plain" :title="row.info">{{ row.info }}</span>
             </template>
             <template #action="{ row }">
               <template v-if="canKill">
@@ -66,6 +96,20 @@
             </template>
           </Table>
         </div>
+
+        <div v-if="filteredSessions.length > 0" class="session-footer">
+          <Page
+            :total="filteredSessions.length"
+            :page-size="pageSize"
+            :model-value="currentPage"
+            show-total
+            show-sizer
+            show-elevator
+            :page-size-opts="[20, 50, 100, 500]"
+            @on-change="handlePageChange"
+            @on-page-size-change="handlePageSizeChange"
+          />
+        </div>
       </section>
     </div>
   </div>
@@ -80,6 +124,11 @@ const KILL_CONFIRM_SQL_MAX_LEN = 300;
 const KILL_CONFIRM_PRE_STYLE =
   'margin: 8px 0 0; padding: 8px; background: var(--bg-secondary); border-radius: 4px; font-size: 12px; ' +
   'white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto;';
+const INFO_POPTIP_MIN_LEN = 80;
+const IP_STATS_VISIBLE_LIMIT = 10;
+const UNKNOWN_SOURCE_IP = 'unknown';
+// processlist user/db/command can be NULL (e.g. unauthenticated or Sleep sessions); group them under one option.
+const NULL_FILTER_OPTION = 'NULL';
 
 const PROTECTED_REASON_I18N = {
   PLATFORM_SELF: 'hui-hua-bao-hu-platform-self',
@@ -92,6 +141,42 @@ function escapeHtml(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// processlist host is "ip:port", "localhost", or bracketed IPv6 "[::1]:port"; bare IPv6 has no port.
+function extractSourceIp(host) {
+  if (!host) {
+    return UNKNOWN_SOURCE_IP;
+  }
+  const bracketEnd = host.indexOf(']');
+  if (host.startsWith('[') && bracketEnd > 0) {
+    return host.slice(1, bracketEnd);
+  }
+  const firstColon = host.indexOf(':');
+  if (firstColon > 0 && host.indexOf(':', firstColon + 1) === -1) {
+    return host.slice(0, firstColon);
+  }
+  return host;
+}
+
+// Maps a processlist cell to its filter-option value; null/empty falls into the NULL bucket.
+function normalizeFilterValue(value) {
+  if (value == null || value === '') {
+    return NULL_FILTER_OPTION;
+  }
+  return value;
+}
+
+// Distinct values of one processlist column with per-value connection counts, most connected first.
+function buildFilterOptions(rows, field) {
+  const counts = new Map();
+  for (const row of rows) {
+    const value = normalizeFilterValue(row[field]);
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return Array.from(counts, ([value, count]) => ({ value, count, label: `${value} (${count})` })).sort(
+    (a, b) => b.count - a.count || a.value.localeCompare(b.value)
+  );
+}
+
 export default {
   name: 'SessionManage',
   mixins: [copyMixin],
@@ -102,12 +187,17 @@ export default {
       selectedDsId: null,
       sessions: [],
       listLoading: false,
-      userFilter: '',
-      dbFilter: '',
-      commandFilter: '',
+      userFilter: null,
+      dbFilter: null,
+      commandFilter: null,
       minTimeFilter: null,
       autoRefresh: false,
-      autoRefreshTimer: null
+      autoRefreshTimer: null,
+      currentPage: 1,
+      pageSize: 50,
+      sortKey: '',
+      sortOrder: 'normal',
+      ipStatsExpanded: false
     };
   },
   computed: {
@@ -115,19 +205,35 @@ export default {
     canKill() {
       return this.myAuth.includes('DM_SESSION_KILL');
     },
+    selectedDsName() {
+      const inst = this.instanceList.find((i) => i.dsId === this.selectedDsId);
+      if (!inst) {
+        return '';
+      }
+      return inst.dsName;
+    },
+    userOptions() {
+      return buildFilterOptions(this.sessions, 'user');
+    },
+    dbOptions() {
+      return buildFilterOptions(this.sessions, 'db');
+    },
+    commandOptions() {
+      return buildFilterOptions(this.sessions, 'command');
+    },
     filteredSessions() {
-      const userF = this.userFilter.trim().toLowerCase();
-      const dbF = this.dbFilter.trim().toLowerCase();
-      const cmdF = this.commandFilter.trim().toLowerCase();
+      const userF = this.userFilter;
+      const dbF = this.dbFilter;
+      const cmdF = this.commandFilter;
       const minTime = this.minTimeFilter;
       return this.sessions.filter((row) => {
-        if (userF && !(row.user || '').toLowerCase().includes(userF)) {
+        if (userF && normalizeFilterValue(row.user) !== userF) {
           return false;
         }
-        if (dbF && !(row.db || '').toLowerCase().includes(dbF)) {
+        if (dbF && normalizeFilterValue(row.db) !== dbF) {
           return false;
         }
-        if (cmdF && !(row.command || '').toLowerCase().includes(cmdF)) {
+        if (cmdF && normalizeFilterValue(row.command) !== cmdF) {
           return false;
         }
         if (minTime != null && (row.time == null || row.time < minTime)) {
@@ -135,6 +241,39 @@ export default {
         }
         return true;
       });
+    },
+    filterSignature() {
+      return [this.userFilter, this.dbFilter, this.commandFilter, this.minTimeFilter].join('|');
+    },
+    // Stats are instance-level overviews: always computed on the full result set, never filtered/paged.
+    ipStats() {
+      const counts = new Map();
+      for (const row of this.sessions) {
+        const ip = extractSourceIp(row.host);
+        counts.set(ip, (counts.get(ip) || 0) + 1);
+      }
+      return Array.from(counts, ([ip, count]) => ({ ip, count })).sort((a, b) => b.count - a.count || a.ip.localeCompare(b.ip));
+    },
+    visibleIpStats() {
+      if (this.ipStatsExpanded) {
+        return this.ipStats;
+      }
+      return this.ipStats.slice(0, IP_STATS_VISIBLE_LIMIT);
+    },
+    hasMoreIpStats() {
+      return this.ipStats.length > IP_STATS_VISIBLE_LIMIT;
+    },
+    // Sorting happens on the full filtered set; pagination below is a render slice only.
+    sortedSessions() {
+      if (!this.sortKey || this.sortOrder === 'normal') {
+        return this.filteredSessions;
+      }
+      const factor = this.sortOrder === 'asc' ? 1 : -1;
+      return this.filteredSessions.slice().sort((a, b) => factor * ((a[this.sortKey] ?? -1) - (b[this.sortKey] ?? -1)));
+    },
+    pagedSessions() {
+      const start = (this.currentPage - 1) * this.pageSize;
+      return this.sortedSessions.slice(start, start + this.pageSize);
     },
     tableColumns() {
       return [
@@ -161,13 +300,25 @@ export default {
           title: this.$t('hui-hua-zhi-xing-shi-chang'),
           key: 'time',
           width: 100,
-          sorter: (a, b) => (a.time ?? -1) - (b.time ?? -1),
+          sortable: 'custom',
           render: (h, { row }) => this.cellOrDash(row.time)
         },
         { title: this.$t('zhuang-tai'), key: 'state', width: 140, ellipsis: true, tooltip: true, render: (h, { row }) => this.cellOrDash(row.state) },
         { title: 'SQL', slot: 'info', minWidth: 240 },
         { title: this.$t('cao-zuo'), slot: 'action', width: 110, align: 'center', fixed: 'right' }
       ];
+    }
+  },
+  watch: {
+    filterSignature() {
+      this.currentPage = 1;
+    },
+    filteredSessions(list) {
+      // Clamp when the data shrinks (silent auto-refresh / kill reload) without resetting the page.
+      const maxPage = Math.max(1, Math.ceil(list.length / this.pageSize));
+      if (this.currentPage > maxPage) {
+        this.currentPage = maxPage;
+      }
     }
   },
   mounted() {
@@ -200,6 +351,7 @@ export default {
       const dsId = this.selectedDsId;
       if (!silent) {
         this.listLoading = true;
+        this.currentPage = 1;
       }
       try {
         const res = await this.$services.dmSessionList({ data: { dsId } });
@@ -232,6 +384,25 @@ export default {
         window.clearInterval(this.autoRefreshTimer);
         this.autoRefreshTimer = null;
       }
+    },
+    handleSortChange({ key, order }) {
+      if (order === 'normal') {
+        this.sortKey = '';
+        this.sortOrder = 'normal';
+      } else {
+        this.sortKey = key;
+        this.sortOrder = order;
+      }
+    },
+    handlePageChange(page) {
+      this.currentPage = page;
+    },
+    handlePageSizeChange(size) {
+      this.pageSize = size;
+      this.currentPage = 1;
+    },
+    isLongInfo(info) {
+      return info.length > INFO_POPTIP_MIN_LEN;
     },
     cellOrDash(value) {
       if (value === null || value === undefined || value === '') {
@@ -323,6 +494,37 @@ export default {
   color: var(--text-secondary);
   font-size: 14px;
 }
+// Flat light-surface strip (no border card, per ui-layout-consistency skill).
+.session-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.session-stats__total {
+  color: var(--text-primary);
+}
+.session-stats__ip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.session-stats__ip-label {
+  white-space: nowrap;
+}
+.session-stats__ip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.session-stats__ip-item {
+  white-space: nowrap;
+}
 .session-sql-cell {
   display: block;
   overflow: hidden;
@@ -330,6 +532,12 @@ export default {
   white-space: nowrap;
   cursor: pointer;
   color: var(--link-color);
+}
+.session-sql-plain {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .session-popover-pre {
   white-space: pre-wrap;
@@ -341,6 +549,11 @@ export default {
   background: var(--bg-secondary);
   padding: 8px;
   border-radius: 4px;
+}
+.session-footer {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
 }
 // Disabled buttons swallow hover events — let the Poptip wrapper receive them instead.
 .session-kill-protected {

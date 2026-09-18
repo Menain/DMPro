@@ -4724,5 +4724,7 @@
   "hui-hua-bao-hu-platform-self": "Platform's own connection, cannot be killed",
   "hui-hua-bao-hu-system-user": "System user session, cannot be killed",
   "hui-hua-bao-hu-replication-thread": "Replication thread session, cannot be killed",
-  "hui-hua-bao-hu-default": "This session is protected and cannot be killed"
+  "hui-hua-bao-hu-default": "This session is protected and cannot be killed",
+  "hui-hua-zong-lian-jie-shu": "Total connections on {0}: {1}",
+  "hui-hua-lai-yuan-ip": "By source IP:"
 }
