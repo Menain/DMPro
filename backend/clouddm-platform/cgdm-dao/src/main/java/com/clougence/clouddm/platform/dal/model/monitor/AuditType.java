@@ -103,7 +103,9 @@ public enum AuditType {
     SUBMIT_DB_CHANGE_PRE,
     CORRECT_DB_CHANGE_STMT,
     PROMOTE_DB_CHANGE,
-    SUBMIT_DB_CHANGE_DIRECT_DML;
+    SUBMIT_DB_CHANGE_DIRECT_DML,
+    //******* SESSION MANAGE *******
+    KILL_DB_SESSION;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

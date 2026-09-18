@@ -108,4 +108,10 @@ public interface SecAuthCategory {
     // ----------------------------------------------------
     @AuthCategory(order = 8, i18nKey = SecAuthI18nKeys.CAT_KEY_RDP_DB_CHANGE_GOVERN)
     String CAT_RDP_DB_CHANGE_GOVERN      = "CAT_RDP_DB_CHANGE_GOVERN";
+
+    // ----------------------------------------------------
+    // Ops & Diagnostics (session management, reserved for lock/space analysis)
+    // ----------------------------------------------------
+    @AuthCategory(order = 9, i18nKey = SecAuthI18nKeys.CAT_KEY_DM_OPS)
+    String CAT_DM_OPS                    = "CAT_DM_OPS";
 }

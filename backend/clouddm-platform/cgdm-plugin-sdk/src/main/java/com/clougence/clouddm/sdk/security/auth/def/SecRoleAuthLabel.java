@@ -219,4 +219,13 @@ public interface SecRoleAuthLabel {
 
     @AuthLabel(order = 5, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_DB_PAIR_MANAGE, tag = SecSysRole.DBA_ROLE_NAME)
     String GOV_DB_PAIR_MANAGE              = "GOV_DB_PAIR_MANAGE";
+
+    // ================================ CAT_DM_OPS ==============================================
+
+    @AuthLabel(order = 0, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SESSION_READ, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                             SecSysRole.ADMIN_ROLE_NAME })
+    String DM_SESSION_READ                 = "DM_SESSION_READ";
+
+    @AuthLabel(order = 1, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SESSION_KILL, include = { DM_SESSION_READ }, tag = { SecSysRole.DBA_ROLE_NAME })
+    String DM_SESSION_KILL                 = "DM_SESSION_KILL";
 }
