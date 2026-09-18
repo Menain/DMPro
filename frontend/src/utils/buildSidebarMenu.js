@@ -40,6 +40,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   if (!isDesktop) {
     primary.push(linkItem('slowSql', '/#/slowSql', 'man-sql', 'icon-v2-DataBase2'));
   }
+  if (myAuth.includes('DM_SESSION_READ') && !isDesktop) {
+    primary.push(linkItem('session', '/#/session', 'hui-hua-guan-li', 'icon-v2-List'));
+  }
 
   const groups = [];
 

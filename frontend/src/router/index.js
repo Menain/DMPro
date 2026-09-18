@@ -142,6 +142,12 @@ const routes = [
         component: () => import(/* webpackChunkName: "slow-sql" */ '../views/slowSql/index')
       },
       {
+        path: 'session',
+        name: 'SessionManage',
+        component: () => import(/* webpackChunkName: "session" */ '../views/session/index'),
+        meta: { requiredAuth: 'DM_SESSION_READ' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'
