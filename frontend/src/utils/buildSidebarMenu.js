@@ -46,6 +46,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   if (myAuth.includes('DM_LOCK_READ') && !isDesktop) {
     primary.push(linkItem('lockAnalysis', '/#/lockAnalysis', 'suo-fen-xi', 'icon-v2-LockSQL'));
   }
+  if (myAuth.includes('DM_SPACE_READ') && !isDesktop) {
+    primary.push(linkItem('space', '/#/space', 'kong-jian-zhan-yong', 'icon-v2-DataBase2'));
+  }
 
   const groups = [];
 

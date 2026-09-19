@@ -154,6 +154,12 @@ const routes = [
         meta: { requiredAuth: 'DM_LOCK_READ' }
       },
       {
+        path: 'space',
+        name: 'SpaceUsage',
+        component: () => import(/* webpackChunkName: "space" */ '../views/space/index'),
+        meta: { requiredAuth: 'DM_SPACE_READ' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'

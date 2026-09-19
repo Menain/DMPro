@@ -429,12 +429,15 @@ export default {
       this.trxPage = 1;
     },
     /** Long transactions (>= 60s) get a warning-background row highlight (F3).
-     * DmTable wraps ant-design-vue: rowClassName is invoked with ({ record, index }), not view-ui's
-     * ({ row, rowIndex }) — accepting both keeps the callback total (an undefined row threw inside
-     * BodyRow render and aborted the whole page update, stranding a half-dead subtree). */
-    trxRowClassName({ record, row }) {
-      const target = record || row;
-      if (target && target.durationSeconds != null && target.durationSeconds >= LONG_TRX_SECONDS) {
+     * ant-design-vue 4.x invokes rowClassName POSITIONALLY as (record, index, indent) — destructuring
+     * an object payload here yields undefined fields and silently kills the highlight; view-ui style
+     * wrappers pass ({ row }). Accept the record itself, unwrap object payloads, stay total. */
+    trxRowClassName(recordOrPayload) {
+      let row = recordOrPayload;
+      if (recordOrPayload && (recordOrPayload.record || recordOrPayload.row)) {
+        row = recordOrPayload.record || recordOrPayload.row;
+      }
+      if (row && row.durationSeconds != null && row.durationSeconds >= LONG_TRX_SECONDS) {
         return 'lock-trx-long';
       }
       return '';

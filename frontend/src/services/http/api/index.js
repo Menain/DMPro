@@ -31,6 +31,7 @@ import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
 import { slowSqlApi } from '@/services/http/api/slowSql';
 import { sessionApi } from '@/services/http/api/session';
 import { lockAnalysisApi } from '@/services/http/api/lockAnalysis';
+import { spaceApi } from '@/services/http/api/space';
 
 export const api = {
   ...authApi,
@@ -65,5 +66,6 @@ export const api = {
   ...dbChangeV2Api,
   ...slowSqlApi,
   ...sessionApi,
-  ...lockAnalysisApi
+  ...lockAnalysisApi,
+  ...spaceApi
 };
