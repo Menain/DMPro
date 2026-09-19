@@ -18,19 +18,10 @@ package com.clougence.clouddm.console.web.service.lockanalysis;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import org.springframework.stereotype.Service;
 
@@ -39,9 +30,11 @@ import com.clougence.clouddm.api.sidecar.session.execute.ResultList;
 import com.clougence.clouddm.base.metadata.ds.DataSourceConfig;
 import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
-import com.clougence.clouddm.console.web.component.dsconfig.mode.DsConfig;
-import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
-import com.clougence.clouddm.console.web.component.execute.QueryService;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagOpts;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagResultUtils;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagSession;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagTimeoutException;
+import com.clougence.clouddm.console.web.component.opsdiag.OpsDiagnosticExecutor;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.lockanalysis.LockOverviewFO;
@@ -49,37 +42,23 @@ import com.clougence.clouddm.console.web.model.vo.lockanalysis.LockOverviewVO;
 import com.clougence.clouddm.console.web.model.vo.lockanalysis.LockTrxVO;
 import com.clougence.clouddm.console.web.model.vo.lockanalysis.LockWaitVO;
 import com.clougence.clouddm.console.web.model.vo.session.SessionInstanceVO;
-import com.clougence.clouddm.console.web.util.DmDsUtils;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.model.LifeCycleState;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
-import com.clougence.clouddm.platform.plugin.PluginManager;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ReceiveMode;
-import com.clougence.clouddm.sdk.execute.resultset.echo.Result;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultMessage;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSet;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetMeta;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetRow;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetValue;
-import com.clougence.clouddm.sdk.execute.session.MessageLevel;
-import com.clougence.clouddm.sdk.execute.session.QueryRequest;
-import com.clougence.clouddm.sdk.execute.session.SessionContextDTO;
-import com.clougence.clouddm.sdk.execute.session.SessionSpi;
-import com.clougence.clouddm.sdk.service.secrules.Requester;
 import com.clougence.utils.StringUtils;
 
-import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * Lock &amp; deadlock analysis service (B3), design 09-17-lock-deadlock-analysis.
  * <p>
- * Read-only diagnostics through channel C (short-lived worker session, createSession →
- * syncExecuteQuery → finally closeSession), copying the B2 {@code SessionManageServiceImpl}
- * pattern verbatim — the shared executor extraction is deferred to B4 (three copies rule).
- * Every remote operation is wrapped with a dedicated daemon executor and a hard timeout because
- * {@code QueryServiceImpl#syncExecuteQuery} polls without an internal deadline.
+ * Read-only diagnostics through channel C, running on the shared {@link OpsDiagnosticExecutor}
+ * (short-lived worker session, createSession → timeout-wrapped statements → finally release;
+ * the B4 Step-0 extraction converged the former byte-identical B2/B3 private copies). Timeout
+ * granularity is per-statement: createSession and every SQL are wrapped individually, so one
+ * hanging block never starves the others. The executor's neutral {@link DiagTimeoutException} is
+ * translated here by role — {@link LockQueryTimeoutException} remains the B3-internal marker.
  * <p>
  * Dialects (design §2, dispatched by dsType — never by guessing from the version string):
  * <ul>
@@ -164,12 +143,6 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
     /** Lowercased MySQL error fragments meaning the DS account lacks the PROCESS privilege (design §5). */
     static final List<String> NO_PRIVILEGE_ERRORS     = List.of("access denied", "command denied");
 
-    private final ExecutorService timeoutExecutor     = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "lock-analysis-timeout");
-        t.setDaemon(true);
-        return t;
-    });
-
     /** Hard timeout (seconds) for one remote operation; tests may shorten it. */
     private long                     queryTimeoutSeconds = 10;
 
@@ -178,12 +151,7 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
     @Resource
     private DmDsConfigService        dmDsConfigService;
     @Resource
-    private QueryService             queryService;
-
-    @PreDestroy
-    void shutdown() {
-        timeoutExecutor.shutdownNow();
-    }
+    private OpsDiagnosticExecutor    diagnosticExecutor;
 
     // ==================================================================================
     // listInstances
@@ -223,26 +191,34 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
         DmDsDO dsDO = requireOwnedSupportedDs(puid, fo == null ? null : fo.getDsId());
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
         LockOverviewVO vo = new LockOverviewVO();
-        String sessionId = createDiagnosticSessionWithTimeout(uid, dsDO, dsConfig);
         try {
-            if (isPostgres(dsDO.getDataSourceType())) {
-                fillPostgresOverview(uid, sessionId, dsConfig, vo);
-            } else {
-                fillMySqlOverview(uid, sessionId, dsConfig, vo);
-            }
-            return vo;
-        } finally {
-            closeSessionQuietly(uid, sessionId);
+            return diagnosticExecutor.runInSession(uid, dsDO, dsConfig, diagOpts(), session -> {
+                if (isPostgres(dsDO.getDataSourceType())) {
+                    fillPostgresOverview(session, vo);
+                } else {
+                    fillMySqlOverview(session, vo);
+                }
+                return vo;
+            });
+        } catch (DiagTimeoutException e) {
+            // only the createSession wrap can escape here — probe/statement timeouts are
+            // translated at their call sites (probe → whole failure, block → partialErrors)
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_QUERY_TIMEOUT.name()));
         }
     }
 
-    private void fillMySqlOverview(String uid, String sessionId, DataSourceConfig dsConfig, LockOverviewVO vo) {
+    /** B3 granularity: per-statement wrapping (createSession included), autoCommit read-only shape. */
+    private DiagOpts diagOpts() {
+        return DiagOpts.builder().timeoutSeconds((int) queryTimeoutSeconds).build();
+    }
+
+    private void fillMySqlOverview(DiagSession session, LockOverviewVO vo) {
         vo.setBranch(BRANCH_MYSQL_8);
         vo.setDeadlockSupported(true);
 
         // version defense (design §4.2): 8.0 physically removed the 5.7 lock views — refusing here
         // avoids bizarre SQL errors; unparsable strings are refused too (no 5.7 fallback exists)
-        String version = probeSingleValue(uid, sessionId, dsConfig, SQL_VERSION);
+        String version = probeSingleValue(session, SQL_VERSION);
         vo.setVersion(version);
         if (!isMySql8OrLater(version)) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_VERSION_UNSUPPORTED.name(), version));
@@ -250,29 +226,27 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
 
         // performance_schema probe: when OFF, data_locks is silently empty — degrade the lock-wait
         // block instead of faking "no lock waits"; transactions/deadlock are unaffected
-        String psEnabled = probeSingleValue(uid, sessionId, dsConfig, SQL_PS_ENABLED);
+        String psEnabled = probeSingleValue(session, SQL_PS_ENABLED);
         if ("1".equals(StringUtils.trimToEmpty(psEnabled))) {
-            vo.setLockWaits(mapLockWaits(queryBlock(uid, sessionId, buildRequest(dsConfig, SQL_MY_LOCK_WAITS), BLOCK_LOCK_WAITS, vo, true)));
+            vo.setLockWaits(mapLockWaits(queryBlock(session, SQL_MY_LOCK_WAITS, 0, BLOCK_LOCK_WAITS, vo, true)));
         } else {
             vo.getPartialErrors().put(BLOCK_LOCK_WAITS, DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_PS_DISABLED.name()));
         }
 
-        vo.setTransactions(mapTransactions(queryBlock(uid, sessionId, buildRequest(dsConfig, SQL_MY_TRX), BLOCK_TRANSACTIONS, vo, true)));
+        vo.setTransactions(mapTransactions(queryBlock(session, SQL_MY_TRX, 0, BLOCK_TRANSACTIONS, vo, true)));
 
         // latest deadlock: the Status cell needs the explicit displayChars passthrough (design §4.4)
-        QueryRequest statusRequest = buildRequest(dsConfig, SQL_INNODB_STATUS);
-        statusRequest.getResultConf().setDisplayChars(DEADLOCK_STATUS_DISPLAY_CHARS);
-        fillDeadlock(vo, queryBlock(uid, sessionId, statusRequest, BLOCK_DEADLOCK, vo, true));
+        fillDeadlock(vo, queryBlock(session, SQL_INNODB_STATUS, DEADLOCK_STATUS_DISPLAY_CHARS, BLOCK_DEADLOCK, vo, true));
     }
 
-    private void fillPostgresOverview(String uid, String sessionId, DataSourceConfig dsConfig, LockOverviewVO vo) {
+    private void fillPostgresOverview(DiagSession session, LockOverviewVO vo) {
         vo.setBranch(BRANCH_POSTGRES);
         // PG deadlock details live in the server log (unreachable on cloud instances) — hide the
         // section instead of showing a fake "no deadlock" empty state (design §4.3)
         vo.setDeadlockSupported(false);
 
-        vo.setLockWaits(mapLockWaits(queryBlock(uid, sessionId, buildRequest(dsConfig, SQL_PG_LOCK_WAITS), BLOCK_LOCK_WAITS, vo, false)));
-        vo.setTransactions(mapTransactions(queryBlock(uid, sessionId, buildRequest(dsConfig, SQL_PG_TRX), BLOCK_TRANSACTIONS, vo, false)));
+        vo.setLockWaits(mapLockWaits(queryBlock(session, SQL_PG_LOCK_WAITS, 0, BLOCK_LOCK_WAITS, vo, false)));
+        vo.setTransactions(mapTransactions(queryBlock(session, SQL_PG_TRX, 0, BLOCK_TRANSACTIONS, vo, false)));
         vo.setPrivilegeHint(resolvePgPrivilegeHint(vo.getLockWaits(), vo.getTransactions()));
     }
 
@@ -295,22 +269,12 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
     // ==================================================================================
 
     /** Single-row single-value probe (VERSION / @@performance_schema); failure or timeout fails the whole overview. */
-    private String probeSingleValue(String uid, String sessionId, DataSourceConfig dsConfig, String sql) {
-        ResultList resultList;
+    private String probeSingleValue(DiagSession session, String sql) {
         try {
-            resultList = callWithTimeout(() -> executeSql(uid, sessionId, buildRequest(dsConfig, sql)));
-        } catch (LockQueryTimeoutException e) {
+            return session.executeSingleValue(sql);
+        } catch (DiagTimeoutException e) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_QUERY_TIMEOUT.name()));
         }
-        String failure = firstFailureMessage(resultList);
-        if (failure != null) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
-        }
-        List<Map<String, String>> rows = extractRows(resultList);
-        if (rows.isEmpty() || rows.get(0).isEmpty()) {
-            return null;
-        }
-        return rows.get(0).values().iterator().next();
     }
 
     /**
@@ -319,17 +283,17 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
      * access/command-denied failure escalates to a whole-overview LOCK_QUERY_NO_PRIVILEGE
      * (all MySQL blocks depend on the PROCESS privilege) when {@code escalateNoPrivilege}.
      */
-    private List<Map<String, String>> queryBlock(String uid, String sessionId, QueryRequest request, String blockKey, LockOverviewVO vo,
+    private List<Map<String, String>> queryBlock(DiagSession session, String sql, int displayChars, String blockKey, LockOverviewVO vo,
             boolean escalateNoPrivilege) {
         ResultList resultList;
         try {
-            resultList = callWithTimeout(() -> executeSql(uid, sessionId, request));
+            resultList = executeStatement(session, sql, displayChars);
         } catch (LockQueryTimeoutException e) {
             log.warn("[LockAnalysis] block {} query timed out after {}s", blockKey, queryTimeoutSeconds);
             vo.getPartialErrors().put(blockKey, DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_QUERY_TIMEOUT.name()));
             return null;
         }
-        String failure = firstFailureMessage(resultList);
+        String failure = DiagResultUtils.firstFailureMessage(resultList);
         if (failure != null) {
             if (escalateNoPrivilege && isNoPrivilegeFailure(failure)) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_QUERY_NO_PRIVILEGE.name(), failure));
@@ -338,7 +302,20 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
             vo.getPartialErrors().put(blockKey, DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
             return null;
         }
-        return extractRows(resultList);
+        return DiagResultUtils.extractRows(resultList);
+    }
+
+    /**
+     * Statement execution with the B3-internal timeout marker (design §1.3 C2): the executor's
+     * neutral {@link DiagTimeoutException} is translated into {@link LockQueryTimeoutException}
+     * so the block-level degradation contract above stays role-specific.
+     */
+    private static ResultList executeStatement(DiagSession session, String sql, int displayChars) {
+        try {
+            return displayChars > 0 ? session.execute(sql, displayChars) : session.execute(sql);
+        } catch (DiagTimeoutException e) {
+            throw new LockQueryTimeoutException();
+        }
     }
 
     static boolean isNoPrivilegeFailure(String failureMessage) {
@@ -526,145 +503,6 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
         return true;
     }
 
-    // ==================================================================================
-    // channel C: short-lived diagnostic session (copied from B2 SessionManageServiceImpl)
-    // ==================================================================================
-
-    private String createDiagnosticSessionWithTimeout(String uid, DmDsDO dsDO, DataSourceConfig dsConfig) {
-        try {
-            return callWithTimeout(() -> createDiagnosticSession(uid, dsDO, dsConfig));
-        } catch (LockQueryTimeoutException e) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.LOCK_QUERY_TIMEOUT.name()));
-        }
-    }
-
-    private String createDiagnosticSession(String uid, DmDsDO dsDO, DataSourceConfig dsConfig) {
-        SessionSpi sessionSpi = findSessionSpi(dsDO.getDataSourceType());
-        SessionContextDTO ctx = sessionSpi.createSessionContext(dsConfig, null);
-        if (StringUtils.isBlank(ctx.getSessionId())) {
-            ctx.setSessionId(UUID.randomUUID().toString().replace("-", ""));
-        }
-        // autoCommit=true: read-only diagnostics never need a rollback step (B2 pattern)
-        ctx.setRdbAutoCommit(true);
-        ctx.setRdbReadOnly(false);
-        DsLevels levels = createLevels(dsDO, ctx);
-        return queryService.createSession(uid, levels, ctx);
-    }
-
-    private void closeSessionQuietly(String uid, String sessionId) {
-        if (StringUtils.isBlank(sessionId)) {
-            return;
-        }
-        try {
-            queryService.closeSession(uid, sessionId);
-        } catch (RuntimeException e) {
-            log.debug("[LockAnalysis] close diagnostic session {} failed", sessionId, e);
-        }
-    }
-
-    private QueryRequest buildRequest(DataSourceConfig dsConfig, String sql) {
-        SessionSpi sessionSpi = findSessionSpi(dsConfig.getDataSourceType());
-        QueryRequest request = sessionSpi.createQueryRequest(dsConfig);
-        request.setQueryId(sessionSpi.newQueryId());
-        request.setQueryBody(sql);
-        request.setQueryArgs(Collections.emptyList());
-        request.setRequester(Requester.CONSOLE);
-        request.getResultConf().setCacheResult(false);
-        request.getResultConf().setReceiveMode(ReceiveMode.PAGE_FULL);
-        request.getResultConf().setRefreshStatus(true);
-        return request;
-    }
-
-    /** Remote call; syncExecuteQuery polls every 500ms without an internal deadline — always go through callWithTimeout. */
-    private ResultList executeSql(String uid, String sessionId, QueryRequest request) {
-        return queryService.syncExecuteQuery(uid, sessionId, request);
-    }
-
-    private <T> T callWithTimeout(Callable<T> task) {
-        Future<T> future = timeoutExecutor.submit(task::call);
-        try {
-            return future.get(queryTimeoutSeconds, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw new LockQueryTimeoutException();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            future.cancel(true);
-            throw new LockQueryTimeoutException();
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            if (cause instanceof ErrorMessageException errorMessageException) {
-                throw errorMessageException;
-            }
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            log.warn("[LockAnalysis] remote operation failed", cause);
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), cause.getMessage()));
-        }
-    }
-
-    // ==================================================================================
-    // result parsing (copied from B2 SessionManageServiceImpl, SQL-agnostic statics)
-    // ==================================================================================
-
-    /** Flattens ResultList (ResultSetMeta + ResultSet) into column-lowercased row maps. */
-    static List<Map<String, String>> extractRows(ResultList resultList) {
-        List<Map<String, String>> rows = new ArrayList<>();
-        if (resultList == null || resultList.getResultList() == null) {
-            return rows;
-        }
-        List<String> columns = null;
-        List<ResultSetRow> rowSet = new ArrayList<>();
-        for (Result result : resultList.getResultList()) {
-            if (result instanceof ResultSetMeta meta) {
-                if (columns == null) {
-                    columns = meta.getColumnList();
-                }
-            } else if (result instanceof ResultSet set) {
-                if (set.getRowSet() != null) {
-                    rowSet.addAll(set.getRowSet());
-                }
-            }
-        }
-        if (columns == null) {
-            return rows;
-        }
-        for (ResultSetRow row : rowSet) {
-            Map<String, String> mapped = new LinkedHashMap<>();
-            List<ResultSetValue> data = row.getData() == null ? Collections.emptyList() : row.getData();
-            for (int i = 0; i < columns.size() && i < data.size(); i++) {
-                String column = columns.get(i);
-                if (column == null) {
-                    continue;
-                }
-                ResultSetValue value = data.get(i);
-                mapped.put(column.toLowerCase(Locale.ROOT), value == null ? null : value.getValue());
-            }
-            rows.add(mapped);
-        }
-        return rows;
-    }
-
-    /** First failure message of a ResultList (ActionServiceImpl / SqlRowEstimator judgement), or null when all ok. */
-    static String firstFailureMessage(ResultList resultList) {
-        if (resultList == null || resultList.getResultList() == null) {
-            return "empty result";
-        }
-        for (Result result : resultList.getResultList()) {
-            if (result == null) {
-                continue;
-            }
-            if (!result.isSuccess()) {
-                return StringUtils.isBlank(result.getMessage()) ? "query failed" : result.getMessage();
-            }
-            if (result instanceof ResultMessage message && message.getLevel() == MessageLevel.Error) {
-                return StringUtils.isBlank(message.getMessage()) ? "query failed" : message.getMessage();
-            }
-        }
-        return null;
-    }
-
     private static Long parseLong(String value) {
         if (StringUtils.isBlank(value)) {
             return null;
@@ -707,18 +545,5 @@ public class LockAnalysisServiceImpl implements LockAnalysisService {
 
     static boolean isPureDigits(String value) {
         return StringUtils.isNotBlank(value) && value.chars().allMatch(Character::isDigit);
-    }
-
-    // ==================================================================================
-    // test seams (never mock statics in tests; PluginManager needs a live plugin registry)
-    // ==================================================================================
-
-    protected SessionSpi findSessionSpi(DataSourceType dsType) {
-        return PluginManager.findSessionSpi(dsType);
-    }
-
-    protected DsLevels createLevels(DmDsDO dsDO, SessionContextDTO ctx) {
-        DsConfig dsSetting = dmDsConfigService.dsConstantSettings(dsDO.getDataSourceType());
-        return DmDsUtils.createLevels(dsDO, dsSetting, ctx.getRdbCatalog(), ctx.getRdbSchema());
     }
 }

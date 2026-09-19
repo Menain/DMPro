@@ -18,19 +18,11 @@ package com.clougence.clouddm.console.web.service.session;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 import org.springframework.stereotype.Service;
 
@@ -39,9 +31,11 @@ import com.clougence.clouddm.api.sidecar.session.execute.ResultList;
 import com.clougence.clouddm.base.metadata.ds.DataSourceConfig;
 import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
-import com.clougence.clouddm.console.web.component.dsconfig.mode.DsConfig;
-import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
-import com.clougence.clouddm.console.web.component.execute.QueryService;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagOpts;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagResultUtils;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagSession;
+import com.clougence.clouddm.console.web.component.opsdiag.DiagTimeoutException;
+import com.clougence.clouddm.console.web.component.opsdiag.OpsDiagnosticExecutor;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.global.i18n.I18nRdpMsgKeys;
@@ -52,26 +46,11 @@ import com.clougence.clouddm.console.web.model.vo.session.DbSessionVO;
 import com.clougence.clouddm.console.web.model.vo.session.SessionInstanceVO;
 import com.clougence.clouddm.console.web.model.vo.session.SessionKillAuditObj;
 import com.clougence.clouddm.console.web.model.vo.session.SessionProtectedReason;
-import com.clougence.clouddm.console.web.util.DmDsUtils;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.model.LifeCycleState;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
-import com.clougence.clouddm.platform.plugin.PluginManager;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ReceiveMode;
-import com.clougence.clouddm.sdk.execute.resultset.echo.Result;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultMessage;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSet;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetMeta;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetRow;
-import com.clougence.clouddm.sdk.execute.resultset.echo.ResultSetValue;
-import com.clougence.clouddm.sdk.execute.session.MessageLevel;
-import com.clougence.clouddm.sdk.execute.session.QueryRequest;
-import com.clougence.clouddm.sdk.execute.session.SessionContextDTO;
-import com.clougence.clouddm.sdk.execute.session.SessionSpi;
-import com.clougence.clouddm.sdk.service.secrules.Requester;
 import com.clougence.utils.StringUtils;
 
-import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 
@@ -79,11 +58,12 @@ import lombok.extern.slf4j.Slf4j;
  * Session management service (B2), design 09-17-session-management.
  * <p>
  * Executes read-only diagnostics ({@code SELECT CONNECTION_ID()}, {@code SHOW FULL PROCESSLIST})
- * and the {@code KILL <id>} admin command through channel C: a short-lived worker session
- * (createSession → syncExecuteQuery → finally closeSession, autoCommit=true), mirroring the
- * {@code SqlRowEstimator} / {@code ActionServiceImpl#executeSql} precedents. Every remote call is
- * wrapped with a dedicated daemon executor and a hard timeout because
- * {@code QueryServiceImpl#syncExecuteQuery} polls without an internal deadline.
+ * and the {@code KILL <id>} admin command through channel C, running on the shared
+ * {@link OpsDiagnosticExecutor} (short-lived worker session, createSession → statements →
+ * finally release, autoCommit=true; the B4 Step-0 extraction converged the former private
+ * copies). Timeout granularity is operation-level (B2 shape): createSession, every statement
+ * and the release share ONE {@code queryTimeoutSeconds} budget — the neutral
+ * {@link DiagTimeoutException} is translated here into {@code SESSION_QUERY_TIMEOUT}.
  * <p>
  * Dialects (design §13): the MySQL protocol family runs {@code SELECT CONNECTION_ID()} /
  * {@code SHOW FULL PROCESSLIST} / {@code KILL <id>}; PostgreSQL runs {@code SELECT pg_backend_pid()} /
@@ -148,13 +128,7 @@ public class SessionManageServiceImpl implements SessionManageService {
     /** Max length of the SQL digest stored in the audit record. */
     static final int                 AUDIT_INFO_MAX_LENGTH  = 500;
 
-    private final ExecutorService    timeoutExecutor        = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "session-manage-timeout");
-        t.setDaemon(true);
-        return t;
-    });
-
-    /** Hard timeout (seconds) for one remote session operation; tests may shorten it. */
+    /** Hard timeout (seconds) for one whole remote session operation (B2 operation-level granularity); tests may shorten it. */
     private long                     queryTimeoutSeconds    = 10;
 
     @Resource
@@ -162,12 +136,7 @@ public class SessionManageServiceImpl implements SessionManageService {
     @Resource
     private DmDsConfigService        dmDsConfigService;
     @Resource
-    private QueryService             queryService;
-
-    @PreDestroy
-    void shutdown() {
-        timeoutExecutor.shutdownNow();
-    }
+    private OpsDiagnosticExecutor    diagnosticExecutor;
 
     // ==================================================================================
     // listInstances
@@ -206,23 +175,18 @@ public class SessionManageServiceImpl implements SessionManageService {
     public DbSessionListVO list(String puid, String uid, SessionListFO fo) {
         DmDsDO dsDO = requireOwnedSupportedDs(puid, fo == null ? null : fo.getDsId());
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
-        return callWithTimeout(() -> doList(uid, dsDO, dsConfig));
+        return runInSessionWithTimeout(uid, dsDO, dsConfig, session -> doList(session, dsDO, dsConfig));
     }
 
-    private DbSessionListVO doList(String uid, DmDsDO dsDO, DataSourceConfig dsConfig) {
+    private DbSessionListVO doList(DiagSession session, DmDsDO dsDO, DataSourceConfig dsConfig) {
         DataSourceType dsType = dsDO.getDataSourceType();
-        String sessionId = createDiagnosticSession(uid, dsDO, dsConfig);
-        try {
-            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig, dsType);
-            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName(), dsType);
-            DbSessionListVO vo = new DbSessionListVO();
-            vo.setSelfConnectionId(selfId);
-            vo.setSessions(sessions);
-            vo.setPrivilegeHint(resolvePrivilegeHint(dsType, sessions));
-            return vo;
-        } finally {
-            closeSessionQuietly(uid, sessionId);
-        }
+        String selfId = fetchSelfConnectionId(session, dsType);
+        List<DbSessionVO> sessions = fetchProcesslist(session, selfId, dsConfig.getUserName(), dsType);
+        DbSessionListVO vo = new DbSessionListVO();
+        vo.setSelfConnectionId(selfId);
+        vo.setSessions(sessions);
+        vo.setPrivilegeHint(resolvePrivilegeHint(dsType, sessions));
+        return vo;
     }
 
     // ==================================================================================
@@ -239,113 +203,58 @@ public class SessionManageServiceImpl implements SessionManageService {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.COMM_BAD_ARG_ERROR.name()));
         }
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
-        return callWithTimeout(() -> doKill(uid, dsDO, dsConfig, targetId));
+        return runInSessionWithTimeout(uid, dsDO, dsConfig, session -> doKill(uid, session, dsDO, dsConfig, targetId));
     }
 
-    private SessionKillAuditObj doKill(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, String targetId) {
+    private SessionKillAuditObj doKill(String uid, DiagSession session, DmDsDO dsDO, DataSourceConfig dsConfig, String targetId) {
         DataSourceType dsType = dsDO.getDataSourceType();
-        String sessionId = createDiagnosticSession(uid, dsDO, dsConfig);
-        try {
-            // 1) never kill the platform's own diagnostic connection
-            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig, dsType);
-            if (targetId.equals(selfId)) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
-            }
-            // 2) server-side re-validation: re-query the session list and apply the same protection
-            //    matrix, never trusting the killable flag echoed back by the frontend
-            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName(), dsType);
-            DbSessionVO target = sessions.stream().filter(s -> targetId.equals(s.getId())).findFirst().orElse(null);
-            if (target == null) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_NOT_FOUND.name()));
-            }
-            if (!target.isKillable()) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
-            }
-            // 3) dialect-specific terminate (MySQL KILL / PG pg_terminate_backend), design §13.1
-            executeTerminate(uid, sessionId, dsConfig, dsType, targetId);
-
-            SessionKillAuditObj auditObj = new SessionKillAuditObj();
-            auditObj.setSessionId(targetId);
-            auditObj.setTargetUser(target.getUser());
-            auditObj.setTargetHost(target.getHost());
-            auditObj.setTargetInfo(truncate(target.getInfo(), AUDIT_INFO_MAX_LENGTH));
-            auditObj.setResult("SUCCESS");
-            log.info("[SessionManage] killed session id={} user={} host={} on dsId={} by uid={}", //
-                    targetId, target.getUser(), target.getHost(), dsDO.getId(), uid);
-            return auditObj;
-        } finally {
-            closeSessionQuietly(uid, sessionId);
+        // 1) never kill the platform's own diagnostic connection
+        String selfId = fetchSelfConnectionId(session, dsType);
+        if (targetId.equals(selfId)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
         }
+        // 2) server-side re-validation: re-query the session list and apply the same protection
+        //    matrix, never trusting the killable flag echoed back by the frontend
+        List<DbSessionVO> sessions = fetchProcesslist(session, selfId, dsConfig.getUserName(), dsType);
+        DbSessionVO target = sessions.stream().filter(s -> targetId.equals(s.getId())).findFirst().orElse(null);
+        if (target == null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_NOT_FOUND.name()));
+        }
+        if (!target.isKillable()) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
+        }
+        // 3) dialect-specific terminate (MySQL KILL / PG pg_terminate_backend), design §13.1
+        executeTerminate(session, dsType, targetId);
+
+        SessionKillAuditObj auditObj = new SessionKillAuditObj();
+        auditObj.setSessionId(targetId);
+        auditObj.setTargetUser(target.getUser());
+        auditObj.setTargetHost(target.getHost());
+        auditObj.setTargetInfo(truncate(target.getInfo(), AUDIT_INFO_MAX_LENGTH));
+        auditObj.setResult("SUCCESS");
+        log.info("[SessionManage] killed session id={} user={} host={} on dsId={} by uid={}", //
+                targetId, target.getUser(), target.getHost(), dsDO.getId(), uid);
+        return auditObj;
     }
 
     // ==================================================================================
-    // channel C: short-lived diagnostic session (SqlRowEstimator / ActionServiceImpl pattern)
+    // channel C: shared ops-diagnostic executor (B4 Step-0 extraction, design §1.3 C3)
     // ==================================================================================
 
-    private String createDiagnosticSession(String uid, DmDsDO dsDO, DataSourceConfig dsConfig) {
-        SessionSpi sessionSpi = findSessionSpi(dsDO.getDataSourceType());
-        SessionContextDTO ctx = sessionSpi.createSessionContext(dsConfig, null);
-        if (StringUtils.isBlank(ctx.getSessionId())) {
-            ctx.setSessionId(UUID.randomUUID().toString().replace("-", ""));
-        }
-        // autoCommit=true: KILL is an immediately-effective admin command, no rollback step needed
-        ctx.setRdbAutoCommit(true);
-        ctx.setRdbReadOnly(false);
-        DsLevels levels = createLevels(dsDO, ctx);
-        return queryService.createSession(uid, levels, ctx);
-    }
-
-    private void closeSessionQuietly(String uid, String sessionId) {
-        if (StringUtils.isBlank(sessionId)) {
-            return;
-        }
+    /**
+     * B2 timeout granularity (research channel-c-refactor-surface R1): the whole operation —
+     * createSession, every serial statement and the finally release — shares ONE hard timeout
+     * budget; the executor's neutral {@link DiagTimeoutException} is translated here into the
+     * B2-specific {@code SESSION_QUERY_TIMEOUT} business message.
+     */
+    private <T> T runInSessionWithTimeout(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, Function<DiagSession, T> body) {
         try {
-            queryService.closeSession(uid, sessionId);
-        } catch (RuntimeException e) {
-            log.debug("[SessionManage] close diagnostic session {} failed", sessionId, e);
-        }
-    }
-
-    private QueryRequest buildRequest(DataSourceConfig dsConfig, String sql) {
-        SessionSpi sessionSpi = findSessionSpi(dsConfig.getDataSourceType());
-        QueryRequest request = sessionSpi.createQueryRequest(dsConfig);
-        request.setQueryId(sessionSpi.newQueryId());
-        request.setQueryBody(sql);
-        request.setQueryArgs(Collections.emptyList());
-        request.setRequester(Requester.CONSOLE);
-        request.getResultConf().setCacheResult(false);
-        request.getResultConf().setReceiveMode(ReceiveMode.PAGE_FULL);
-        request.getResultConf().setRefreshStatus(true);
-        return request;
-    }
-
-    /** Remote call with hard timeout: syncExecuteQuery polls every 500ms without an internal deadline. */
-    private ResultList executeSql(String uid, String sessionId, QueryRequest request) {
-        return queryService.syncExecuteQuery(uid, sessionId, request);
-    }
-
-    private <T> T callWithTimeout(Callable<T> task) {
-        Future<T> future = timeoutExecutor.submit(task::call);
-        try {
-            return future.get(queryTimeoutSeconds, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
+            // autoCommit=true: KILL is an immediately-effective admin command, no rollback step needed
+            return diagnosticExecutor.runInSession(uid, dsDO, dsConfig, //
+                    DiagOpts.builder().timeoutSeconds((int) queryTimeoutSeconds).operationLevelTimeout(true).build(), body);
+        } catch (DiagTimeoutException e) {
             log.warn("[SessionManage] session operation timed out after {}s", queryTimeoutSeconds);
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_QUERY_TIMEOUT.name()));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            future.cancel(true);
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_QUERY_TIMEOUT.name()));
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            if (cause instanceof ErrorMessageException errorMessageException) {
-                throw errorMessageException;
-            }
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            log.warn("[SessionManage] session operation failed", cause);
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), cause.getMessage()));
         }
     }
 
@@ -353,29 +262,19 @@ public class SessionManageServiceImpl implements SessionManageService {
     // processlist query & mapping
     // ==================================================================================
 
-    private String fetchSelfConnectionId(String uid, String sessionId, DataSourceConfig dsConfig, DataSourceType dsType) {
-        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, selfConnectionSql(dsType)));
-        String failure = firstFailureMessage(resultList);
-        if (failure != null) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
-        }
-        List<Map<String, String>> rows = extractRows(resultList);
-        if (rows.isEmpty() || rows.get(0).isEmpty()) {
-            return null;
-        }
-        // single column: CONNECTION_ID() / pg_backend_pid()
-        return rows.get(0).values().iterator().next();
+    private String fetchSelfConnectionId(DiagSession session, DataSourceType dsType) {
+        // single column: CONNECTION_ID() / pg_backend_pid(); failure → CONSOLE_QUERY_EXEC_ERROR (executor probe contract)
+        return session.executeSingleValue(selfConnectionSql(dsType));
     }
 
-    private List<DbSessionVO> fetchProcesslist(String uid, String sessionId, DataSourceConfig dsConfig, String selfId, String dsUserName,
-            DataSourceType dsType) {
-        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, listSessionsSql(dsType)));
-        String failure = firstFailureMessage(resultList);
+    private List<DbSessionVO> fetchProcesslist(DiagSession session, String selfId, String dsUserName, DataSourceType dsType) {
+        ResultList resultList = session.execute(listSessionsSql(dsType));
+        String failure = DiagResultUtils.firstFailureMessage(resultList);
         if (failure != null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
         }
         List<DbSessionVO> sessions = new ArrayList<>();
-        for (Map<String, String> row : extractRows(resultList)) {
+        for (Map<String, String> row : DiagResultUtils.extractRows(resultList)) {
             sessions.add(mapSessionRow(row, selfId, dsUserName, dsType));
         }
         return sessions;
@@ -386,11 +285,11 @@ public class SessionManageServiceImpl implements SessionManageService {
      * MySQL {@code KILL <id>} has no result set and is judged by the ResultMessage level;
      * PG {@code SELECT pg_terminate_backend(<id>)} returns a single-row boolean — {@code f}
      * means the target vanished mid-flight (permission failures raise ERROR instead, which
-     * surfaces through {@link #firstFailureMessage}).
+     * surfaces through {@link DiagResultUtils#firstFailureMessage}).
      */
-    private void executeTerminate(String uid, String sessionId, DataSourceConfig dsConfig, DataSourceType dsType, String targetId) {
-        ResultList killResult = executeSql(uid, sessionId, buildRequest(dsConfig, killSql(dsType, targetId)));
-        String failure = firstFailureMessage(killResult);
+    private void executeTerminate(DiagSession session, DataSourceType dsType, String targetId) {
+        ResultList killResult = session.execute(killSql(dsType, targetId));
+        String failure = DiagResultUtils.firstFailureMessage(killResult);
         if (failure != null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(resolveKillFailureKey(dsType, failure).name(), failure));
         }
@@ -484,44 +383,6 @@ public class SessionManageServiceImpl implements SessionManageService {
         return null;
     }
 
-    /** Flattens ResultList (ResultSetMeta + ResultSet) into column-lowercased row maps. */
-    static List<Map<String, String>> extractRows(ResultList resultList) {
-        List<Map<String, String>> rows = new ArrayList<>();
-        if (resultList == null || resultList.getResultList() == null) {
-            return rows;
-        }
-        List<String> columns = null;
-        List<ResultSetRow> rowSet = new ArrayList<>();
-        for (Result result : resultList.getResultList()) {
-            if (result instanceof ResultSetMeta meta) {
-                if (columns == null) {
-                    columns = meta.getColumnList();
-                }
-            } else if (result instanceof ResultSet set) {
-                if (set.getRowSet() != null) {
-                    rowSet.addAll(set.getRowSet());
-                }
-            }
-        }
-        if (columns == null) {
-            return rows;
-        }
-        for (ResultSetRow row : rowSet) {
-            Map<String, String> mapped = new LinkedHashMap<>();
-            List<ResultSetValue> data = row.getData() == null ? Collections.emptyList() : row.getData();
-            for (int i = 0; i < columns.size() && i < data.size(); i++) {
-                String column = columns.get(i);
-                if (column == null) {
-                    continue;
-                }
-                ResultSetValue value = data.get(i);
-                mapped.put(column.toLowerCase(Locale.ROOT), value == null ? null : value.getValue());
-            }
-            rows.add(mapped);
-        }
-        return rows;
-    }
-
     /**
      * Picks the kill-failure i18n key by dialect. MySQL: "You are not owner of thread" means the
      * datasource connection account lacks SUPER/CONNECTION_ADMIN to kill other users' threads.
@@ -547,7 +408,7 @@ public class SessionManageServiceImpl implements SessionManageService {
 
     /** {@code pg_terminate_backend} returns a single-row boolean; only an explicit true counts as success. */
     static boolean isTerminationConfirmed(ResultList killResult) {
-        List<Map<String, String>> rows = extractRows(killResult);
+        List<Map<String, String>> rows = DiagResultUtils.extractRows(killResult);
         if (rows.isEmpty() || rows.get(0).isEmpty()) {
             return false;
         }
@@ -574,25 +435,6 @@ public class SessionManageServiceImpl implements SessionManageService {
     /** The caller guarantees {@code targetId} is pure digits before any concatenation (injection guard). */
     static String killSql(DataSourceType dsType, String targetId) {
         return isPostgres(dsType) ? SQL_PG_TERMINATE_PREFIX + targetId + ")" : SQL_KILL_PREFIX + targetId;
-    }
-
-    /** First failure message of a ResultList (ActionServiceImpl / SqlRowEstimator judgement), or null when all ok. */
-    static String firstFailureMessage(ResultList resultList) {
-        if (resultList == null || resultList.getResultList() == null) {
-            return "empty result";
-        }
-        for (Result result : resultList.getResultList()) {
-            if (result == null) {
-                continue;
-            }
-            if (!result.isSuccess()) {
-                return StringUtils.isBlank(result.getMessage()) ? "query failed" : result.getMessage();
-            }
-            if (result instanceof ResultMessage message && message.getLevel() == MessageLevel.Error) {
-                return StringUtils.isBlank(message.getMessage()) ? "query failed" : message.getMessage();
-            }
-        }
-        return null;
     }
 
     private static Long parseSeconds(String value) {
@@ -640,18 +482,5 @@ public class SessionManageServiceImpl implements SessionManageService {
             return value;
         }
         return value.substring(0, maxLength);
-    }
-
-    // ==================================================================================
-    // test seams (never mock statics in tests; PluginManager needs a live plugin registry)
-    // ==================================================================================
-
-    protected SessionSpi findSessionSpi(DataSourceType dsType) {
-        return PluginManager.findSessionSpi(dsType);
-    }
-
-    protected DsLevels createLevels(DmDsDO dsDO, SessionContextDTO ctx) {
-        DsConfig dsSetting = dmDsConfigService.dsConstantSettings(dsDO.getDataSourceType());
-        return DmDsUtils.createLevels(dsDO, dsSetting, ctx.getRdbCatalog(), ctx.getRdbSchema());
     }
 }

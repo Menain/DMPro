@@ -47,6 +47,7 @@ import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.QueryService;
+import com.clougence.clouddm.console.web.component.opsdiag.OpsDiagnosticExecutor;
 import com.clougence.clouddm.console.web.model.fo.session.SessionKillFO;
 import com.clougence.clouddm.console.web.model.fo.session.SessionListFO;
 import com.clougence.clouddm.console.web.model.vo.session.DbSessionListVO;
@@ -79,8 +80,10 @@ import com.clougence.schema.umi.struts.UmiTypes;
  * and PG pg_stat_activity mapping / protection matrix / terminate / privilege-hint behavior.
  * <p>
  * Discipline: JUnit4 + hand-written mocks + ReflectionTestUtils only; the PluginManager
- * static lookups are isolated behind protected seams overridden by an anonymous subclass
- * (no mockStatic, no Spring context).
+ * static lookups are isolated behind the protected seams of
+ * {@link OpsDiagnosticExecutor} overridden by an anonymous subclass (no mockStatic, no Spring
+ * context — the B4 Step-0 extraction moved the seams from the service to the executor; all
+ * assertions below are unchanged).
  */
 public class SessionManageServiceImplTest {
 
@@ -133,7 +136,11 @@ public class SessionManageServiceImplTest {
 
     @Before
     public void setUp() {
-        service = new SessionManageServiceImpl() {
+        service = new SessionManageServiceImpl();
+
+        // B4 Step-0 extraction: the channel-C seams (PluginManager statics) now live on the shared
+        // executor — wiring only, every assertion below is untouched
+        OpsDiagnosticExecutor diagnosticExecutor = new OpsDiagnosticExecutor() {
 
             @Override
             protected SessionSpi findSessionSpi(DataSourceType dsType) {
@@ -154,9 +161,10 @@ public class SessionManageServiceImplTest {
         queryService = mock(QueryService.class);
         when(dsDal.dsMapper()).thenReturn(dsMapper);
 
+        ReflectionTestUtils.setField(diagnosticExecutor, "queryService", queryService);
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
         ReflectionTestUtils.setField(service, "dmDsConfigService", dmDsConfigService);
-        ReflectionTestUtils.setField(service, "queryService", queryService);
+        ReflectionTestUtils.setField(service, "diagnosticExecutor", diagnosticExecutor);
 
         // default fixtures: owned MySQL datasource + its config
         when(dsMapper.listByOwnerAndIds(eq(PUID), any())).thenReturn(List.of(ds(DataSourceType.MySQL, LifeCycleState.CREATED)));

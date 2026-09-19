@@ -47,6 +47,7 @@ import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.QueryService;
+import com.clougence.clouddm.console.web.component.opsdiag.OpsDiagnosticExecutor;
 import com.clougence.clouddm.console.web.model.fo.lockanalysis.LockOverviewFO;
 import com.clougence.clouddm.console.web.model.vo.lockanalysis.LockOverviewVO;
 import com.clougence.clouddm.console.web.model.vo.lockanalysis.LockTrxVO;
@@ -78,10 +79,12 @@ import com.clougence.schema.umi.struts.UmiTypes;
  * timeout / whitelist / tenant rejections, and the displayChars=131072 deadlock passthrough.
  * <p>
  * Discipline (copied from B2 SessionManageServiceImplTest): JUnit4 + hand-written mocks +
- * ReflectionTestUtils only; the PluginManager static lookups are isolated behind protected seams
- * overridden by an anonymous subclass (no mockStatic, no Spring context, no MockMvc). Every
- * failure path verifies the finally-release ({@code closeSession}); rejection paths verify zero
- * remote calls; unrecognized SQL fails the test on the spot.
+ * ReflectionTestUtils only; the PluginManager static lookups are isolated behind the protected
+ * seams of {@link OpsDiagnosticExecutor} overridden by an anonymous subclass (no mockStatic, no
+ * Spring context, no MockMvc — the B4 Step-0 extraction moved the seams from the service to the
+ * executor; all assertions below are unchanged). Every failure path verifies the finally-release
+ * ({@code closeSession}); rejection paths verify zero remote calls; unrecognized SQL fails the
+ * test on the spot.
  */
 public class LockAnalysisServiceImplTest {
 
@@ -149,7 +152,11 @@ public class LockAnalysisServiceImplTest {
 
     @Before
     public void setUp() {
-        service = new LockAnalysisServiceImpl() {
+        service = new LockAnalysisServiceImpl();
+
+        // B4 Step-0 extraction: the channel-C seams (PluginManager statics) now live on the shared
+        // executor — wiring only, every assertion below is untouched
+        OpsDiagnosticExecutor diagnosticExecutor = new OpsDiagnosticExecutor() {
 
             @Override
             protected SessionSpi findSessionSpi(DataSourceType dsType) {
@@ -170,9 +177,10 @@ public class LockAnalysisServiceImplTest {
         queryService = mock(QueryService.class);
         when(dsDal.dsMapper()).thenReturn(dsMapper);
 
+        ReflectionTestUtils.setField(diagnosticExecutor, "queryService", queryService);
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
         ReflectionTestUtils.setField(service, "dmDsConfigService", dmDsConfigService);
-        ReflectionTestUtils.setField(service, "queryService", queryService);
+        ReflectionTestUtils.setField(service, "diagnosticExecutor", diagnosticExecutor);
 
         // default fixtures: owned MySQL 8.0 datasource + its config, everything healthy and empty
         when(dsMapper.listByOwnerAndIds(eq(PUID), any())).thenReturn(List.of(ds(DataSourceType.MySQL, LifeCycleState.CREATED)));

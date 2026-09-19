@@ -16,9 +16,11 @@
 package com.clougence.clouddm.console.web.service.lockanalysis;
 
 /**
- * Internal marker: one lock-info remote operation exceeded the hard timeout. Call sites convert
- * it by role — probe/session-creation timeouts fail the whole overview, block-query timeouts
- * degrade only that block (partialErrors, design §7).
+ * Internal marker: one lock-info block query exceeded the hard timeout. It is the B3 service-level
+ * translation of the executor-neutral {@link com.clougence.clouddm.console.web.component.opsdiag.DiagTimeoutException}
+ * (design 09-19-table-space-usage §1.3 C2): block-query timeouts degrade only that block
+ * (partialErrors, design §7), while probe/session-creation timeouts are translated directly at
+ * their boundaries and fail the whole overview.
  */
 class LockQueryTimeoutException extends RuntimeException {
 }
