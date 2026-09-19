@@ -56,6 +56,9 @@
           </div>
         </div>
 
+        <!-- Already-translated backend text (PG account lacking pg_monitor); MySQL family is always null. -->
+        <Alert v-if="privilegeHint" type="warning" class="session-privilege-hint">{{ privilegeHint }}</Alert>
+
         <div class="table-container">
           <Table
             size="small"
@@ -197,7 +200,8 @@ export default {
       pageSize: 50,
       sortKey: '',
       sortOrder: 'normal',
-      ipStatsExpanded: false
+      ipStatsExpanded: false,
+      privilegeHint: null
     };
   },
   computed: {
@@ -339,6 +343,7 @@ export default {
     },
     handleDsChange() {
       this.sessions = [];
+      this.privilegeHint = null;
       // An in-flight load for the previous datasource is dropped as stale and won't reset
       // listLoading; clear it here so the table/refresh button don't stay in loading state.
       this.listLoading = false;
@@ -360,6 +365,7 @@ export default {
           return;
         }
         this.sessions = (res.data && res.data.sessions) || [];
+        this.privilegeHint = (res.data && res.data.privilegeHint) || null;
       } finally {
         if (dsId === this.selectedDsId && !silent) {
           this.listLoading = false;
@@ -493,6 +499,9 @@ export default {
   text-align: center;
   color: var(--text-secondary);
   font-size: 14px;
+}
+.session-privilege-hint {
+  margin-bottom: 12px;
 }
 // Flat light-surface strip (no border card, per ui-layout-consistency skill).
 .session-stats {

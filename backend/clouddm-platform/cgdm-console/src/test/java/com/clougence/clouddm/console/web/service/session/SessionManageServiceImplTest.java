@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.service.session;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -72,9 +73,10 @@ import com.clougence.clouddm.sdk.execute.session.SessionSpi;
 import com.clougence.schema.umi.struts.UmiTypes;
 
 /**
- * Unit tests for {@link SessionManageServiceImpl} (design §9, six assertion groups):
- * row mapping, protection matrix, type whitelist / tenant ownership, kill flows with
- * server-side re-validation, hard timeout, and instance listing.
+ * Unit tests for {@link SessionManageServiceImpl} (design §9, six assertion groups, plus the
+ * PostgreSQL dialect group of design §13): row mapping, protection matrix, type whitelist /
+ * tenant ownership, kill flows with server-side re-validation, hard timeout, instance listing,
+ * and PG pg_stat_activity mapping / protection matrix / terminate / privilege-hint behavior.
  * <p>
  * Discipline: JUnit4 + hand-written mocks + ReflectionTestUtils only; the PluginManager
  * static lookups are isolated behind protected seams overridden by an anonymous subclass
@@ -89,6 +91,8 @@ public class SessionManageServiceImplTest {
     private static final String   SELF_ID           = "77";
     private static final String   DS_USER           = "clouddm_agent";
     private static final String[] PROCESSLIST_COLS  = { "Id", "User", "Host", "db", "Command", "Time", "State", "Info" };
+    /** Column labels of the pg_stat_activity projection (design §13.2 aliases, already lowercase). */
+    private static final String[] PG_PROCESSLIST_COLS = { "id", "user", "host", "db", "command", "time", "state", "info" };
 
     private SessionManageServiceImpl service;
     private DataSourceDal            dsDal;
@@ -165,13 +169,13 @@ public class SessionManageServiceImplTest {
             QueryRequest request = invocation.getArgument(2);
             String body = request.getQueryBody();
             executedSqls.add(body);
-            if (body.startsWith("SELECT CONNECTION_ID")) {
-                return queryResult(new String[] { "CONNECTION_ID()" }, new String[][] { { SELF_ID } });
+            if (body.startsWith("SELECT CONNECTION_ID") || body.startsWith("SELECT pg_backend_pid")) {
+                return queryResult(new String[] { "self_id" }, new String[][] { { SELF_ID } });
             }
-            if (body.startsWith("SHOW FULL PROCESSLIST")) {
+            if (body.startsWith("SHOW FULL PROCESSLIST") || body.contains("pg_stat_activity")) {
                 return processlistResult;
             }
-            if (body.startsWith("KILL ")) {
+            if (body.startsWith("KILL ") || body.startsWith("SELECT pg_terminate_backend")) {
                 return killResult;
             }
             throw new IllegalStateException("unexpected sql dispatched: " + body);
@@ -192,6 +196,7 @@ public class SessionManageServiceImplTest {
 
         assertEquals(SELF_ID, vo.getSelfConnectionId());
         assertEquals(2, vo.getSessions().size());
+        assertNull("MySQL family never carries a privilege hint", vo.getPrivilegeHint());
 
         DbSessionVO first = vo.getSessions().get(0);
         assertEquals("101", first.getId());
@@ -440,7 +445,124 @@ public class SessionManageServiceImplTest {
         assertEquals("MySQL", result.get(1).getDsType());
     }
 
+    // ------------------------------------------------------------- group 7: PostgreSQL dialect (design §13)
+
+    @Test
+    public void list_pg_mapsAliasedColumns_localHost_nullQueryStartTolerated() {
+        usePostgresDs();
+        processlistResult = queryResult(PG_PROCESSLIST_COLS, new String[][] { //
+                { "84", "app_user", "10.1.1.9:5555", "orders", "client backend", "300", "active", "SELECT * FROM t" }, //
+                { "85", "report", "local", null, "client backend", null, "idle", null }, //
+        });
+
+        DbSessionListVO vo = service.list(PUID, UID, listFO());
+
+        assertEquals(SELF_ID, vo.getSelfConnectionId());
+        DbSessionVO first = vo.getSessions().get(0);
+        assertEquals("84", first.getId());
+        assertEquals("app_user", first.getUser());
+        assertEquals("10.1.1.9:5555", first.getHost());
+        assertEquals("orders", first.getDb());
+        assertEquals("client backend", first.getCommand());
+        assertEquals(Long.valueOf(300L), first.getTime());
+        assertEquals("active", first.getState());
+        assertEquals("SELECT * FROM t", first.getInfo());
+        assertTrue(first.isKillable());
+
+        DbSessionVO second = vo.getSessions().get(1);
+        assertEquals("unix-socket backends show host=local", "local", second.getHost());
+        assertNull("NULL query_start degrades to null time", second.getTime());
+        assertNull(second.getDb());
+        assertNull(second.getInfo());
+        assertNull("no masked rows → no privilege hint", vo.getPrivilegeHint());
+
+        assertTrue("PG self query dispatched", executedSqls.contains("SELECT pg_backend_pid()"));
+        assertTrue("pg_stat_activity projection dispatched", //
+                executedSqls.stream().anyMatch(sql -> sql.contains("pg_stat_activity")));
+    }
+
+    @Test
+    public void list_pg_protectionMatrix_walsenderPriorOverBackgroundProcesses() {
+        usePostgresDs();
+        processlistResult = queryResult(PG_PROCESSLIST_COLS, new String[][] { //
+                row(SELF_ID, DS_USER, "local", null, "client backend", "0", "active", "SELECT pg_backend_pid()"), // platform self
+                row("81", "repl", "10.0.0.9:1", null, "walsender", "66", "streaming", null),                      // replication, priority match
+                row("82", null, "local", null, "checkpointer", "9999", null, null),                               // background process
+                row("83", null, "local", null, "autovacuum worker", "10", null, null),                            // background process
+                row("84", "CloudDM_Agent", "10.0.0.5:9999", null, "client backend", "10", "idle", null),          // shared account
+                row("85", "app_user", "10.1.1.9:5555", "orders", "client backend", "300", "active", "SELECT 1"),  // normal
+        });
+
+        List<DbSessionVO> sessions = service.list(PUID, UID, listFO()).getSessions();
+
+        assertEquals(6, sessions.size());
+        assertProtected(sessions.get(0), SessionProtectedReason.PLATFORM_SELF);
+        assertFalse("self row is never flagged sharedAccount", sessions.get(0).isSharedAccount());
+        assertProtected(sessions.get(1), SessionProtectedReason.REPLICATION_THREAD);
+        assertProtected(sessions.get(2), SessionProtectedReason.SYSTEM_USER);
+        assertProtected(sessions.get(3), SessionProtectedReason.SYSTEM_USER);
+
+        assertTrue(sessions.get(4).isKillable());
+        assertTrue("DS-account session flagged sharedAccount (case-insensitive)", sessions.get(4).isSharedAccount());
+        assertTrue(sessions.get(5).isKillable());
+        assertFalse(sessions.get(5).isSharedAccount());
+    }
+
+    @Test
+    public void list_pg_insufficientPrivilegesMarker_setsTranslatedPrivilegeHint() {
+        usePostgresDs();
+        processlistResult = queryResult(PG_PROCESSLIST_COLS, new String[][] { //
+                row("84", "app_user", "10.1.1.9:5555", "orders", "client backend", "300", "active", "<insufficient privileges>"), //
+        });
+
+        DbSessionListVO vo = service.list(PUID, UID, listFO());
+
+        assertNotNull("masked query text must set the hint", vo.getPrivilegeHint());
+        assertTrue("hint names the pg_monitor grant in every locale bundle", vo.getPrivilegeHint().contains("pg_monitor"));
+    }
+
+    @Test
+    public void kill_pg_terminateReturnsTrue_succeeds_withAuditObjAndSessionClosed() {
+        usePostgresDs();
+        processlistResult = queryResult(PG_PROCESSLIST_COLS,
+                new String[][] { row("84", "app_user", "10.1.1.9:5555", "orders", "client backend", "300", "active", "SELECT * FROM t") });
+        killResult = queryResult(new String[] { "pg_terminate_backend" }, new String[][] { { "t" } });
+
+        SessionKillAuditObj auditObj = service.kill(PUID, UID, killFO("84"));
+
+        assertEquals("84", auditObj.getSessionId());
+        assertEquals("app_user", auditObj.getTargetUser());
+        assertEquals("10.1.1.9:5555", auditObj.getTargetHost());
+        assertEquals("SELECT * FROM t", auditObj.getTargetInfo());
+        assertEquals("SUCCESS", auditObj.getResult());
+        assertTrue(executedSqls.contains("SELECT pg_terminate_backend(84)"));
+        verify(queryService).closeSession(UID, DIAG_SESSION);
+    }
+
+    @Test
+    public void kill_pg_terminateReturnsFalse_surfacesKillFailed_sessionClosed() {
+        usePostgresDs();
+        processlistResult = queryResult(PG_PROCESSLIST_COLS,
+                new String[][] { row("84", "app_user", "10.1.1.9:5555", "orders", "client backend", "300", "active", "SELECT * FROM t") });
+        killResult = queryResult(new String[] { "pg_terminate_backend" }, new String[][] { { "f" } });
+        try {
+            service.kill(PUID, UID, killFO("84"));
+            fail("pg_terminate_backend=false must surface as kill-failed");
+        } catch (ErrorMessageException e) {
+            assertTrue(e.getMessage().contains("终止会话失败"));
+            assertTrue("{0} carries the vanished-session reason", e.getMessage().contains("会话已不存在或已结束"));
+        }
+        assertTrue(executedSqls.contains("SELECT pg_terminate_backend(84)"));
+        verify(queryService).closeSession(UID, DIAG_SESSION);
+    }
+
     // ------------------------------------------------------------- helpers
+
+    /** Switches the ownership/config fixtures to a PostgreSQL datasource (design §13 round). */
+    private void usePostgresDs() {
+        when(dsMapper.listByOwnerAndIds(eq(PUID), any())).thenReturn(List.of(ds(DataSourceType.PostgreSQL, LifeCycleState.CREATED)));
+        when(dmDsConfigService.fetchDsConfigFromExists(DS_ID)).thenReturn(dsConfig(DataSourceType.PostgreSQL, DS_USER));
+    }
 
     private void assertNoKillDispatched() {
         synchronized (executedSqls) {

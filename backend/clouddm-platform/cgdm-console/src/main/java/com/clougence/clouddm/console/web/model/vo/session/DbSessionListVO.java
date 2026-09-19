@@ -25,8 +25,15 @@ import lombok.Data;
 @Data
 public class DbSessionListVO {
 
-    /** CONNECTION_ID() of the platform diagnostic session (for frontend self-row hint). */
+    /** CONNECTION_ID() (MySQL family) / pg_backend_pid() (PostgreSQL) of the platform diagnostic session. */
     private String            selfConnectionId;
 
     private List<DbSessionVO> sessions;
+
+    /**
+     * Already-i18ned hint when the target instance masks the SQL text of other users' sessions
+     * (PostgreSQL without pg_monitor, design §13.4) — the frontend renders it as a warning Alert
+     * verbatim. Always null for the MySQL family.
+     */
+    private String            privilegeHint;
 }

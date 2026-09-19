@@ -85,9 +85,14 @@ import lombok.extern.slf4j.Slf4j;
  * wrapped with a dedicated daemon executor and a hard timeout because
  * {@code QueryServiceImpl#syncExecuteQuery} polls without an internal deadline.
  * <p>
+ * Dialects (design §13): the MySQL protocol family runs {@code SELECT CONNECTION_ID()} /
+ * {@code SHOW FULL PROCESSLIST} / {@code KILL <id>}; PostgreSQL runs {@code SELECT pg_backend_pid()} /
+ * a {@code pg_stat_activity} projection aliased onto the same column names / {@code SELECT pg_terminate_backend(<id>)}
+ * (single-row boolean result). Dispatch is a service-private switch on {@link DataSourceType}.
+ * <p>
  * Safety (server side is authoritative, frontend greying-out is UX only):
  * <ul>
- * <li>datasource type whitelist (MySQL protocol family, 9 types);</li>
+ * <li>datasource type whitelist (MySQL protocol family + PostgreSQL);</li>
  * <li>tenant ownership check (dsId must belong to the caller's tenant);</li>
  * <li>protection matrix: platform self connection / system users / replication threads are never killable;</li>
  * <li>kill re-queries the processlist and re-validates the target before issuing KILL;</li>
@@ -98,15 +103,37 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class SessionManageServiceImpl implements SessionManageService {
 
-    /** Phase-1 whitelist: MySQL protocol family, SHOW FULL PROCESSLIST + KILL fully compatible (design §1). */
+    /**
+     * Whitelist: MySQL protocol family, SHOW FULL PROCESSLIST + KILL fully compatible (design §1);
+     * PostgreSQL added by the PG 15 extension round (design §13, pg_stat_activity + pg_terminate_backend).
+     */
     static final Set<DataSourceType> SUPPORTED = EnumSet.of(//
             DataSourceType.MySQL, DataSourceType.MariaDB, DataSourceType.TiDB, DataSourceType.PolarDbMySQL, //
             DataSourceType.PolarDbX, DataSourceType.OceanBase, DataSourceType.GoldenDBMySQL, //
-            DataSourceType.KingbaseESMySQL, DataSourceType.AdbForMySQL);
+            DataSourceType.KingbaseESMySQL, DataSourceType.AdbForMySQL, DataSourceType.PostgreSQL);
 
     static final String              SQL_SELF_CONNECTION_ID = "SELECT CONNECTION_ID()";
     static final String              SQL_PROCESSLIST        = "SHOW FULL PROCESSLIST";
     static final String              SQL_KILL_PREFIX        = "KILL ";
+
+    // PostgreSQL dialect (design §13): the pg_stat_activity projection is aliased onto the MySQL
+    // processlist column names so both dialects share one DbSessionVO mapping.
+    static final String              SQL_PG_SELF_PID        = "SELECT pg_backend_pid()";
+    static final String              SQL_PG_PROCESSLIST     = "SELECT pid::text AS id, usename AS user, " //
+            + "COALESCE(host(client_addr) || ':' || client_port, 'local') AS host, " //
+            + "datname AS db, backend_type AS command, " //
+            + "EXTRACT(EPOCH FROM (now() - query_start))::bigint AS time, " //
+            + "state, query AS info FROM pg_stat_activity ORDER BY query_start NULLS LAST";
+    static final String              SQL_PG_TERMINATE_PREFIX = "SELECT pg_terminate_backend(";
+
+    /** backend_type of ordinary user connections; any other value is a background process (SYSTEM_USER). */
+    static final String              PG_CLIENT_BACKEND      = "client backend";
+    /** backend_type of the replication sender — matched before the generic background-process rule. */
+    static final String              PG_WALSENDER           = "walsender";
+    /** PG native masking of the query text when the viewing account lacks pg_monitor. */
+    static final String              PG_INSUFFICIENT_PRIVILEGES = "<insufficient privileges>";
+    /** Lowercased PG error fragments meaning the DS account may not signal the target backend. */
+    static final List<String>        PG_KILL_NO_PRIVILEGE_ERRORS = List.of("permission denied", "must be a member of the role");
 
     /** Lowercased MySQL error fragment meaning the DS account lacks SUPER/CONNECTION_ADMIN for other users' threads. */
     static final String              KILL_NOT_OWNER_ERROR   = "you are not owner of thread";
@@ -183,13 +210,15 @@ public class SessionManageServiceImpl implements SessionManageService {
     }
 
     private DbSessionListVO doList(String uid, DmDsDO dsDO, DataSourceConfig dsConfig) {
+        DataSourceType dsType = dsDO.getDataSourceType();
         String sessionId = createDiagnosticSession(uid, dsDO, dsConfig);
         try {
-            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig);
-            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName());
+            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig, dsType);
+            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName(), dsType);
             DbSessionListVO vo = new DbSessionListVO();
             vo.setSelfConnectionId(selfId);
             vo.setSessions(sessions);
+            vo.setPrivilegeHint(resolvePrivilegeHint(dsType, sessions));
             return vo;
         } finally {
             closeSessionQuietly(uid, sessionId);
@@ -214,16 +243,17 @@ public class SessionManageServiceImpl implements SessionManageService {
     }
 
     private SessionKillAuditObj doKill(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, String targetId) {
+        DataSourceType dsType = dsDO.getDataSourceType();
         String sessionId = createDiagnosticSession(uid, dsDO, dsConfig);
         try {
             // 1) never kill the platform's own diagnostic connection
-            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig);
+            String selfId = fetchSelfConnectionId(uid, sessionId, dsConfig, dsType);
             if (targetId.equals(selfId)) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
             }
-            // 2) server-side re-validation: re-query the processlist and apply the same protection
+            // 2) server-side re-validation: re-query the session list and apply the same protection
             //    matrix, never trusting the killable flag echoed back by the frontend
-            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName());
+            List<DbSessionVO> sessions = fetchProcesslist(uid, sessionId, dsConfig, selfId, dsConfig.getUserName(), dsType);
             DbSessionVO target = sessions.stream().filter(s -> targetId.equals(s.getId())).findFirst().orElse(null);
             if (target == null) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_NOT_FOUND.name()));
@@ -231,12 +261,8 @@ public class SessionManageServiceImpl implements SessionManageService {
             if (!target.isKillable()) {
                 throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_PROTECTED.name()));
             }
-            // 3) KILL <id> (= KILL CONNECTION); no result set, judge by ResultMessage level
-            ResultList killResult = executeSql(uid, sessionId, buildRequest(dsConfig, SQL_KILL_PREFIX + targetId));
-            String failure = firstFailureMessage(killResult);
-            if (failure != null) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(resolveKillFailureKey(failure).name(), failure));
-            }
+            // 3) dialect-specific terminate (MySQL KILL / PG pg_terminate_backend), design §13.1
+            executeTerminate(uid, sessionId, dsConfig, dsType, targetId);
 
             SessionKillAuditObj auditObj = new SessionKillAuditObj();
             auditObj.setSessionId(targetId);
@@ -327,8 +353,8 @@ public class SessionManageServiceImpl implements SessionManageService {
     // processlist query & mapping
     // ==================================================================================
 
-    private String fetchSelfConnectionId(String uid, String sessionId, DataSourceConfig dsConfig) {
-        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, SQL_SELF_CONNECTION_ID));
+    private String fetchSelfConnectionId(String uid, String sessionId, DataSourceConfig dsConfig, DataSourceType dsType) {
+        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, selfConnectionSql(dsType)));
         String failure = firstFailureMessage(resultList);
         if (failure != null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
@@ -337,25 +363,45 @@ public class SessionManageServiceImpl implements SessionManageService {
         if (rows.isEmpty() || rows.get(0).isEmpty()) {
             return null;
         }
-        // single column: CONNECTION_ID()
+        // single column: CONNECTION_ID() / pg_backend_pid()
         return rows.get(0).values().iterator().next();
     }
 
-    private List<DbSessionVO> fetchProcesslist(String uid, String sessionId, DataSourceConfig dsConfig, String selfId, String dsUserName) {
-        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, SQL_PROCESSLIST));
+    private List<DbSessionVO> fetchProcesslist(String uid, String sessionId, DataSourceConfig dsConfig, String selfId, String dsUserName,
+            DataSourceType dsType) {
+        ResultList resultList = executeSql(uid, sessionId, buildRequest(dsConfig, listSessionsSql(dsType)));
         String failure = firstFailureMessage(resultList);
         if (failure != null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_EXEC_ERROR.name(), failure));
         }
         List<DbSessionVO> sessions = new ArrayList<>();
         for (Map<String, String> row : extractRows(resultList)) {
-            sessions.add(mapSessionRow(row, selfId, dsUserName));
+            sessions.add(mapSessionRow(row, selfId, dsUserName, dsType));
         }
         return sessions;
     }
 
-    /** Maps one processlist row; column keys are already lowercased by {@link #extractRows}. */
-    DbSessionVO mapSessionRow(Map<String, String> row, String selfId, String dsUserName) {
+    /**
+     * Terminates the target session in the dialect of the datasource (design §13.1):
+     * MySQL {@code KILL <id>} has no result set and is judged by the ResultMessage level;
+     * PG {@code SELECT pg_terminate_backend(<id>)} returns a single-row boolean — {@code f}
+     * means the target vanished mid-flight (permission failures raise ERROR instead, which
+     * surfaces through {@link #firstFailureMessage}).
+     */
+    private void executeTerminate(String uid, String sessionId, DataSourceConfig dsConfig, DataSourceType dsType, String targetId) {
+        ResultList killResult = executeSql(uid, sessionId, buildRequest(dsConfig, killSql(dsType, targetId)));
+        String failure = firstFailureMessage(killResult);
+        if (failure != null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(resolveKillFailureKey(dsType, failure).name(), failure));
+        }
+        if (isPostgres(dsType) && !isTerminationConfirmed(killResult)) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_KILL_FAILED.name(), //
+                    DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_NOT_FOUND.name())));
+        }
+    }
+
+    /** Maps one session row (MySQL processlist / PG pg_stat_activity alias projection, same column keys). */
+    DbSessionVO mapSessionRow(Map<String, String> row, String selfId, String dsUserName, DataSourceType dsType) {
         DbSessionVO vo = new DbSessionVO();
         vo.setId(row.get("id"));
         vo.setUser(row.get("user"));
@@ -366,7 +412,9 @@ public class SessionManageServiceImpl implements SessionManageService {
         vo.setState(row.get("state"));
         vo.setInfo(row.get("info"));
 
-        SessionProtectedReason reason = resolveProtectedReason(vo.getId(), vo.getUser(), vo.getCommand(), selfId);
+        SessionProtectedReason reason = isPostgres(dsType) //
+                ? resolvePgProtectedReason(vo.getId(), vo.getCommand(), selfId) //
+                : resolveProtectedReason(vo.getId(), vo.getUser(), vo.getCommand(), selfId);
         vo.setKillable(reason == null);
         vo.setProtectedReason(reason == null ? null : reason.name());
         vo.setSharedAccount(!isSelfRow(vo.getId(), selfId) //
@@ -395,8 +443,45 @@ public class SessionManageServiceImpl implements SessionManageService {
         return null;
     }
 
+    /**
+     * PG protection matrix (design §13.3): the command column carries backend_type — walsender is
+     * matched first (REPLICATION_THREAD), any other non-client-backend process (checkpointer,
+     * autovacuum worker, walwriter…) is SYSTEM_USER.
+     */
+    static SessionProtectedReason resolvePgProtectedReason(String id, String command, String selfId) {
+        if (isSelfRow(id, selfId)) {
+            return SessionProtectedReason.PLATFORM_SELF;
+        }
+        String normalizedCommand = StringUtils.trimToEmpty(command).toLowerCase(Locale.ROOT);
+        if (PG_WALSENDER.equals(normalizedCommand)) {
+            return SessionProtectedReason.REPLICATION_THREAD;
+        }
+        if (!PG_CLIENT_BACKEND.equals(normalizedCommand)) {
+            return SessionProtectedReason.SYSTEM_USER;
+        }
+        return null;
+    }
+
     private static boolean isSelfRow(String id, String selfId) {
         return selfId != null && selfId.equals(id);
+    }
+
+    /**
+     * PG only (design §13.4): when any row's query text is masked by PG's native
+     * {@code <insufficient privileges>} placeholder, the DS account lacks pg_monitor — return the
+     * already-translated hint for the frontend Alert. Always null for the MySQL family.
+     */
+    static String resolvePrivilegeHint(DataSourceType dsType, List<DbSessionVO> sessions) {
+        if (!isPostgres(dsType)) {
+            return null;
+        }
+        for (DbSessionVO session : sessions) {
+            String info = session.getInfo();
+            if (info != null && info.toLowerCase(Locale.ROOT).contains(PG_INSUFFICIENT_PRIVILEGES)) {
+                return DmI18nUtils.getMessage(I18nDmMsgKeys.SESSION_LIST_PRIVILEGE_HINT_PG.name());
+            }
+        }
+        return null;
     }
 
     /** Flattens ResultList (ResultSetMeta + ResultSet) into column-lowercased row maps. */
@@ -438,15 +523,57 @@ public class SessionManageServiceImpl implements SessionManageService {
     }
 
     /**
-     * Picks the kill-failure i18n key: "You are not owner of thread" is MySQL's way of saying the
-     * datasource connection account lacks SUPER/CONNECTION_ADMIN to kill other users' threads — a
-     * DB-side grant issue unrelated to platform roles, surfaced with a dedicated actionable message.
+     * Picks the kill-failure i18n key by dialect. MySQL: "You are not owner of thread" means the
+     * datasource connection account lacks SUPER/CONNECTION_ADMIN to kill other users' threads.
+     * PG: "permission denied" / "must be a member of the role" mean the account may not signal the
+     * target backend (needs superuser, target-role membership or pg_signal_backend). Both are
+     * DB-side grant issues unrelated to platform roles, surfaced with dedicated actionable messages.
      */
-    static I18nDmMsgKeys resolveKillFailureKey(String failureMessage) {
-        if (failureMessage.toLowerCase(Locale.ROOT).contains(KILL_NOT_OWNER_ERROR)) {
+    static I18nDmMsgKeys resolveKillFailureKey(DataSourceType dsType, String failureMessage) {
+        String lowerFailure = failureMessage.toLowerCase(Locale.ROOT);
+        if (isPostgres(dsType)) {
+            for (String fragment : PG_KILL_NO_PRIVILEGE_ERRORS) {
+                if (lowerFailure.contains(fragment)) {
+                    return I18nDmMsgKeys.SESSION_KILL_NO_PRIVILEGE_PG;
+                }
+            }
+            return I18nDmMsgKeys.SESSION_KILL_FAILED;
+        }
+        if (lowerFailure.contains(KILL_NOT_OWNER_ERROR)) {
             return I18nDmMsgKeys.SESSION_KILL_NO_PRIVILEGE;
         }
         return I18nDmMsgKeys.SESSION_KILL_FAILED;
+    }
+
+    /** {@code pg_terminate_backend} returns a single-row boolean; only an explicit true counts as success. */
+    static boolean isTerminationConfirmed(ResultList killResult) {
+        List<Map<String, String>> rows = extractRows(killResult);
+        if (rows.isEmpty() || rows.get(0).isEmpty()) {
+            return false;
+        }
+        String value = StringUtils.trimToEmpty(rows.get(0).values().iterator().next()).toLowerCase(Locale.ROOT);
+        return "t".equals(value) || "true".equals(value);
+    }
+
+    // ==================================================================================
+    // dialect dispatch by datasource type (design §13.1)
+    // ==================================================================================
+
+    static boolean isPostgres(DataSourceType dsType) {
+        return dsType == DataSourceType.PostgreSQL;
+    }
+
+    static String selfConnectionSql(DataSourceType dsType) {
+        return isPostgres(dsType) ? SQL_PG_SELF_PID : SQL_SELF_CONNECTION_ID;
+    }
+
+    static String listSessionsSql(DataSourceType dsType) {
+        return isPostgres(dsType) ? SQL_PG_PROCESSLIST : SQL_PROCESSLIST;
+    }
+
+    /** The caller guarantees {@code targetId} is pure digits before any concatenation (injection guard). */
+    static String killSql(DataSourceType dsType, String targetId) {
+        return isPostgres(dsType) ? SQL_PG_TERMINATE_PREFIX + targetId + ")" : SQL_KILL_PREFIX + targetId;
     }
 
     /** First failure message of a ResultList (ActionServiceImpl / SqlRowEstimator judgement), or null when all ok. */
