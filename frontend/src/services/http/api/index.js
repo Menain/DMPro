@@ -30,6 +30,7 @@ import { schemaPatrolApi } from '@/services/http/api/schemaPatrol';
 import { dbChangeV2Api } from '@/services/http/api/dbChangeV2';
 import { slowSqlApi } from '@/services/http/api/slowSql';
 import { sessionApi } from '@/services/http/api/session';
+import { lockAnalysisApi } from '@/services/http/api/lockAnalysis';
 
 export const api = {
   ...authApi,
@@ -63,5 +64,6 @@ export const api = {
   ...schemaPatrolApi,
   ...dbChangeV2Api,
   ...slowSqlApi,
-  ...sessionApi
+  ...sessionApi,
+  ...lockAnalysisApi
 };

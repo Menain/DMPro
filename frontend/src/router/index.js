@@ -148,6 +148,12 @@ const routes = [
         meta: { requiredAuth: 'DM_SESSION_READ' }
       },
       {
+        path: 'lockAnalysis',
+        name: 'LockAnalysis',
+        component: () => import(/* webpackChunkName: "lock-analysis" */ '../views/lockAnalysis/index'),
+        meta: { requiredAuth: 'DM_LOCK_READ' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'

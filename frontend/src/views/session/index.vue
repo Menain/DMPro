@@ -72,16 +72,14 @@
           >
             <template #info="{ row }">
               <span v-if="!row.info">-</span>
-              <!-- Per-row Poptip is expensive on large lists: only long SQL gets the hover-fulltext popup. -->
-              <Poptip v-else-if="isLongInfo(row.info)" trigger="hover" placement="bottom" transfer :width="500" :word-wrap="true">
-                <span class="session-sql-cell">{{ row.info }}</span>
-                <template #content>
-                  <pre class="session-popover-pre">{{ row.info }}</pre>
-                  <Button size="small" type="primary" style="margin-top: 8px" @click="copyText(row.info)">
-                    {{ $t('fu-zhi') }}
-                  </Button>
-                </template>
-              </Poptip>
+              <span
+                v-else-if="isLongInfo(row.info)"
+                class="session-sql-cell"
+                @mouseenter="openSqlPop(row.info, $event)"
+                @mouseleave="closeSqlPopSoon"
+              >
+                {{ row.info }}
+              </span>
               <span v-else class="session-sql-plain" :title="row.info">{{ row.info }}</span>
             </template>
             <template #action="{ row }">
@@ -89,11 +87,9 @@
                 <Button v-if="row.killable" type="error" size="small" ghost @click="handleKill(row)">
                   {{ $t('zhong-zhi') }}
                 </Button>
-                <Poptip v-else trigger="hover" placement="left" transfer :content="protectedText(row.protectedReason)">
-                  <span class="session-kill-protected">
-                    <Button type="error" size="small" ghost disabled>{{ $t('zhong-zhi') }}</Button>
-                  </span>
-                </Poptip>
+                <span v-else class="session-kill-protected" :title="protectedText(row.protectedReason)">
+                  <Button type="error" size="small" ghost disabled>{{ $t('zhong-zhi') }}</Button>
+                </span>
               </template>
               <span v-else>-</span>
             </template>
@@ -115,12 +111,14 @@
         </div>
       </section>
     </div>
+    <sql-hover-popover ref="sqlPop" />
   </div>
 </template>
 
 <script>
 import { mapState } from 'vuex';
 import copyMixin from '@/mixins/copyMixin';
+import SqlHoverPopover from '@/components/widgets/SqlHoverPopover.vue';
 
 const AUTO_REFRESH_INTERVAL_MS = 10000;
 const KILL_CONFIRM_SQL_MAX_LEN = 300;
@@ -182,6 +180,7 @@ function buildFilterOptions(rows, field) {
 
 export default {
   name: 'SessionManage',
+  components: { SqlHoverPopover },
   mixins: [copyMixin],
   data() {
     return {
@@ -410,6 +409,12 @@ export default {
     isLongInfo(info) {
       return info.length > INFO_POPTIP_MIN_LEN;
     },
+    openSqlPop(text, event) {
+      this.$refs.sqlPop.open(text, event.currentTarget.getBoundingClientRect());
+    },
+    closeSqlPopSoon() {
+      this.$refs.sqlPop.closeSoon();
+    },
     cellOrDash(value) {
       if (value === null || value === undefined || value === '') {
         return '-';
@@ -547,17 +552,6 @@ export default {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.session-popover-pre {
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 12px;
-  max-height: 300px;
-  overflow: auto;
-  margin: 0;
-  background: var(--bg-secondary);
-  padding: 8px;
-  border-radius: 4px;
 }
 .session-footer {
   margin-top: 16px;
