@@ -232,4 +232,8 @@ public interface SecRoleAuthLabel {
     @AuthLabel(order = 2, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_LOCK_READ, tag = { SecSysRole.DBA_ROLE_NAME,
                                                                                           SecSysRole.ADMIN_ROLE_NAME })
     String DM_LOCK_READ                    = "DM_LOCK_READ";
+
+    @AuthLabel(order = 3, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SPACE_READ, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                           SecSysRole.ADMIN_ROLE_NAME })
+    String DM_SPACE_READ                   = "DM_SPACE_READ";
 }

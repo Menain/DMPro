@@ -112,6 +112,7 @@ public interface SecAuthI18nKeys {
     String AUTH_KEY_DM_SESSION_READ                 = "AUTH_KEY_DM_SESSION_READ";
     String AUTH_KEY_DM_SESSION_KILL                 = "AUTH_KEY_DM_SESSION_KILL";
     String AUTH_KEY_DM_LOCK_READ                    = "AUTH_KEY_DM_LOCK_READ";
+    String AUTH_KEY_DM_SPACE_READ                   = "AUTH_KEY_DM_SPACE_READ";
 
     // for Role and Data
     String RDP_AUTH_DATA_DS_READ                    = "RDP_AUTH_DATA_DS_READ";
