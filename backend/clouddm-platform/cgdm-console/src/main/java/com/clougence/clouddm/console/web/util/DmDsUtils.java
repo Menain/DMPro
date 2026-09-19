@@ -229,7 +229,10 @@ public class DmDsUtils {
             query.getResultConf().setFetchColumnBytesLimit(limit.getFetchColumnBytesLimit());
             query.getResultConf().setFetchElementBytesLimit(limit.getFetchElementBytesLimit());
             query.getResultConf().setFetchPageSize(limit.getFetchPageSize());
-            query.getResultConf().setDisplayChars(safeGetConfSize(configMap.get(RootUserConfig.Fields.defaultColumnDisplayChars), 256));
+            // an explicit caller-side value (>0, e.g. the lock-analysis deadlock query) wins; otherwise fall back to the root config
+            if (query.getResultConf().getDisplayChars() <= 0) {
+                query.getResultConf().setDisplayChars(safeGetConfSize(configMap.get(RootUserConfig.Fields.defaultColumnDisplayChars), 256));
+            }
             query.getResultConf().setDataFormat(WellKnowFormat.WKF_DATE10);
             query.getResultConf().setTimeFormat(WellKnowFormat.WKF_TIME24_S9);
             query.getResultConf().setDataTimeFormat(WellKnowFormat.WKF_DATE_TIME24_S9);

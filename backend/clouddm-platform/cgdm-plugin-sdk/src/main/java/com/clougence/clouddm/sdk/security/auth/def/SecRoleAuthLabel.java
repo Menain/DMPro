@@ -228,4 +228,8 @@ public interface SecRoleAuthLabel {
 
     @AuthLabel(order = 1, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SESSION_KILL, include = { DM_SESSION_READ }, tag = { SecSysRole.DBA_ROLE_NAME })
     String DM_SESSION_KILL                 = "DM_SESSION_KILL";
+
+    @AuthLabel(order = 2, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_LOCK_READ, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                          SecSysRole.ADMIN_ROLE_NAME })
+    String DM_LOCK_READ                    = "DM_LOCK_READ";
 }
