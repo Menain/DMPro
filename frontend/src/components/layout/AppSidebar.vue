@@ -110,6 +110,15 @@ export default {
       if (path.indexOf('/slowSql') === 0) {
         return 'slowSql';
       }
+      if (path.indexOf('/session') === 0) {
+        return 'session';
+      }
+      if (path.indexOf('/lockAnalysis') === 0) {
+        return 'lockAnalysis';
+      }
+      if (path.indexOf('/space') === 0) {
+        return 'space';
+      }
       if (path.indexOf('/datasource') === 0) {
         return '/datasource';
       }

@@ -108,6 +108,18 @@ export default {
       if (path === '/slowSql' || path === '/slowSql/' || path.indexOf('/slowSql') === 0) {
         return this.$t('man-sql-lie-biao');
       }
+      if (path === '/session' || path === '/session/') {
+        return this.$t('hui-hua-lie-biao');
+      }
+      if (path.indexOf('/session') === 0) {
+        return this.$t('hui-hua-guan-li');
+      }
+      if (path.indexOf('/lockAnalysis') === 0) {
+        return this.$t('suo-fen-xi');
+      }
+      if (path.indexOf('/space') === 0) {
+        return this.$t('kong-jian-zhan-yong');
+      }
       if (path === '/manager/role' || path === '/manager/role/') {
         return this.$t('jiao-se-lie-biao');
       }

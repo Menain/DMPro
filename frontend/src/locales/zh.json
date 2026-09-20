@@ -4689,6 +4689,7 @@
   "xun-jian-wei-wan-cheng-yuan-yin": "未完成部分说明",
   "xun-jian-ku-ying-she": "库映射",
   "hui-hua-guan-li": "会话管理",
+  "hui-hua-lie-biao": "会话列表",
   "hui-hua-xuan-shi-shi-li": "选择数据源实例",
   "hui-hua-shi-li-kong-ti-shi": "暂无可用实例（会话管理目前支持 MySQL 协议家族数据源）",
   "hui-hua-zi-dong-shua-xin": "自动刷新",

@@ -109,6 +109,7 @@ B4 为**只读快照**,正常主流程(S1/S2/S4/S5)在实例**既有**库表上�
   2. 账号 B:开发者工具直接 `POST /api/entry/space/databases`(携带登录 Cookie,body `{"dsId":<M1 id>}`)→ 406,前端统一「权限异常」弹窗文案含缺失权限点;`POST /listInstances`、`POST /tables` 同;
   3. 账号 A:侧边栏出现「空间占用」(锁分析条目之后,数据库图标),进入页面可选实例;
   4. 角色管理页确认「运维诊断」类目下存在「空间占用查看」权限点(en 环境显示 Space Usage View),DBA/Manager 角色默认勾选。
+  5. 壳层(账号 A 进入 `/#/space` 后):侧边栏「空间占用」条目呈选中态(有着重底色 `is-active`),页头标题为「空间占用」(en: Space Usage),**不是**「配置」。
 - 恢复:如为测试临时授权,在角色管理页还原。
 
 ### S2 Main Flow · 摘要条 + 库级列表(P0,MySQL 与 PG 各一遍)

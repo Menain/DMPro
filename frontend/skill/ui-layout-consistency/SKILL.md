@@ -74,6 +74,16 @@ Token 细节见 `DESIGN.md`；布局反例与代码片段见 [reference.md](./re
 - 系统级操作不得与页面保存/提交按钮出现在同一视觉带。
 - SQL 全屏模式是例外：独立 compact header，仍遵循扁平、少 chrome。
 
+**导航与标题强制规则（新增任何菜单项/页面必须满足，缺一不得提交）：**
+
+- 侧边栏当前选中项 **必须** 有着重底色（`is-active` 高亮，所有层级均适用）。
+- 右侧页头标题 **必须** 是具体信息：页面内容对应的名称（如「巡检报告」「锁分析」）或「功能项名 + 列表」（如「工单列表」「会话列表」）；**禁止**回退到「配置」等通用词。
+- 侧栏高亮与页头标题 **不会** 从路由表自动推导，是手工维护的 path→key 映射链。新增菜单项/页面必须一次性同步 **四个点**：
+  1. `utils/buildSidebarMenu.js` — 菜单项与 `key`；
+  2. `components/layout/AppSidebar.vue` `activeKey()` — path→key 分支，返回值与菜单 key 逐字符一致，用 `path.indexOf('/xxx') === 0` 前缀匹配（详情子路径保持父菜单高亮）；
+  3. `components/layout/AppContentHeader.vue` `pageTitle()` — 列表顶页 exact 分支返回「XX列表」，前缀分支返回功能项名；
+  4. 存在详情/创建子路由时，`AppContentHeader.vue` `pageBreadcrumbs()` — 补 `[列表根 crumb, 当前 crumb]` 分支。
+
 **参考：** `src/views/home/index.vue`、`src/views/dataSource/DataSource.vue`
 
 ---
@@ -306,6 +316,7 @@ View UI / Ant Design 默认色 **必须覆盖到 token**，不要直接沿用组
 - [ ] 无第二个大卡片/第二背景层
 - [ ] page-shell 结构正确，滚动单一路径
 - [ ] 页脚在 card 内，非 fixed 全屏
+- [ ] 新增菜单项：`AppSidebar.activeKey`（选中底色）与 `AppContentHeader.pageTitle`/`pageBreadcrumbs`（具体标题，非「配置」）四个同步点全部注册
 
 **组件**
 - [ ] Tab 用 AppPageTabs，无满宽 Tab 底边

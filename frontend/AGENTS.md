@@ -229,6 +229,9 @@ cd frontend && npm run check-i18n
 
 - 路由 `meta.requiredAuth` 声明页面所需权限码；侧边栏菜单通过 `utils/buildSidebarMenu.js` 按权限过滤。
 - 按钮级权限参考现有页面的 `v-if` / mixin 模式（如 `authMixin`），保持与后端权限码一致。
+- **强制**：新增菜单项/页面必须同步注册 `AppSidebar.vue` `activeKey()`（侧栏选中项必须有着重底色）与 `AppContentHeader.vue`
+  `pageTitle()`（页头标题必须是页面内容对应名称或「功能项名 + 列表」，禁止回退到「配置」）的 path 映射分支；有详情/创建子路由时补
+  `pageBreadcrumbs()`。映射不会从路由表自动推导，四个同步点详见 `skill/ui-layout-consistency/SKILL.md` §1「导航与标题强制规则」。
 
 ## 前后端契约
 

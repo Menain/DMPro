@@ -4707,6 +4707,7 @@
   "xun-jian-wei-wan-cheng-yuan-yin": "Incomplete parts",
   "xun-jian-ku-ying-she": "DB Mapping",
   "hui-hua-guan-li": "Sessions",
+  "hui-hua-lie-biao": "Sessions",
   "hui-hua-xuan-shi-shi-li": "Select instance",
   "hui-hua-shi-li-kong-ti-shi": "No instances available (session management currently supports MySQL-protocol datasources)",
   "hui-hua-zi-dong-shua-xin": "Auto refresh",
