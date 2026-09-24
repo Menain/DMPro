@@ -71,6 +71,15 @@ tasks.register('tgz', Tar) {
             }
         }
     }
+    into("${sidecarPath}/tools/gh-ost") {
+        // gh-ost linux x86_64 binary for the GHOST lock-free-DDL tool (B6/S3, design §3);
+        // sibling of plugins/, resolved at runtime as <appHome>/tools/gh-ost/gh-ost.
+        // MIT licensed, redistribution allowed; the osx binary stays in the repo (dev only).
+        filePermissions {
+            unix(0755)
+        }
+        from rootProject.file("clouddm-plugins/clouddm-features/plus-online-ddl/gh-ost/linux/gh-ost")
+    }
     into("${sidecarPath}/built-in-drivers") {
         from project(':pkg-builtin-drivers').tasks.named('generateBuiltinDrivers')
         exclude '.bundle-hash'

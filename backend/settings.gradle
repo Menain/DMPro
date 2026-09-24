@@ -40,7 +40,7 @@ include 'inner-website'; project(":inner-website").projectDir = file('clouddm-pl
 include 'plus-sec-rules'; project(":plus-sec-rules").projectDir = file('clouddm-plugins/clouddm-features/plus-sec-rules')
 include 'plus-file-convert'; project(":plus-file-convert").projectDir = file('clouddm-plugins/clouddm-features/plus-file-convert')
 include 'plus-faker'; project(":plus-faker").projectDir = file('clouddm-plugins/clouddm-features/plus-faker')
-//include 'plus-online-ddl'; project(":plus-online-ddl").projectDir = file('clouddm-plugins/plus-online-ddl')
+include 'plus-online-ddl'; project(":plus-online-ddl").projectDir = file('clouddm-plugins/clouddm-features/plus-online-ddl')
 
 // plugins for provider
 include 'plus-provider-ldap'; project(":plus-provider-ldap").projectDir = file('clouddm-plugins/clouddm-provider/plus-provider-ldap')

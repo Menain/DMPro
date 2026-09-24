@@ -13,11 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.sdk.model.onlineddl;
+package com.clougence.clouddm.sdk.model.ghost;
 
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * gh-ost session runtime context, assembled by the tool implementation (plus-online-ddl) at
+ * session init. Migrated verbatim from the plus-online-ddl module (whose original package
+ * declaration impersonated {@code com.clougence.clouddm.sdk.model.onlineddl} while living in a
+ * mismatched directory); fields are unchanged, only the package is now the real one.
+ */
 @Getter
 @Setter
 public class GhostConfig {

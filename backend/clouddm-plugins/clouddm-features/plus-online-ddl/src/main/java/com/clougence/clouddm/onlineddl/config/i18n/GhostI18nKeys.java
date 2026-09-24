@@ -13,21 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.sdk.model.onlineddl;
+package com.clougence.clouddm.onlineddl.config.i18n;
+
+import com.clougence.utils.i18n.I18nResource;
 
 /**
- * @author bucketli 2022/6/1 16:30:16
+ * i18n keys of the Online DDL (gh-ost) plugin, mirroring the {@code FakerI18nKeys} mechanism:
+ * the {@link I18nResource} bundle paths are loaded into the global i18n layer via
+ * {@code DsPluginBinder.bindGlobalI18n(GhostI18nKeys.class)} at plugin load.
  */
-public enum GhostCutOverType {
+@I18nResource({ "/META-INF/ghost-ui" })
+public interface GhostI18nKeys {
 
-    DEFAULT("default"),
-    ATOMIC("atomic");
-
-    private final String val;
-
-    GhostCutOverType(String val){
-        this.val = val;
-    }
-
-    public String getVal() { return val; }
+    String PLUGIN_NAME_GHOST = "PLUGIN_NAME_GHOST";
 }

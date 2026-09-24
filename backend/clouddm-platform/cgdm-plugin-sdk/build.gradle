@@ -25,6 +25,10 @@ dependencies {
     api project(':cg-schema')
     api project(':cg-detectrule')
     api "com.alibaba:fastjson:${FASTJSON_VERSION}"
+
+    // jackson is compileOnly by convention (the boot hosts provide it at runtime);
+    // tests that exercise Jackson-based code paths need it on the test runtime classpath.
+    testImplementation "com.fasterxml.jackson.core:jackson-databind:${JACKSON_VERSION}"
 }
 
 description = 'cgdm-plugin-sdk'

@@ -19,18 +19,20 @@ plugins {
 }
 
 dependencies {
-    // project
-    implementation(project(':dsc-common-mysql'))
+    // share libs: plugin-conventions injects compileOnly ':cgdm-share-libs', which transitively
+    // provides cgdm-plugin-sdk / cg-utils / jackson / fastjson / slf4j for main compilation.
+    // (the historical ':clouddm-plugin-sdk' reference pointed at a project name that never
+    //  existed in settings.gradle; druid is gone with the regex-based ALTER parser)
 
-    // sidecar libs (compileOnly)
-    compileOnly project(':clouddm-plugin-sdk')
-    //compileOnly 'com.alibaba:druid:1.2.23'
-
-    // third libs (implementation)
-
-    // driver libs (compileOnly)
-    // compileOnly 'mysql:mysql-connector-java:8.0.25'
+    // for test
+    testImplementation project(':cgdm-plugin-sdk')
+    testImplementation project(':cg-utils')
+    testImplementation "com.fasterxml.jackson.core:jackson-databind:${JACKSON_VERSION}"
+    testImplementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.13.4' // JsonUtils static init
+    testImplementation "org.slf4j:slf4j-api:${SLF4J_VERSION}"
+    // MDC-backed tool logger + ToolUtils.getLogFile() need a real provider in tests; the platform
+    // runtime provider is logback (slf4j-simple 2.0.17 ships a NOP MDC adapter and is NOT usable)
+    testImplementation "ch.qos.logback:logback-classic:${property('cg.lib.logback.version')}"
 }
 
 description = 'plus-online-ddl'
-

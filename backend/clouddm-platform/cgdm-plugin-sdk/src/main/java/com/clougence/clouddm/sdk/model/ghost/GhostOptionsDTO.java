@@ -13,12 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.sdk.model.onlineddl;
+package com.clougence.clouddm.sdk.model.ghost;
 
 import lombok.Getter;
 import lombok.Setter;
 
 /**
+ * Task-level gh-ost options (passed in by the session initiator). The defaults mirror the
+ * admin-level {@code GhostPluginConfig} ConfigDef defaults; task-level values override the
+ * admin config field by field.
+ *
  * @author bucketli 2022/6/1 16:40:19
  */
 @Getter

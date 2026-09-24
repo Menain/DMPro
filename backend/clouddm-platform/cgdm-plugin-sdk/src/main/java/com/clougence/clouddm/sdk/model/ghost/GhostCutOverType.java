@@ -13,14 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.clougence.clouddm.sdk.model.onlineddl;
+package com.clougence.clouddm.sdk.model.ghost;
 
 /**
- * @author bucketli 2022/5/31 16:33:58
+ * gh-ost cut-over strategy, mapped to the {@code --cut-over=<val>} command line argument.
+ *
+ * @author bucketli 2022/6/1 16:30:16
  */
-public enum ProviderExecType {
+public enum GhostCutOverType {
 
-    DIRECT,
-    GH_OST,
-    PT
+    DEFAULT("default"),
+    ATOMIC("atomic");
+
+    private final String val;
+
+    GhostCutOverType(String val){
+        this.val = val;
+    }
+
+    public String getVal() { return val; }
 }

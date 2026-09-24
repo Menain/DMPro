@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.base.metadata.ds.ToolConfig;
 import com.clougence.clouddm.base.metadata.ds.tools.FakerPluginConfig;
+import com.clougence.clouddm.base.metadata.ds.tools.GhostPluginConfig;
 import com.clougence.clouddm.console.web.component.dsconfig.DmToolConfigService;
 import com.clougence.clouddm.platform.dal.model.system.RsSysToolConfObj;
 import com.clougence.utils.StringUtils;
@@ -42,6 +43,14 @@ public class DmToolConfigServiceImpl implements DmToolConfigService {
 
             config.setExportMaxConcurrent(50);
             config.setOnlineMaxConcurrent(50);
+            return config;
+        } else if (StringUtils.equals(toolName, GhostPluginConfig.TOOL_NAME)) {
+            // gh-ost is a heavyweight migration (shadow table doubles the disk footprint and
+            // streams the binlog), so its concurrency cap is deliberately far below FAKER's.
+            GhostPluginConfig config = new GhostPluginConfig();
+
+            config.setExportMaxConcurrent(2);
+            config.setOnlineMaxConcurrent(2);
             return config;
         } else {
             throw new UnsupportedOperationException();
