@@ -141,7 +141,12 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.CORRECT_DB_CHANGE_STMT, //
                 AuditType.PROMOTE_DB_CHANGE, //
                 AuditType.SUBMIT_DB_CHANGE_DIRECT_DML, //
-                AuditType.KILL_DB_SESSION));
+                AuditType.KILL_DB_SESSION, //
+                AuditType.GHOST_EXECUTE, //
+                AuditType.GHOST_PAUSE, //
+                AuditType.GHOST_RESUME, //
+                AuditType.GHOST_STOP, //
+                AuditType.GHOST_DROP_OLD_TABLE));
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());

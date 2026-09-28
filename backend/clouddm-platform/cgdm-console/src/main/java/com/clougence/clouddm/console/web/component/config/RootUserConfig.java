@@ -289,6 +289,19 @@ public class RootUserConfig {
     private Integer       taskMaxElementMegaByte;
 
     /**
+     * Lock-free DDL (gh-ost, B6): size/row thresholds above which the platform suggests running a
+     * large-table ALTER through the lock-free (gh-ost) path instead of a direct ALTER (prd R4 —
+     * suggestion only, the user makes the final choice; both keys are admin-tunable here because
+     * RootUserConfig is the platform's live admin KV mechanism, while the tool-level
+     * GhostPluginConfig ConfigDefs have no persistence path yet).
+     */
+
+    @UserConfigDef(name = "ghostSizeThresholdMb", defaultValue = "1024", valueRange = "1 ~ 1048576 MB", descKey = I18nUserConfigMsgKeys.USER_GH_OST_SIZE_THRESHOLD_MB, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       ghostSizeThresholdMb;
+    @UserConfigDef(name = "ghostRowThreshold", defaultValue = "10000000", valueRange = "1 ~ 100000000000 rows", descKey = I18nUserConfigMsgKeys.USER_GH_OST_ROW_THRESHOLD, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Long          ghostRowThreshold;
+
+    /**
      * Tencent Cloud (DBbrain)
      */
 

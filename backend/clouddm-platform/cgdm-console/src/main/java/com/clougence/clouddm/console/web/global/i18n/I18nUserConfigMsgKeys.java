@@ -187,5 +187,9 @@ public enum I18nUserConfigMsgKeys {
 
     // for Tencent Cloud
     TENCENT_CLOUD_SECRET_ID,
-    TENCENT_CLOUD_SECRET_KEY
+    TENCENT_CLOUD_SECRET_KEY,
+
+    // for Lock-free DDL (gh-ost, B6)
+    USER_GH_OST_SIZE_THRESHOLD_MB,
+    USER_GH_OST_ROW_THRESHOLD
 }

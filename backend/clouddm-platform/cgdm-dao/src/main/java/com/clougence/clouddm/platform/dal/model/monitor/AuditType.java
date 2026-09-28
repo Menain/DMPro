@@ -105,7 +105,13 @@ public enum AuditType {
     PROMOTE_DB_CHANGE,
     SUBMIT_DB_CHANGE_DIRECT_DML,
     //******* SESSION MANAGE *******
-    KILL_DB_SESSION;
+    KILL_DB_SESSION,
+    //******* ONLINE DDL (GH-OST) *******
+    GHOST_EXECUTE,
+    GHOST_PAUSE,
+    GHOST_RESUME,
+    GHOST_STOP,
+    GHOST_DROP_OLD_TABLE;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

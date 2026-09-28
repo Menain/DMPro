@@ -236,4 +236,14 @@ public interface SecRoleAuthLabel {
     @AuthLabel(order = 3, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SPACE_READ, tag = { SecSysRole.DBA_ROLE_NAME,
                                                                                            SecSysRole.ADMIN_ROLE_NAME })
     String DM_SPACE_READ                   = "DM_SPACE_READ";
+
+    /**
+     * Lock-free DDL (gh-ost, B6): gates the whole /ghost surface (precheck + execute + control +
+     * old-table drop). {@code include = DM_SPACE_READ} because the launch form's datasource/db
+     * cascade reuses the space endpoints (design 09-17-online-ddl-activation §5) — a custom role
+     * granted only GHOST_EXEC must still be able to feed the cascade and read the B4 size caliber.
+     */
+    @AuthLabel(order = 4, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_GHOST_EXEC, include = { DM_SPACE_READ }, tag = { SecSysRole.DBA_ROLE_NAME,
+                                                                                                                        SecSysRole.ADMIN_ROLE_NAME })
+    String DM_GHOST_EXEC                   = "DM_GHOST_EXEC";
 }
