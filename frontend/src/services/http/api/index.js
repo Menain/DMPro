@@ -32,6 +32,7 @@ import { slowSqlApi } from '@/services/http/api/slowSql';
 import { sessionApi } from '@/services/http/api/session';
 import { lockAnalysisApi } from '@/services/http/api/lockAnalysis';
 import { spaceApi } from '@/services/http/api/space';
+import { ghostApi } from '@/services/http/api/ghost';
 
 export const api = {
   ...authApi,
@@ -67,5 +68,6 @@ export const api = {
   ...slowSqlApi,
   ...sessionApi,
   ...lockAnalysisApi,
-  ...spaceApi
+  ...spaceApi,
+  ...ghostApi
 };

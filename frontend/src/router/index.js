@@ -160,6 +160,12 @@ const routes = [
         meta: { requiredAuth: 'DM_SPACE_READ' }
       },
       {
+        path: 'ghost',
+        name: 'GhostOnlineDdl',
+        component: () => import(/* webpackChunkName: "ghost" */ '../views/ghost/index'),
+        meta: { requiredAuth: 'DM_GHOST_EXEC' }
+      },
+      {
         path: 'dmdatasource',
         name: 'System_DataSource_list',
         redirect: '/datasource'

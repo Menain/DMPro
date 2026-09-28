@@ -120,6 +120,9 @@ export default {
       if (path.indexOf('/space') === 0) {
         return this.$t('kong-jian-zhan-yong');
       }
+      if (path.indexOf('/ghost') === 0) {
+        return this.$t('wu-suo-jie-gou-bian-geng');
+      }
       if (path === '/manager/role' || path === '/manager/role/') {
         return this.$t('jiao-se-lie-biao');
       }

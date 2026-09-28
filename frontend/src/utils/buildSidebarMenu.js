@@ -49,6 +49,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
   if (myAuth.includes('DM_SPACE_READ') && !isDesktop) {
     primary.push(linkItem('space', '/#/space', 'kong-jian-zhan-yong', 'icon-v2-DataBase2'));
   }
+  if (myAuth.includes('DM_GHOST_EXEC') && !isDesktop) {
+    primary.push(linkItem('ghost', '/#/ghost', 'wu-suo-jie-gou-bian-geng', 'icon-v2-cloud-change'));
+  }
 
   const groups = [];
 
