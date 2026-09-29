@@ -4776,6 +4776,8 @@
   "kong-jian-biao-ming": "Table",
   "kong-jian-biao-kong-ti-shi": "No tables in this database",
   "wu-suo-jie-gou-bian-geng": "Lock-Free Schema Change",
+  "wu-suo-lu-you-ghost": "Lock-free execution",
+  "wu-suo-lu-you-alert-pass": "Alert pass-through",
   "wu-suo-fa-qi-qian-yi": "Launch Migration",
   "wu-suo-zhi-xing-shi-tu": "Execution View",
   "wu-suo-ren-wu-lie-biao": "Task List",

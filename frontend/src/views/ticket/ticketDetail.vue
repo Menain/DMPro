@@ -586,6 +586,19 @@
               <div class="gov-v2-group-row__sql">
                 <read-only-editor :text="group.sqlContent" :ds-type="ticketDetail.dataSourceType" :max-height="200" />
               </div>
+              <ghost-group-panel v-if="group.ghostSessionId" :group="group" :can-exec="canGhostExec" @dropped="loadV2GroupList" />
+              <div v-else-if="ghostRoutesOf(group).length" class="gov-v2-group-row__ghost-routes">
+                <div
+                  v-for="route in ghostRoutesOf(group)"
+                  :key="route.stmtIndex"
+                  :class="['ghost-route-flag', route.route === 'GHOST' ? 'is-ghost' : 'is-alert-pass']"
+                >
+                  <Tag size="small" :color="route.route === 'GHOST' ? 'warning' : 'default'">
+                    {{ route.route === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-lu-you-alert-pass') }}
+                  </Tag>
+                  <span class="ghost-route-msg">{{ route.message }}</span>
+                </div>
+              </div>
               <div v-if="group.execDetail" class="gov-v2-group-row__detail">
                 <span>{{ $t('gov-v2-exec-detail') }}:</span>
                 <span>{{ group.execDetail }}</span>
@@ -883,6 +896,7 @@ import { TICKET_PROCESS_STATUS } from '@/const';
 import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
 import copyMixin from '@/mixins/copyMixin';
 import { isCk, isMongoDB, RULE_WARN_LEVEL } from '@/utils';
+import GhostGroupPanel from './components/GhostGroupPanel.vue';
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 5000;
 const TICKET_TERMINAL_STATUSES = new Set(['REJECTED', 'FINISHED', 'CLOSED', 'CANCELED', 'FAILED']);
@@ -954,7 +968,8 @@ const AUTO_EXEC_TASK_STATUS_I18N_KEYS = {
 export default {
   name: 'TicketDetail',
   components: {
-    ReadOnlyEditor
+    ReadOnlyEditor,
+    GhostGroupPanel
   },
   mixins: [copyMixin],
   data() {
@@ -1181,6 +1196,11 @@ export default {
   },
   computed: {
     ...mapState(['userInfo', 'myAuth', 'dmGlobalSetting']),
+    // B6 M1: every /ghost/* endpoint is DM_GHOST_EXEC-gated — holders get the live panel
+    // (progress/controls/log), everyone else the read-only groupList projection (design §6.9)
+    canGhostExec() {
+      return this.myAuth.includes('DM_GHOST_EXEC');
+    },
     ticketProgressSteps() {
       const steps = [
         {
@@ -2204,6 +2224,12 @@ export default {
       } catch (e) {
         return null;
       }
+    },
+    // B6 M1 ghost route marks (precheck_result passthrough) — message is backend pre-translated
+    // text (B3 privilegeHint precedent), rendered verbatim
+    ghostRoutesOf(group) {
+      const precheck = this.parsePrecheckResult(group.precheckResult);
+      return precheck?.ghostRoutes || [];
     },
     async loadReleaseSummary() {
       const releaseId = this.ticketDetail?.releaseId;
@@ -4381,6 +4407,34 @@ export default {
 
       .gov-v2-group-row__precheck-type {
         color: #41454d;
+      }
+    }
+
+    // B6 M1: pre-dispatch ghost route flags (message = backend pre-translated text, verbatim)
+    &__ghost-routes {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+
+      .ghost-route-flag {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 4px;
+
+        &.is-ghost {
+          background: rgba(255, 153, 0, 0.08);
+        }
+
+        &.is-alert-pass {
+          background: var(--surface-soft, #f8fafc);
+        }
+
+        .ghost-route-msg {
+          color: #41454d;
+        }
       }
     }
 

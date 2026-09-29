@@ -379,6 +379,18 @@ export default {
                   <span class="check-stmt-sql">{{ stmt.sql }}</span>
                 </div>
               </div>
+              <div v-if="checkGroupForPair(pair.id).ghostRoutes?.length" class="check-ghost-routes">
+                <div
+                  v-for="route in checkGroupForPair(pair.id).ghostRoutes"
+                  :key="route.stmtIndex"
+                  :class="['check-ghost-route-row', route.route === 'GHOST' ? 'is-ghost' : 'is-alert-pass']"
+                >
+                  <Tag size="small" :color="route.route === 'GHOST' ? 'warning' : 'default'">
+                    {{ route.route === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-lu-you-alert-pass') }}
+                  </Tag>
+                  <span class="check-ghost-route-msg">{{ route.message }}</span>
+                </div>
+              </div>
               <div v-if="checkGroupForPair(pair.id).rulesCheck?.messages?.length" class="check-rules">
                 <div v-for="rule in checkGroupForPair(pair.id).rulesCheck.messages" :key="rule.rule" class="check-rule-row">
                   <Tag size="small" :color="rule.level === 'BLOCK' ? 'error' : 'warning'">{{ rule.level }}</Tag>
@@ -579,6 +591,36 @@ export default {
                   text-overflow: ellipsis;
                   white-space: nowrap;
                   max-width: 600px;
+                }
+              }
+            }
+
+            .check-ghost-routes {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+
+              .check-ghost-route-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 12px;
+                padding: 4px 8px;
+                border-radius: 4px;
+
+                // yellow flag: threshold-exceeding ALTER auto-routed to gh-ost (design §6.8)
+                &.is-ghost {
+                  background: rgba(255, 153, 0, 0.08);
+                }
+
+                // alert-pass: threshold exceeded but not lock-free capable — direct execution,
+                // ops already alerted (design §6.10 boundary matrix)
+                &.is-alert-pass {
+                  background: var(--surface-soft, #f8fafc);
+                }
+
+                .check-ghost-route-msg {
+                  color: #41454d;
                 }
               }
             }

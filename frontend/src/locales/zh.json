@@ -4758,6 +4758,8 @@
   "kong-jian-biao-ming": "表名",
   "kong-jian-biao-kong-ti-shi": "该库暂无表",
   "wu-suo-jie-gou-bian-geng": "无锁结构变更",
+  "wu-suo-lu-you-ghost": "无锁执行",
+  "wu-suo-lu-you-alert-pass": "告警放行",
   "wu-suo-fa-qi-qian-yi": "发起迁移",
   "wu-suo-zhi-xing-shi-tu": "执行视图",
   "wu-suo-ren-wu-lie-biao": "任务列表",

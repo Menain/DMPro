@@ -16,7 +16,7 @@ import CCStatus from '@/components/widgets/CCStatus.vue';
 import { GHOST_STATUS_COLOR, GHOST_STATUS_I18N, GHOST_PHASE_I18N } from '@/const/ghost';
 
 /**
- * Pure-display gh-ost progress panel (B6 S5; S7 ticket execution view reuses it).
+ * Pure-display gh-ost progress panel (B6; embedded by the ticket-detail ghost group panel).
  * Props = one GhostStatusDTO-shaped object ({curValue, maxValue, useProgress, message,
  * status, phase, failReason}); the component issues no requests and owns no state.
  */
