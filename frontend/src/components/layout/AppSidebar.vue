@@ -155,6 +155,9 @@ export default {
       if (path.indexOf('/system/permission') > -1) {
         return this.$route.query.type === 'apply' ? '/system/permission/apply' : '/system/permission';
       }
+      if (path.indexOf('/system/ghost') === 0) {
+        return '/system/ghost';
+      }
       if (path.indexOf('/manager/role') === 0 || path.indexOf('/system/role') > -1) {
         return '/manager/role';
       }

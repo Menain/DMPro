@@ -176,6 +176,9 @@ export default {
       if (path.indexOf('/integrations/approval') === 0) {
         return this.$t('nav-shen-pi-yin-qing');
       }
+      if (path.indexOf('/system/ghost') === 0) {
+        return this.$t('wu-suo-jie-gou-bian-geng');
+      }
 
       const parts = path.split('/').filter(Boolean);
       if (parts[0] === 'system' && parts.length >= 2) {

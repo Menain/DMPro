@@ -82,6 +82,12 @@ export default [
     component: () => import(/* webpackChunkName: "system-home" */ '@/views/system/user/userConfig')
   },
   {
+    path: 'ghost/settings',
+    name: 'Ghost_Settings',
+    component: () => import(/* webpackChunkName: "system-home" */ '@/views/system/ghost/settings'),
+    meta: { requiredAuth: 'RDP_PRI_USER_KV_CONF_W' }
+  },
+  {
     path: 'role',
     redirect: '/manager/role'
   },

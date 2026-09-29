@@ -66,6 +66,9 @@ export function buildSidebarMenu({ myCatLog, myAuth, isDesktop, accountType }) {
     managementChildren.push(linkItem('/manager/dbPair', '/#/manager/dbPair', 'ku-ying-she', 'icon-v2-DataBase2'));
     managementChildren.push(linkItem('/manager/schemaPatrol', '/#/manager/schemaPatrol', 'xun-jian-bao-gao', 'icon-v2-DataBase2'));
   }
+  if (myAuth.includes('RDP_PRI_USER_KV_CONF_W')) {
+    managementChildren.push(linkItem('/system/ghost', '/#/system/ghost/settings', 'wu-suo-jie-gou-bian-geng', 'icon-v2-cloud-change'));
+  }
   if (hasLogSection) {
     managementChildren.push(linkItem('/manager/logs', '/#/manager/logs', 'nav-ri-zhi', 'icon-v2-audit'));
   }
