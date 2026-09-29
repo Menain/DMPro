@@ -119,9 +119,6 @@ export default {
       if (path.indexOf('/space') === 0) {
         return 'space';
       }
-      if (path.indexOf('/ghost') === 0) {
-        return 'ghost';
-      }
       if (path.indexOf('/datasource') === 0) {
         return '/datasource';
       }
