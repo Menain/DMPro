@@ -55,6 +55,7 @@ import com.clougence.clouddm.console.web.model.vo.ghost.GhostBlockVO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostPrecheckVO;
+import com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostSuggestionVO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostTableStatVO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostTaskVO;
@@ -73,8 +74,10 @@ import com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus;
 import com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO;
 import com.clougence.clouddm.sdk.execute.tools.ToolSessionContextDTO;
 import com.clougence.clouddm.sdk.execute.tools.ToolUtils;
+import com.clougence.clouddm.sdk.model.ghost.GhostCutOverType;
 import com.clougence.clouddm.sdk.model.ghost.GhostLaunchDTO;
 import com.clougence.clouddm.sdk.model.ghost.GhostMethod;
+import com.clougence.clouddm.sdk.model.ghost.GhostOptionsDTO;
 import com.clougence.clouddm.sdk.model.ghost.GhostStatusDTO;
 import com.clougence.clouddm.sdk.model.ghost.GhostTailRequestDTO;
 import com.clougence.clouddm.sdk.model.ghost.GhostTailResponseDTO;
@@ -164,6 +167,11 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
     private SystemDal                systemDal;
     @Resource
     private AuthDal                  authDal;
+    // @Lazy: the completion service reaches back into GhostService (sweep liveness probe) —
+    //   safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService ghostGroupCompletionService;
 
     // ==================================================================================
     // precheck (R3 hard gates + R4 threshold suggestion, design §4.2)
@@ -266,11 +274,112 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
     }
 
     // ==================================================================================
+    // B6 M1 ticket auto-route probe (design §6.1) — reuses the precheck channel-C shape
+    // ==================================================================================
+
+    /**
+     * NEVER-THROW route probe (R6 ruling: one channel-C round trip per ALTER, 10s timeout,
+     * degrade to the status-quo direct chain — a probe failure must not block submission,
+     * route to gh-ost, or fire an alert). Reuses the standalone precheck's SQL contracts
+     * ({@link #tableStatSql} B4 caliber + {@link #uniqueKeySql} PK/UK) and threshold KVs.
+     */
+    @Override
+    public GhostRouteProbe probeForRoute(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, String dbName, String tableName) {
+        GhostRouteProbe probe = new GhostRouteProbe();
+        try {
+            validateIdentifier(dbName);
+            validateIdentifier(tableName);
+
+            long sizeThresholdMb = systemDal.fetchSystemConf(RootUserConfig.Fields.ghostSizeThresholdMb, //
+                    Integer.class, DEFAULT_SIZE_THRESHOLD_MB).longValue();
+            long rowThreshold = systemDal.fetchSystemConf(RootUserConfig.Fields.ghostRowThreshold, //
+                    Long.class, DEFAULT_ROW_THRESHOLD);
+            long sizeThresholdBytes = sizeThresholdMb * 1024L * 1024L;
+            probe.setSizeThresholdBytes(sizeThresholdBytes);
+            probe.setRowThreshold(rowThreshold);
+
+            final String escapedDb = escapeMySqlStringLiteral(dbName);
+            final String escapedTable = escapeMySqlStringLiteral(tableName);
+            diagnosticExecutor.runInSession(uid, dsDO, dsConfig, diagOpts(), session -> {
+                List<Map<String, String>> statRows = executeStatement(session, tableStatSql(escapedDb, escapedTable));
+                if (statRows.isEmpty()) {
+                    return null; // table not found → probe stays tableFound=false (no route, no alert)
+                }
+                probe.setTableFound(true);
+                GhostTableStatVO stat = mapTableStat(statRows.get(0), tableName);
+                probe.setTableRows(stat.getTableRows());
+                probe.setTotalBytes(stat.getTotalBytes());
+
+                List<Map<String, String>> uniqueKeyRows = executeStatement(session, uniqueKeySql(escapedDb, escapedTable));
+                probe.setUniqueKeyPresent(!uniqueKeyRows.isEmpty());
+                return null;
+            });
+            if (!probe.isTableFound()) {
+                return probe; // probed=false: a missing table is the ticket precheck's business, not routing's
+            }
+            boolean sizeHit = probe.getTotalBytes() != null && probe.getTotalBytes() >= sizeThresholdBytes;
+            boolean rowsHit = probe.getTableRows() != null && probe.getTableRows() >= rowThreshold;
+            probe.setExceeded(sizeHit || rowsHit);
+            probe.setProbed(true);
+        } catch (DiagTimeoutException e) {
+            log.warn("[Ghost] route probe timed out after {}s on dsId={}, table {}.{} — degraded to the direct chain",
+                    queryTimeoutSeconds, dsDO == null ? null : dsDO.getId(), dbName, tableName);
+        } catch (Exception e) {
+            // NEVER-THROW contract: including sneaky-thrown checked shapes — degrade, do not block
+            log.warn("[Ghost] route probe failed on dsId={}, table {}.{} — degraded to the direct chain",
+                    dsDO == null ? null : dsDO.getId(), dbName, tableName, e);
+        }
+        return probe;
+    }
+
+    @Override
+    public DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId) {
+        LambdaQueryWrapper<DmExecAsyncTaskDO> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DmExecAsyncTaskDO::getBizType, GhostPluginConfig.TOOL_NAME) //
+                // Targeted pre-filter on the compact-JSON binding key ("ticketId":<id> — JsonUtils
+                // writes no spaces). Without it the LIMIT-bounded newest-first scan can miss the
+                // bound task of a LONG-RUNNING migration once TASK_LIST_LIMIT newer GHOST tasks
+                // pile up above it (all tenants share the scan): the sweep probe would then
+                // misjudge "task record missing" → FAILED, and a retry could double-launch over
+                // the live migration. Substring over-inclusion (ticketId 90 vs 900) is harmless —
+                // the exact parse-equality check below remains the authority.
+                .like(DmExecAsyncTaskDO::getConfigData, "\"ticketId\":" + ticketId) //
+                .orderByDesc(DmExecAsyncTaskDO::getId) //
+                .last("LIMIT " + TASK_LIST_LIMIT);
+        List<DmExecAsyncTaskDO> rows = executionDal.asyncTaskMapper().selectList(wrapper);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        for (DmExecAsyncTaskDO row : rows) {
+            GhostAsyncTaskConfig cfg = parseTaskConfig(row);
+            if (cfg != null && cfg.getTicketId() != null && cfg.getTicketId() == ticketId //
+                    && cfg.getGroupId() != null && cfg.getGroupId() == groupId) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    // ==================================================================================
     // execute (R2 launch: createSession + START + AsyncTask bizType=GHOST)
     // ==================================================================================
 
     @Override
     public GhostExecuteVO execute(String puid, String uid, GhostExecuteFO fo) {
+        return doExecute(puid, uid, fo, null, null);
+    }
+
+    @Override
+    public GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId) {
+        return doExecute(puid, uid, fo, ticketId, groupId);
+    }
+
+    /**
+     * Shared launch body of both forms (dual-form compatibility, design §6.4): the ticket form
+     * only differs by the ticketId/groupId binding persisted into the AsyncTask configData —
+     * everything else (session chain, task submission, audit payload) is identical.
+     */
+    private GhostExecuteVO doExecute(String puid, String uid, GhostExecuteFO fo, Long ticketId, Long groupId) {
         DmDsDO dsDO = requireOwnedSupportedDs(puid, fo == null ? null : fo.getDsId());
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
         checkDirectConnection(dsConfig);
@@ -285,11 +394,17 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         }
         validateIdentifier(target.getTableName());
 
+        // R14 merge chain: task options (ticket scene: none) → admin ghostDefaultOptions JSON →
+        // plugin @ConfigDef compile-time defaults. The resolved snapshot rides on the launch DTO
+        // AND is persisted into the task configData (auditability/reproduction).
+        GhostOptionsDTO effectiveOptions = resolveEffectiveOptions(fo.getOptions());
+
         GhostLaunchDTO launch = new GhostLaunchDTO();
         launch.setDsId(dsDO.getId());
         launch.setSchema(dbName);
         launch.setDdlSql(fo.getDdlSql());
-        launch.setOptions(fo.getOptions());
+        launch.setOptions(effectiveOptions);
+        launch.setTicketId(ticketId);
 
         String sessionId = UUID.randomUUID().toString().replace("-", "");
         ToolSessionContextDTO contextDTO = new ToolSessionContextDTO();
@@ -321,6 +436,9 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         taskConfig.setDbName(dbName);
         taskConfig.setTableName(target.getTableName());
         taskConfig.setDdlSql(fo.getDdlSql());
+        taskConfig.setTicketId(ticketId);
+        taskConfig.setGroupId(groupId);
+        taskConfig.setEffectiveOptions(effectiveOptions);
 
         AsyncTaskConfig config = new AsyncTaskConfig();
         config.setTitle(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_ASYNC_TITLE_MESSAGE.name(), target.getTableName()));
@@ -339,6 +457,162 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         vo.setTaskId(task == null ? null : task.getId());
         vo.setAudit(buildAuditObj(sessionId, dsDO.getId(), dbName, target.getTableName(), fo.getDdlSql(), null));
         return vo;
+    }
+
+    // ==================================================================================
+    // R14 options merge chain: task options → admin ghostDefaultOptions JSON → plugin defaults
+    // ==================================================================================
+
+    /**
+     * Resolve the EFFECTIVE gh-ost options (design §6.7 merge contract). Layer 1 (bottom) =
+     * the plugin {@code GhostPluginConfig} @ConfigDef compile-time defaults; layer 2 = the admin
+     * {@code ghostDefaultOptions} JSON KV (malformed JSON → the whole layer is skipped with a
+     * warn log, falling back to the plugin defaults); layer 3 (top) = the task-level options
+     * (standalone launch form; the ticket scene passes none).
+     */
+    GhostOptionsDTO resolveEffectiveOptions(GhostOptionsDTO taskOptions) {
+        GhostOptionsDTO effective = pluginDefaults();
+        overlayAdminJson(effective);
+        if (taskOptions != null) {
+            overlayTaskOptions(effective, taskOptions);
+        }
+        return effective;
+    }
+
+    /** layer 1: the plugin compile-time defaults (field-by-field copy of GhostPluginConfig). */
+    static GhostOptionsDTO pluginDefaults() {
+        GhostPluginConfig cfg = new GhostPluginConfig();
+        GhostOptionsDTO base = new GhostOptionsDTO();
+        base.setAssumeRbr(cfg.getAssumeRbr());
+        base.setAllowOnMaster(cfg.getAllowOnMaster());
+        base.setCutOverLockTimeoutSec(cfg.getCutOverLockTimeoutSec());
+        base.setDmlBatchSize(cfg.getDmlBatchSize());
+        base.setChunkSize(cfg.getChunkSize());
+        base.setVerbose(cfg.getVerbose());
+        base.setCutOverType(cfg.getCutOverType());
+        base.setExactRowCount(cfg.getExactRowCount());
+        base.setConcurrentRowCount(cfg.getConcurrentRowCount());
+        base.setHbIntervalMs(cfg.getHbIntervalMs());
+        base.setTimestampOldTable(cfg.getTimestampOldTable());
+        base.setInitiallyDropGhostTable(cfg.getInitiallyDropGhostTable());
+        base.setAssumeDsProxyInFront(cfg.getAssumeDsProxyInFront());
+        return base;
+    }
+
+    /** layer 2: the admin JSON KV — per-key tolerant overlay; any malformed shape skips the layer. */
+    private void overlayAdminJson(GhostOptionsDTO base) {
+        String json;
+        try {
+            json = systemDal.fetchSystemConf(RootUserConfig.Fields.ghostDefaultOptions, String.class, "");
+        } catch (RuntimeException e) {
+            log.warn("[Ghost] ghostDefaultOptions read failed, falling back to plugin defaults", e);
+            return;
+        }
+        if (StringUtils.isBlank(json)) {
+            return;
+        }
+        Map<?, ?> map;
+        try {
+            map = JsonUtils.toObj(json, HashMap.class);
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception, not RuntimeException
+            log.warn("[Ghost] ghostDefaultOptions is not a valid JSON object ({}), falling back to plugin defaults", json, e);
+            return;
+        }
+        if (map == null || map.isEmpty()) {
+            return;
+        }
+        try {
+            Boolean assumeRbr = readBool(map, "assumeRbr");
+            if (assumeRbr != null) { base.setAssumeRbr(assumeRbr); }
+            Boolean allowOnMaster = readBool(map, "allowOnMaster");
+            if (allowOnMaster != null) { base.setAllowOnMaster(allowOnMaster); }
+            Integer cutOverLockTimeoutSec = readInt(map, "cutOverLockTimeoutSec");
+            if (cutOverLockTimeoutSec != null) { base.setCutOverLockTimeoutSec(cutOverLockTimeoutSec); }
+            Integer dmlBatchSize = readInt(map, "dmlBatchSize");
+            if (dmlBatchSize != null) { base.setDmlBatchSize(dmlBatchSize); }
+            Integer chunkSize = readInt(map, "chunkSize");
+            if (chunkSize != null) { base.setChunkSize(chunkSize); }
+            Boolean verbose = readBool(map, "verbose");
+            if (verbose != null) { base.setVerbose(verbose); }
+            Object cutOverType = map.get("cutOverType");
+            if (cutOverType != null) {
+                base.setCutOverType(GhostCutOverType.valueOf(String.valueOf(cutOverType).trim()));
+            }
+            Boolean exactRowCount = readBool(map, "exactRowCount");
+            if (exactRowCount != null) { base.setExactRowCount(exactRowCount); }
+            Boolean concurrentRowCount = readBool(map, "concurrentRowCount");
+            if (concurrentRowCount != null) { base.setConcurrentRowCount(concurrentRowCount); }
+            Integer hbIntervalMs = readInt(map, "hbIntervalMs");
+            if (hbIntervalMs != null) { base.setHbIntervalMs(hbIntervalMs); }
+            Boolean timestampOldTable = readBool(map, "timestampOldTable");
+            if (timestampOldTable != null) { base.setTimestampOldTable(timestampOldTable); }
+            Boolean initiallyDropGhostTable = readBool(map, "initiallyDropGhostTable");
+            if (initiallyDropGhostTable != null) { base.setInitiallyDropGhostTable(initiallyDropGhostTable); }
+            Boolean assumeDsProxyInFront = readBool(map, "assumeDsProxyInFront");
+            if (assumeDsProxyInFront != null) { base.setAssumeDsProxyInFront(assumeDsProxyInFront); }
+        } catch (RuntimeException e) {
+            // a bad value (wrong type / unknown enum name) discards the WHOLE admin layer —
+            // partial application of a malformed config would be harder to reason about
+            log.warn("[Ghost] ghostDefaultOptions has an invalid value ({}), falling back to plugin defaults", json, e);
+            reloadPluginDefaults(base);
+        }
+    }
+
+    private static void reloadPluginDefaults(GhostOptionsDTO base) {
+        GhostOptionsDTO fresh = pluginDefaults();
+        base.setAssumeRbr(fresh.getAssumeRbr());
+        base.setAllowOnMaster(fresh.getAllowOnMaster());
+        base.setCutOverLockTimeoutSec(fresh.getCutOverLockTimeoutSec());
+        base.setDmlBatchSize(fresh.getDmlBatchSize());
+        base.setChunkSize(fresh.getChunkSize());
+        base.setVerbose(fresh.getVerbose());
+        base.setCutOverType(fresh.getCutOverType());
+        base.setExactRowCount(fresh.getExactRowCount());
+        base.setConcurrentRowCount(fresh.getConcurrentRowCount());
+        base.setHbIntervalMs(fresh.getHbIntervalMs());
+        base.setTimestampOldTable(fresh.getTimestampOldTable());
+        base.setInitiallyDropGhostTable(fresh.getInitiallyDropGhostTable());
+        base.setAssumeDsProxyInFront(fresh.getAssumeDsProxyInFront());
+    }
+
+    /** layer 3: task-level overrides, field by field (null field = keep the lower layer). */
+    static void overlayTaskOptions(GhostOptionsDTO base, GhostOptionsDTO task) {
+        if (task.getAssumeRbr() != null) { base.setAssumeRbr(task.getAssumeRbr()); }
+        if (task.getAllowOnMaster() != null) { base.setAllowOnMaster(task.getAllowOnMaster()); }
+        if (task.getCutOverLockTimeoutSec() != null) { base.setCutOverLockTimeoutSec(task.getCutOverLockTimeoutSec()); }
+        if (task.getDmlBatchSize() != null) { base.setDmlBatchSize(task.getDmlBatchSize()); }
+        if (task.getChunkSize() != null) { base.setChunkSize(task.getChunkSize()); }
+        if (task.getVerbose() != null) { base.setVerbose(task.getVerbose()); }
+        if (task.getCutOverType() != null) { base.setCutOverType(task.getCutOverType()); }
+        if (task.getExactRowCount() != null) { base.setExactRowCount(task.getExactRowCount()); }
+        if (task.getConcurrentRowCount() != null) { base.setConcurrentRowCount(task.getConcurrentRowCount()); }
+        if (task.getHbIntervalMs() != null) { base.setHbIntervalMs(task.getHbIntervalMs()); }
+        if (task.getTimestampOldTable() != null) { base.setTimestampOldTable(task.getTimestampOldTable()); }
+        if (task.getInitiallyDropGhostTable() != null) { base.setInitiallyDropGhostTable(task.getInitiallyDropGhostTable()); }
+        if (task.getAssumeDsProxyInFront() != null) { base.setAssumeDsProxyInFront(task.getAssumeDsProxyInFront()); }
+    }
+
+    private static Boolean readBool(Map<?, ?> map, String key) {
+        Object v = map.get(key);
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Boolean) {
+            return (Boolean) v;
+        }
+        return Boolean.valueOf(String.valueOf(v).trim());
+    }
+
+    private static Integer readInt(Map<?, ?> map, String key) {
+        Object v = map.get(key);
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).intValue();
+        }
+        return Integer.valueOf(String.valueOf(v).trim());
     }
 
     // ==================================================================================
@@ -510,6 +784,18 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         DmExecAsyncTaskDO task = requireTenantTask(puid, sessionId);
         GhostAsyncTaskConfig cfg = parseTaskConfig(task);
         invokeControl(resolveOwnerUid(task, cfg), sessionId, STOP);
+        // B6 M1 (R5): a ticket-bound termination drives the group FAILED deterministically
+        // (终止 → 组 FAILED → 工单 EXEC_FAIL). The dock CANCEL below usually wins the race against
+        // the poller, so the ABORTED tool-status hook may never fire — this is the primary
+        // writeback, the sweep liveness probe is the backstop. Never breaks the stop itself.
+        if (cfg != null && cfg.getTicketId() != null && cfg.getGroupId() != null) {
+            try {
+                ghostGroupCompletionService.onGhostTerminal(cfg.getTicketId(), cfg.getGroupId(), false,
+                        "terminated by user (panic flag)");
+            } catch (RuntimeException e) {
+                log.error("[Ghost] ticket writeback on stop failed for session {} (the sweep probe backstops)", sessionId, e);
+            }
+        }
         // the dock task follows the user termination (Faker close precedent); the handler's
         // cancel branch keeps the session open for log forensics
         asyncTaskServiceService.cancelTask(sessionId, GhostPluginConfig.TOOL_NAME, "stop By console");
@@ -523,6 +809,20 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         // closeSession is a no-op when the session row is already gone
         toolsService.closeSession(resolveOwnerUid(task, cfg), sessionId);
         asyncTaskServiceService.cancelTask(sessionId, GhostPluginConfig.TOOL_NAME, "close By console");
+    }
+
+    /**
+     * Ticket-form terminal session release (deviation-6 closure): closeSession only — no tenant
+     * check (trusted handler surface), no cancelTask (the caller IS the task transition), no
+     * audit. NEVER-THROW: the sidecar slot release is best effort and must not break the task
+     * lifecycle; closeSession on an already-gone session is a no-op.
+     */
+    @Override
+    public void releaseSessionQuietly(String ownerUid, String sessionId) {
+        if (StringUtils.isBlank(sessionId)) {
+            return;
+        }
+        closeQuietly(ownerUid, sessionId);
     }
 
     @Override
@@ -986,7 +1286,8 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         }
         try {
             return JsonUtils.toObj(task.getConfigData(), GhostAsyncTaskConfig.class);
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception
             log.warn("[Ghost] task configData unparsable, taskId={}", task.getId(), e);
             return null;
         }

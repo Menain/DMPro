@@ -23,11 +23,15 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
@@ -1169,6 +1173,405 @@ public class GhostServiceImplTest {
         assertEquals(GhostService.STATUS_INIT, GhostServiceImpl.mapTaskStatusToTool(AsyncTaskStatus.BLOCK));
         assertEquals(GhostService.STATUS_INIT, GhostServiceImpl.mapTaskStatusToTool(AsyncTaskStatus.WAIT_START));
         assertNull(GhostServiceImpl.mapTaskStatusToTool(null));
+    }
+
+    // ==================================================================================
+    // group 6 (B6 M1): ticket auto-route surface — probeForRoute / findTaskForTicketGroup /
+    //                   executeForTicket binding / options merge chain / stop writeback
+    // ==================================================================================
+
+    @Test
+    public void probeForRoute_exceededByRowsWithPk_reportsExceededAndUniqueKey() {
+        tableStatResult = queryResult(STAT_COLS, new String[][] { { TABLE, "10000000", "1048576", "0" } });
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertTrue(probe.isProbed());
+        assertTrue(probe.isTableFound());
+        assertTrue(probe.isUniqueKeyPresent());
+        assertTrue(probe.isExceeded());
+        assertEquals(Long.valueOf(10000000L), probe.getTableRows());
+        assertEquals(Long.valueOf(1048576L), probe.getTotalBytes());
+        assertEquals(Long.valueOf(1024L * 1024L * 1024L), probe.getSizeThresholdBytes());
+        assertEquals(Long.valueOf(10000000L), probe.getRowThreshold());
+        assertEquals(2, executedSqls.size());
+    }
+
+    @Test
+    public void probeForRoute_exceededBySize_reportsExceeded() {
+        // 1024 MB data + 0 index = exactly at the size threshold, rows far below
+        tableStatResult = queryResult(STAT_COLS, new String[][] { { TABLE, "10", String.valueOf(1024L * 1024L * 1024L), "0" } });
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertTrue(probe.isProbed());
+        assertTrue(probe.isExceeded());
+    }
+
+    @Test
+    public void probeForRoute_belowThreshold_notExceeded() {
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertTrue(probe.isProbed());
+        assertFalse(probe.isExceeded());
+        assertTrue(probe.isUniqueKeyPresent());
+    }
+
+    @Test
+    public void probeForRoute_noUniqueKey_reportsMissingHardRequirement() {
+        tableStatResult = queryResult(STAT_COLS, new String[][] { { TABLE, "10000000", "0", "0" } });
+        uniqueKeyResult = queryResult(UK_COLS, new String[][] {});
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertTrue(probe.isProbed());
+        assertTrue(probe.isExceeded());
+        assertFalse(probe.isUniqueKeyPresent());
+    }
+
+    @Test
+    public void probeForRoute_tableAbsent_degradesToNotProbed_neverThrows() {
+        tableStatResult = queryResult(STAT_COLS, new String[][] {});
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertFalse(probe.isProbed());
+        assertFalse(probe.isTableFound());
+        // the UK probe is skipped once the table is known absent
+        assertEquals(1, executedSqls.size());
+    }
+
+    @Test
+    public void probeForRoute_queryFailure_degradesToNotProbed_neverThrows() {
+        when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class)))
+                .thenThrow(new RuntimeException("worker unreachable"));
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertFalse(probe.isProbed());
+    }
+
+    @Test
+    public void probeForRoute_timeout_degradesToNotProbed_neverThrows() {
+        ReflectionTestUtils.setField(service, "queryTimeoutSeconds", 1L);
+        when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class)))
+                .thenAnswer(inv -> {
+                    Thread.sleep(1500);
+                    return tableStatResult;
+                });
+
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, TABLE);
+
+        assertFalse(probe.isProbed());
+    }
+
+    @Test
+    public void probeForRoute_badIdentifier_degradesWithZeroRemoteCalls() {
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe =
+                service.probeForRoute(UID, ownedDs, ownedDsConfig, DB, "bad\u0000name");
+
+        assertFalse(probe.isProbed());
+        assertTrue(executedSqls.isEmpty());
+    }
+
+    @Test
+    public void findTaskForTicketGroup_matchesNewestBoundRow_byConfigDataScan() {
+        GhostAsyncTaskConfig unrelated = taskConfig(OWNER_UID); // no ticket binding
+        GhostAsyncTaskConfig bound = taskConfig(OWNER_UID);
+        bound.setTicketId(555L);
+        bound.setGroupId(666L);
+        DmExecAsyncTaskDO older = task(AsyncTaskStatus.FAILURE, bound);
+        older.setId(10L);
+        DmExecAsyncTaskDO noise = task(AsyncTaskStatus.COMPLETE, unrelated);
+        noise.setId(11L);
+        DmExecAsyncTaskDO newest = task(AsyncTaskStatus.COMPLETE, bound);
+        newest.setId(12L);
+        // query returns newest-first (the ORDER BY id DESC contract)
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(newest, noise, older));
+
+        DmExecAsyncTaskDO found = service.findTaskForTicketGroup(555L, 666L);
+
+        assertNotNull(found);
+        assertEquals(Long.valueOf(12L), found.getId());
+    }
+
+    @Test
+    public void findTaskForTicketGroup_noBindingMatch_returnsNull() {
+        GhostAsyncTaskConfig bound = taskConfig(OWNER_UID);
+        bound.setTicketId(555L);
+        bound.setGroupId(666L);
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(task(AsyncTaskStatus.COMPLETE, bound)));
+
+        assertNull(service.findTaskForTicketGroup(555L, 777L));
+        assertNull(service.findTaskForTicketGroup(444L, 666L));
+    }
+
+    @Test
+    public void findTaskForTicketGroup_unparsableConfigData_tolerated() {
+        DmExecAsyncTaskDO broken = task(AsyncTaskStatus.COMPLETE, taskConfig(OWNER_UID));
+        broken.setConfigData("{not json");
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(broken));
+
+        assertNull(service.findTaskForTicketGroup(1L, 2L));
+    }
+
+    /**
+     * The scan-window independence pin: the SQL pre-filters on the compact-JSON binding key so a
+     * long-running migration can never fall out of the LIMIT-bounded newest-first window (a miss
+     * would misjudge the sweep probe → FAILED and a retry would double-launch over the live
+     * migration). Substring over-inclusion stays harmless — the parse-equality check decides.
+     */
+    @Test
+    public void findTaskForTicketGroup_prefiltersSqlOnTheTicketBinding() {
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of());
+
+        service.findTaskForTicketGroup(555L, 666L);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper<DmExecAsyncTaskDO>> captor =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(asyncTaskMapper).selectList(captor.capture());
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmExecAsyncTaskDO> wrapper =
+                (com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmExecAsyncTaskDO>) captor.getValue();
+        // MP 3.5.x defers formatParam into the segment lambdas — rendering materializes the params
+        String sqlSegment = wrapper.getSqlSegment();
+        assertTrue("the wrapper must pre-filter with a LIKE on config_data",
+                sqlSegment.toUpperCase().contains("LIKE"));
+        assertTrue("the LIKE pre-filter must carry the compact-JSON ticketId binding key",
+                wrapper.getParamNameValuePairs().values().stream()
+                        .anyMatch(v -> String.valueOf(v).contains("\"ticketId\":555")));
+    }
+
+    @Test
+    public void executeForTicket_bindsTicketAndGroup_andSnapshotsEffectiveOptions() {
+        GhostExecuteFO fo = executeFO("ALTER TABLE db1.t_order ADD COLUMN extra VARCHAR(64)");
+        // admin defaults layer: chunkSize 2000 + verbose true (ticket scene carries no task options)
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenReturn("{\"chunkSize\":2000,\"verbose\":true}");
+
+        GhostExecuteVO vo = service.executeForTicket(PUID, UID, fo, 555L, 666L);
+
+        // launch DTO: fully-resolved options + the ticket binding
+        ArgumentCaptor<ToolSessionContextDTO> ctxCaptor = ArgumentCaptor.forClass(ToolSessionContextDTO.class);
+        verify(toolsService).createSession(eq(UID), eq(TOOL), ctxCaptor.capture());
+        GhostLaunchDTO launch = JsonUtils.toObj(ctxCaptor.getValue().getConfiguration(), GhostLaunchDTO.class);
+        assertEquals(Long.valueOf(555L), launch.getTicketId());
+        assertEquals(Integer.valueOf(2000), launch.getOptions().getChunkSize());
+        assertTrue(launch.getOptions().getVerbose());
+        // untouched admin keys stay at the plugin defaults
+        assertEquals(Integer.valueOf(10), launch.getOptions().getDmlBatchSize());
+
+        // task configData: binding + effective-options snapshot (auditability, R14)
+        ArgumentCaptor<AsyncTaskConfig> taskCaptor = ArgumentCaptor.forClass(AsyncTaskConfig.class);
+        verify(asyncTaskServiceService).submitTask(eq(UID), taskCaptor.capture());
+        GhostAsyncTaskConfig cfg = JsonUtils.toObj(taskCaptor.getValue().getConfigData(), GhostAsyncTaskConfig.class);
+        assertEquals(Long.valueOf(555L), cfg.getTicketId());
+        assertEquals(Long.valueOf(666L), cfg.getGroupId());
+        assertNotNull(cfg.getEffectiveOptions());
+        assertEquals(Integer.valueOf(2000), cfg.getEffectiveOptions().getChunkSize());
+        assertNotNull(vo.getSessionId());
+    }
+
+    @Test
+    public void execute_standalone_keepsNullTicketBinding_regressionPin() {
+        GhostExecuteFO fo = executeFO("ALTER TABLE db1.t_order ADD COLUMN extra VARCHAR(64)");
+
+        service.execute(PUID, UID, fo);
+
+        ArgumentCaptor<AsyncTaskConfig> taskCaptor = ArgumentCaptor.forClass(AsyncTaskConfig.class);
+        verify(asyncTaskServiceService).submitTask(eq(UID), taskCaptor.capture());
+        GhostAsyncTaskConfig cfg = JsonUtils.toObj(taskCaptor.getValue().getConfigData(), GhostAsyncTaskConfig.class);
+        assertNull(cfg.getTicketId());
+        assertNull(cfg.getGroupId());
+        // the effective-options snapshot rides on both forms (R14)
+        assertNotNull(cfg.getEffectiveOptions());
+    }
+
+    @Test
+    public void stop_ticketBoundTask_writesBackGroupFailure() {
+        com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService completion
+                = mock(com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService.class);
+        ReflectionTestUtils.setField(service, "ghostGroupCompletionService", completion);
+        GhostAsyncTaskConfig cfg = taskConfig(OWNER_UID);
+        cfg.setTicketId(555L);
+        cfg.setGroupId(666L);
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, cfg));
+
+        service.stop(PUID, UID, SESSION_ID);
+
+        verify(toolsService).invoke(OWNER_UID, SESSION_ID, "STOP", null);
+        verify(completion).onGhostTerminal(eq(555L), eq(666L), eq(false), anyString());
+        verify(asyncTaskServiceService).cancelTask(eq(SESSION_ID), eq(TOOL), anyString());
+    }
+
+    @Test
+    public void stop_standaloneTask_neverTouchesTheTicketChain_regressionPin() {
+        com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService completion
+                = mock(com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService.class);
+        ReflectionTestUtils.setField(service, "ghostGroupCompletionService", completion);
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, taskConfig(OWNER_UID)));
+
+        service.stop(PUID, UID, SESSION_ID);
+
+        verifyNoInteractions(completion);
+        verify(asyncTaskServiceService).cancelTask(eq(SESSION_ID), eq(TOOL), anyString());
+    }
+
+    @Test
+    public void stop_writebackFailure_neverBreaksTheStopItself() {
+        com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService completion
+                = mock(com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService.class);
+        doThrow(new RuntimeException("db down")).when(completion).onGhostTerminal(anyLong(), anyLong(), anyBoolean(), any());
+        ReflectionTestUtils.setField(service, "ghostGroupCompletionService", completion);
+        GhostAsyncTaskConfig cfg = taskConfig(OWNER_UID);
+        cfg.setTicketId(555L);
+        cfg.setGroupId(666L);
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, cfg));
+
+        service.stop(PUID, UID, SESSION_ID); // must not throw
+
+        verify(asyncTaskServiceService).cancelTask(eq(SESSION_ID), eq(TOOL), anyString());
+    }
+
+    // ------- R14 options merge chain: task options → admin JSON → plugin @ConfigDef -------
+
+    @Test
+    public void mergeChain_noLayers_pluginDefaultsApply() {
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(null);
+
+        // the plugin compile-time defaults (GhostPluginConfig @ConfigDef mirror — drift-pinned below)
+        assertEquals(Integer.valueOf(3000), effective.getChunkSize());
+        assertEquals(Integer.valueOf(10), effective.getDmlBatchSize());
+        assertEquals(com.clougence.clouddm.sdk.model.ghost.GhostCutOverType.DEFAULT, effective.getCutOverType());
+        assertEquals(Integer.valueOf(10), effective.getCutOverLockTimeoutSec());
+        assertTrue(effective.getAssumeRbr());
+        assertTrue(effective.getAllowOnMaster());
+        assertTrue(effective.getAssumeDsProxyInFront());
+        assertTrue(effective.getTimestampOldTable());
+        assertTrue(effective.getInitiallyDropGhostTable());
+        assertEquals(Integer.valueOf(2000), effective.getHbIntervalMs());
+        assertFalse(effective.getExactRowCount());
+        assertFalse(effective.getConcurrentRowCount());
+        assertFalse(effective.getVerbose());
+    }
+
+    @Test
+    public void mergeChain_adminJson_overlaysOnlyPresentKeys() {
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenReturn("{\"chunkSize\":500,\"cutOverType\":\"ATOMIC\",\"assumeRbr\":false}");
+
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(null);
+
+        assertEquals(Integer.valueOf(500), effective.getChunkSize());
+        assertEquals(com.clougence.clouddm.sdk.model.ghost.GhostCutOverType.ATOMIC, effective.getCutOverType());
+        assertFalse(effective.getAssumeRbr());
+        // untouched keys keep the plugin defaults
+        assertEquals(Integer.valueOf(10), effective.getDmlBatchSize());
+        assertTrue(effective.getAllowOnMaster());
+    }
+
+    @Test
+    public void mergeChain_taskOptions_winOverAdminLayer() {
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenReturn("{\"chunkSize\":500,\"verbose\":true}");
+        GhostOptionsDTO task = new GhostOptionsDTO();
+        task.setChunkSize(777);
+
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(task);
+
+        // task layer wins on its explicit value…
+        assertEquals(Integer.valueOf(777), effective.getChunkSize());
+        // …and a PRESENT task DTO overrides field by field with its initializer-backed values
+        // (the S1 merge contract: null fields fall back — the DTO's fields are never null once
+        // the object exists). The ticket scene passes NO options object, so the admin layer
+        // stays in charge there (executeForTicket test above pins that shape).
+        assertFalse(effective.getVerbose());
+    }
+
+    @Test
+    public void mergeChain_malformedAdminJson_fallsBackToPluginDefaults() {
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenReturn("{not-a-json");
+
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(null);
+
+        assertEquals(Integer.valueOf(3000), effective.getChunkSize());
+        assertTrue(effective.getAssumeRbr());
+    }
+
+    @Test
+    public void mergeChain_invalidAdminValue_discardsTheWholeAdminLayer() {
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenReturn("{\"chunkSize\":500,\"cutOverType\":\"NOT_A_TYPE\"}");
+
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(null);
+
+        // partial application of a malformed config must not survive — the WHOLE layer is skipped
+        assertEquals(Integer.valueOf(3000), effective.getChunkSize());
+        assertEquals(com.clougence.clouddm.sdk.model.ghost.GhostCutOverType.DEFAULT, effective.getCutOverType());
+    }
+
+    @Test
+    public void mergeChain_adminJsonReadFailure_fallsBackToPluginDefaults() {
+        when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
+                .thenThrow(new RuntimeException("kv store down"));
+
+        GhostOptionsDTO effective = service.resolveEffectiveOptions(null);
+
+        assertEquals(Integer.valueOf(3000), effective.getChunkSize());
+    }
+
+    /** reflection drift guard: the code-side default mirror must equal the @UserConfigDef defaultValue. */
+    @Test
+    public void rootUserConfig_ghostKvDefaults_mirrorTheCodeConstants() throws Exception {
+        java.lang.reflect.Field autoRoute = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
+                .getDeclaredField("ghostAutoRoute");
+        com.clougence.clouddm.console.web.component.config.UserConfigDef def = autoRoute
+                .getAnnotation(com.clougence.clouddm.console.web.component.config.UserConfigDef.class);
+        assertEquals("true", def.defaultValue());
+
+        java.lang.reflect.Field alertPush = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
+                .getDeclaredField("alertPushEnable");
+        assertEquals("true", alertPush.getAnnotation(com.clougence.clouddm.console.web.component.config.UserConfigDef.class)
+                .defaultValue());
+        assertTrue(com.clougence.clouddm.console.web.component.alert.AlertPushService.DEFAULT_ALERT_PUSH_ENABLE);
+
+        java.lang.reflect.Field defaultOptions = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
+                .getDeclaredField("ghostDefaultOptions");
+        assertEquals("", defaultOptions.getAnnotation(com.clougence.clouddm.console.web.component.config.UserConfigDef.class)
+                .defaultValue());
+    }
+
+    /** drift guard: pluginDefaults() must mirror the GhostPluginConfig @ConfigDef field initializers. */
+    @Test
+    public void pluginDefaults_mirrorGhostPluginConfig_fieldByField() {
+        com.clougence.clouddm.base.metadata.ds.tools.GhostPluginConfig cfg =
+                new com.clougence.clouddm.base.metadata.ds.tools.GhostPluginConfig();
+        GhostOptionsDTO base = GhostServiceImpl.pluginDefaults();
+
+        assertEquals(cfg.getAssumeRbr(), base.getAssumeRbr());
+        assertEquals(cfg.getAllowOnMaster(), base.getAllowOnMaster());
+        assertEquals(cfg.getCutOverLockTimeoutSec(), base.getCutOverLockTimeoutSec());
+        assertEquals(cfg.getDmlBatchSize(), base.getDmlBatchSize());
+        assertEquals(cfg.getChunkSize(), base.getChunkSize());
+        assertEquals(cfg.getVerbose(), base.getVerbose());
+        assertEquals(cfg.getCutOverType(), base.getCutOverType());
+        assertEquals(cfg.getExactRowCount(), base.getExactRowCount());
+        assertEquals(cfg.getConcurrentRowCount(), base.getConcurrentRowCount());
+        assertEquals(cfg.getHbIntervalMs(), base.getHbIntervalMs());
+        assertEquals(cfg.getTimestampOldTable(), base.getTimestampOldTable());
+        assertEquals(cfg.getInitiallyDropGhostTable(), base.getInitiallyDropGhostTable());
+        assertEquals(cfg.getAssumeDsProxyInFront(), base.getAssumeDsProxyInFront());
     }
 
     // ==================================================================================

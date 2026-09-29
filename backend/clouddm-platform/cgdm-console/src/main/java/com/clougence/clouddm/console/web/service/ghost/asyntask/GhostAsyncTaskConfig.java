@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.console.web.service.ghost.asyntask;
 
+import com.clougence.clouddm.sdk.model.ghost.GhostOptionsDTO;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import lombok.Getter;
@@ -51,4 +52,20 @@ public class GhostAsyncTaskConfig {
     private Boolean oldTableDropped;
     private String  oldTableDropUid;
     private Long    oldTableDropTime;
+
+    /**
+     * B6 M1 ticket binding (design §6.4): non-null ONLY for ticket-dispatched sessions
+     * (PRE_DDL auto-route). The terminal writeback hook, the retryGroup rebuild lookup and the
+     * sweep liveness probe all key on this pair; standalone-entry tasks keep them null and
+     * their behavior is completely unchanged (dual-form compatibility).
+     */
+    private Long    ticketId;
+    private Long    groupId;
+
+    /**
+     * B6 M1 (R14): snapshot of the EFFECTIVE gh-ost options at launch time — the resolved
+     * result of the merge chain (task options → admin {@code ghostDefaultOptions} JSON →
+     * plugin @ConfigDef defaults), persisted for auditability/reproduction.
+     */
+    private GhostOptionsDTO effectiveOptions;
 }

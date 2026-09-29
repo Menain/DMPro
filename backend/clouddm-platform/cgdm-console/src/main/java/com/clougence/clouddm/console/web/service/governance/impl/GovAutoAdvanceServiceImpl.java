@@ -81,6 +81,10 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     private AutoExecService           autoExecService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
+    // @Lazy: B6 M1 ghost dispatch site — safe-side proxy injection between governance services (iron rule)
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service govTicketV2Service;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -174,13 +178,28 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
         List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
         Locale locale = DmI18nUtils.getLocale();
         String languageTag = locale.toLanguageTag();
+        // B6 M1: ghost-route flags (execution-time authority, positional with the id-ASC group
+        // order — the GhostRouteFlags contract). null on legacy/unrouted tickets → every group
+        // keeps the original autoexec path byte-for-byte (regression pin).
+        ApprovalMO ticketMO = parseTicketInfo(ticket.getTicketInfo());
 
+        int position = 0;
         for (DmTicketDbStmtDO group : groups) {
+            boolean ghostRouted = com.clougence.clouddm.console.web.component.governance.GhostRouteFlags
+                .isRouted(ticketMO, position);
+            position++;
             String execStatus = group.getExecStatus();
             if (!"PENDING".equals(execStatus) && !"FAILED".equals(execStatus)) {
                 continue; // skip non-eligible groups
             }
             try {
+                if (ghostRouted) {
+                    // B6 M1 dispatch site #1 (design §6.3): the threshold-marked single-ALTER
+                    // group early-exits into the GHOST tool session — no autoexec job is built.
+                    this.govTicketV2Service.dispatchGhostGroup(ticket, group,
+                        com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
+                    continue;
+                }
                 // Sub-task A: capture pre-before schema snapshots BEFORE the group job is
                 // dispatched. Any failure is caught inside the service and never blocks
                 // the main flow — missing snapshots degrade to WARN at the diff gate.

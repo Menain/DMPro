@@ -29,6 +29,10 @@ import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2SubmitVO;
 
 public interface GovTicketV2Service {
 
+    /** B6 M1: dispatch-origin annotations of the ghost auto-route GHOST_EXECUTE audit row. */
+    String GHOST_VIA_AUTO_ROUTE = "TICKET_AUTO_ROUTE";
+    String GHOST_VIA_RETRY      = "TICKET_RETRY";
+
     /** Read-only precheck preview (no persistence). */
     GovTicketV2CheckVO check(String puid, String uid, GovTicketV2CheckFO fo);
 
@@ -37,6 +41,19 @@ public interface GovTicketV2Service {
 
     /** Retry a single failed group (rebuild its exec job). */
     void retryGroup(String puid, String uid, long groupId);
+
+    /**
+     * B6 M1 (design §6.3): dispatch a ghost-marked PRE_DDL group through the GHOST tool session
+     * (auto-route). Mirrors the retryGroup "build execution + markExecutionDispatched" shape:
+     * launch the session bound to ticketId/groupId → group row EXECUTING → PREPARATION closed →
+     * GHOST_EXECUTE audit in the submitter's name. Internal surface — callers are the SYSTEM
+     * auto-advance chain and the retryGroup ghost variant, never a controller.
+     *
+     * @param via audit annotation of the dispatch origin (TICKET_AUTO_ROUTE / TICKET_RETRY)
+     */
+    void dispatchGhostGroup(com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO ticket,
+                            com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO group,
+                            String via);
 
     /** List statement groups for a ticket (detail page). */
     List<GovTicketV2GroupVO> groupList(String puid, String uid, long ticketId);

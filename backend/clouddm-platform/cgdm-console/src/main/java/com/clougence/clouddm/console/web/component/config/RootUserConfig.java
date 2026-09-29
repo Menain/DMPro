@@ -302,6 +302,32 @@ public class RootUserConfig {
     private Long          ghostRowThreshold;
 
     /**
+     * B6 M1 (auto-route, design §6.7): admin-level gh-ost default options — a JSON object over
+     * the 13 task-level {@code GhostOptionsDTO} parameters (e.g. {@code {"chunkSize":2000}}).
+     * Runtime merge contract: ticket scene carries no user options → these admin defaults →
+     * the plugin {@code GhostPluginConfig} @ConfigDef compile-time fallback. Blank/unset = the
+     * plugin defaults apply; malformed JSON is tolerated at read time (fallback + warn log).
+     */
+    @UserConfigDef(name = "ghostDefaultOptions", defaultValue = "", valueRange = "JSON object of gh-ost options, e.g. {\"chunkSize\":2000,\"verbose\":true}", descKey = I18nUserConfigMsgKeys.USER_GH_OST_DEFAULT_OPTIONS, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private String        ghostDefaultOptions;
+
+    /**
+     * B6 M1 auto-route kill switch (design §6.7): {@code false} → PRE_DDL precheck performs no
+     * ghost evaluation / marking / segment alerting at all — every ALTER goes through the
+     * direct chain (status-quo behavior). In-flight dispatched sessions are NOT affected.
+     */
+    @UserConfigDef(name = "ghostAutoRoute", defaultValue = "true", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_GHOST_AUTO_ROUTE, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       ghostAutoRoute;
+
+    /**
+     * B6 alert-push switch (design §6.2): {@code false} → {@code AlertPushService} silently
+     * skips every scene (also serves as the test-environment misfire gate). Send degradation
+     * (no messenger configured) is independent of this switch.
+     */
+    @UserConfigDef(name = "alertPushEnable", defaultValue = "true", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_ALERT_PUSH_ENABLE, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       alertPushEnable;
+
+    /**
      * Tencent Cloud (DBbrain)
      */
 

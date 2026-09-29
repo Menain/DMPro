@@ -33,4 +33,26 @@ public class GovTicketV2GroupVO {
     private String precheckResult;   // JSON string (design §4 contract)
     private String execStatus;       // PENDING | EXECUTING | SUCCESS | FAILED
     private String execDetail;
+
+    // ---- B6 M1 (Step 7d D0) ghost-task projection, additive ----
+    // Populated ONLY for ghost-routed groups (ApprovalMO.ghostRouteFlags) that already have a
+    // dispatched GHOST AsyncTask; null otherwise (marked-but-not-dispatched, non-ghost groups,
+    // legacy tickets). Read-only display carrier for the ticket-detail group panel — the live
+    // progress still comes from /ghost/tailStatus by ghostSessionId (zero new ghost endpoint).
+
+    /** dm_exec_async_task row id of the newest bound GHOST task */
+    private Long    ghostTaskId;
+    /** tool session id (AsyncTask bizId) — the tailStatus/tailLog/pause/resume/stop/drop channel */
+    private String  ghostSessionId;
+    /** cut-over old-table name captured from the migration (R7); null before cut-over */
+    private String  ghostOldTableName;
+    /** the old table was already dropped through the platform (R7) */
+    private Boolean ghostOldTableDropped;
+    /**
+     * Effective tool-level status: INIT / RUNNING / PAUSED / COMPLETED / FAILED / ABORTED.
+     * A TERMINAL AsyncTaskStatus wins over the captured lastStatus (the session-lost FAILED path
+     * terminates the task without a final tool-state capture); null = task exists but no status
+     * captured yet (the frontend renders INIT and keeps polling).
+     */
+    private String  ghostTaskStatus;
 }

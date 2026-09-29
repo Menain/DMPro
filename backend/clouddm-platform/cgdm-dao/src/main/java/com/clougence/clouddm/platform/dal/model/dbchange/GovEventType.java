@@ -63,5 +63,12 @@ public enum GovEventType {
     /** External command: reject — ticket WAIT_APPROVAL→REJECTED (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
     EXTERNAL_REJECTED,
     /** External command: cancel — ticket WAIT_APPROVAL→CANCELED (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
-    EXTERNAL_CANCELED
+    EXTERNAL_CANCELED,
+    /**
+     * B6 M1 (R15): a threshold-exceeding change that CANNOT run lock-free was detected at the
+     * authoritative submit/resubmit precheck — the ticket proceeds on the direct chain and an
+     * IM alert push was triggered (operator_uid = submitter; eventData{scene,tables[],...}).
+     * Records the alert FACT only — the send result is not persisted (platform status quo).
+     */
+    GHOST_ALERT_TRIGGERED
 }

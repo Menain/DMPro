@@ -82,6 +82,10 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     private ChangeCascadeService changeCascadeService;
     @Resource
     private GovTicketV2FormAssembler govTicketV2FormAssembler;
+    // @Lazy: B6 M1 ghost sweep probe — governance component layer, safe-side proxy injection (iron rule)
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService ghostGroupCompletionService;
 
     @Override
     public ApprovalBiz handleType() {
@@ -118,6 +122,11 @@ public class ChangeApprovalHandler implements ApprovalHandler {
         if (locked == null || ApprovalStatus.isEndStatus(locked.getTicketStatus())) {
             return; // already completed/failed by the concurrent callback (or ticket gone)
         }
+        // B6 M1 (R2, design §6.3): ghost liveness probe under the SAME row lock — an EXECUTING
+        // group whose GHOST AsyncTask died (host-affinity orphan / lost session / lost writeback)
+        // is judged FAILED here so the aggregation tail below can still finish the ticket. The
+        // scan set stays unchanged (still the WAIT_EXEC sweep — zero new statuses in the IN set).
+        this.probeGhostGroupsIfDue(locked);
         List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(locked.getId());
         if (groups.isEmpty()) {
             return; // legacy ticket without groups: nothing to recover
@@ -132,6 +141,41 @@ public class ChangeApprovalHandler implements ApprovalHandler {
                 "One or more database groups failed execution");
         } else {
             this.approvalStateService.completeExecution(locked.getBizId());
+        }
+    }
+
+    /**
+     * Ghost-only sweep extension (B6 M1): probes the EXECUTING groups of a ghost-marked ticket
+     * for task/session liveness and judges dead ones FAILED (no aggregation here — the caller's
+     * tail does it uniformly). Pure-autoexec tickets (no ghost flags) return immediately with
+     * ZERO behavior change; probe failures are caught per group and retried on the next cycle.
+     */
+    private void probeGhostGroupsIfDue(DmApprovalDO locked) {
+        ApprovalMO mo;
+        try {
+            mo = JsonUtils.toObj(locked.getTicketInfo(), ApprovalMO.class);
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception, not
+            // RuntimeException (same fix shape as GhostServiceImpl.parseTaskConfig); an unparsable
+            // ticketInfo must skip the ghost probe, never break the sweep's aggregation tail.
+            return; // unparsable ticketInfo — nothing ghost-related can be trusted
+        }
+        if (!com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo)) {
+            return;
+        }
+        List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(locked.getId());
+        for (int i = 0; i < groups.size(); i++) {
+            DmTicketDbStmtDO group = groups.get(i);
+            if (!"EXECUTING".equals(group.getExecStatus())
+                || !com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
+                continue;
+            }
+            try {
+                this.ghostGroupCompletionService.probeGhostGroupUnderLock(locked, group);
+            } catch (Exception e) {
+                log.warn("[ChangeApproval] ghost liveness probe failed for ticket {} group {} (next sweep retries)",
+                    locked.getId(), group.getId(), e);
+            }
         }
     }
 

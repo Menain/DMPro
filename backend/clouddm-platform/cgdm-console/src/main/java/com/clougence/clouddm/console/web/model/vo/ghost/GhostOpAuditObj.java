@@ -40,6 +40,12 @@ public class GhostOpAuditObj {
     /** SUCCESS — audit rows are written on the success path only */
     private String result;
 
+    /** B6 M1 (R10): ticket-source annotation of an AUTO-dispatched migration (null = standalone entry) */
+    private Long   ticketId;
+    private Long   groupId;
+    /** dispatch origin label, e.g. TICKET_AUTO_ROUTE / TICKET_RETRY */
+    private String via;
+
     /** max length of the DDL text stored in the audit row */
     public static final int DDL_MAX_LENGTH = 2000;
 }

@@ -17,12 +17,16 @@ package com.clougence.clouddm.console.web.service.ghost;
 
 import java.util.List;
 
+import com.clougence.clouddm.base.metadata.ds.DataSourceConfig;
 import com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO;
 import com.clougence.clouddm.console.web.model.fo.ghost.GhostPrecheckFO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostPrecheckVO;
+import com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe;
 import com.clougence.clouddm.console.web.model.vo.ghost.GhostTaskVO;
+import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
+import com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO;
 import com.clougence.clouddm.sdk.model.ghost.GhostStatusDTO;
 import com.clougence.clouddm.sdk.model.ghost.GhostTailResponseDTO;
 
@@ -90,4 +94,38 @@ public interface GhostService {
 
     /** tool invoke(RESUME) only */
     void resumeSession(String ownerUid, String sessionId);
+
+    /**
+     * Ticket-form terminal session release (B6 M1, deviation-6 closure): closeSession ONLY —
+     * never-throw, no tenant check, no cancelTask, no audit (the caller IS the task transition).
+     * The sidecar releases the GHOST concurrency slot (cap 2) and the session-map entry only on
+     * session close, so every terminal outcome of a ticket-bound migration must call this;
+     * standalone sessions keep their explicit /ghost/close button path ({@link #close}).
+     */
+    void releaseSessionQuietly(String ownerUid, String sessionId);
+
+    // ---- B6 M1 ticket auto-route surface (trusted console-internal: ticket chain only) ----
+
+    /**
+     * Ticket-dispatched launch (design §6.3): identical to {@link #execute} plus the
+     * ticketId/groupId binding persisted into the AsyncTask configData — the terminal
+     * writeback hook, retryGroup rebuild and sweep liveness probe all key on that pair.
+     * NEVER expose through a controller (the binding is a system decision, not user input).
+     */
+    GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId);
+
+    /**
+     * Auto-route precheck probe (design §6.1): one channel-C round trip — B4-caliber table
+     * stats + PK/UK existence + admin threshold hit flags. NEVER-THROW degradation contract:
+     * any failure (timeout/unreachable/table gone/bad identifier) returns {@code probed=false}
+     * so the ticket precheck falls back to the status-quo direct chain.
+     */
+    GhostRouteProbe probeForRoute(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, String dbName, String tableName);
+
+    /**
+     * Locate the NEWEST GHOST AsyncTask bound to a ticket group (configData ticketId/groupId);
+     * null when the group never dispatched a ghost migration. Bounded scan (newest
+     * {@code TASK_LIST_LIMIT} GHOST rows) — the group binding lives in the configData JSON.
+     */
+    DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId);
 }

@@ -117,6 +117,9 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private static final String ENGINE_V2           = "v2";
     private static final String CONFIG_FULL_WIDTH_LINT_BLOCK = "govTicketFullWidthLintBlock";
 
+    /** B6 M1: requestUri marker of the system-side GHOST_EXECUTE audit row (no HTTP request exists) */
+    private static final String GHOST_AUTO_DISPATCH_URI = "/system/dbChangeV2/ghost/auto-dispatch";
+
     private static final RuleLevel[] BLOCK_LEVELS = { RuleLevel.FAILURE, RuleLevel.TICKET };
 
     @Resource
@@ -168,6 +171,16 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.SqlRowEstimator sqlRowEstimator;
+    // @Lazy: B6 M1 ghost auto-route collaborators — the ghost surface lazy-reaches back into the
+    //   governance component layer (GhostGroupCompletionService), safe-side proxy injection (iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.ghost.GhostService ghostService;
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.alert.AlertPushService alertPushService;
+    @Resource
+    private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
 
     // ==================== check ====================
 
@@ -224,6 +237,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         mo.setServiceId(fo.getServiceId());
         mo.setPairIds(prechecks.stream().map(g -> g.pairId).collect(Collectors.toList()));
         mo.setApprovalMode(approvalMode);
+        // B6 M1: ghost auto-route flags — the execution-time authority, positional with pairIds
+        // and the group insertion order below (null when nothing is routed — legacy shape kept).
+        List<Boolean> ghostFlags = buildGhostRouteFlags(prechecks);
+        if (ghostFlags != null) {
+            mo.setGhostRouteFlags(ghostFlags);
+        }
 
         // VIA_RELEASE: ticket enters the release ledger pool at WAIT_RELEASE — no approval process,
         // no approval persons, no standalone execution entry (double-execution mutex by construction).
@@ -345,6 +364,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             .collect(Collectors.toList()));
         appendSubmitEvent(ticket.getId(), uid, ticketType, prechecks.size(), ticketChangeType, approvalMode);
 
+        // B6 M1 (R15 告警放行): threshold-exceeding ALTERs that cannot run lock-free proceed on the
+        // direct chain — the alert fact is trailed into the event chain inside this transaction and
+        // the IM push is registered for afterCommit (never blocks or rolls back the submission).
+        registerGhostAlerts(puid, uid, ticket.getId(), ticket.getOwnerUid(), prechecks);
+
         GovTicketV2SubmitVO result = new GovTicketV2SubmitVO();
         result.setTicketId(ticket.getId());
         result.setTicketType(ticketType);
@@ -393,6 +417,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
 
+        // B6 M1: ghost-route variant — a group marked at precheck has NO autoexec job; its retry
+        // rebuilds the GHOST tool session instead (dispatch site #2, design §6.3). The active
+        // check is extended inside: active autoexec job ∨ active GHOST AsyncTask both reject.
+        // Legacy/unmarked groups keep the original path byte-for-byte (regression pin).
+        if (isGhostRoutedGroup(mo, group)) {
+            retryGhostGroup(puid, uid, ticket, group, mo);
+            return;
+        }
+
         // Determine exec config from ticket type (precheck keeps PROD_DML pure DML; PRE tickets may mix DDL+DML)
         boolean transactional = TICKET_TYPE_PROD_DML.equals(ticketType);
         com.clougence.clouddm.api.console.autoexec.ErrorStrategy errorStrategy
@@ -416,6 +449,271 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Step-times fix (2026-09-12): v2 group jobs carry no dependOnBizId, so the legacy
         // preparation hook never fires — close PREPARATION at the real (re)dispatch moment.
         this.approvalStateService.markExecutionDispatched(ticket.getBizId());
+    }
+
+    // ==================== B6 M1: ghost auto-route dispatch / retry / alerts ====================
+
+    /**
+     * B6 M1 (design §6.3): dispatch a ghost-marked single-ALTER group through the GHOST tool
+     * session — the mirror of the retryGroup "build execution + markExecutionDispatched" shape.
+     * Callers: the SYSTEM auto-advance chain (GovAutoAdvanceServiceImpl dispatch site #1) and
+     * the retryGroup ghost variant (site #2). The External-resubmit direct-to-exec branch is
+     * PRE_DDL-unreachable by construction (External is PROD_DML-only, whose purity rule excludes
+     * DDL — design §6.3), so it carries no ghost branch (defensive equivalence left to M3).
+     * <p>
+     * Session owner = audit subject = the ticket SUBMITTER (design §6.9: the auto dispatch is a
+     * system action recorded in the submitter's name; the submitter needs no DM_GHOST_EXEC).
+     * The options stay empty on the FO → the admin ghostDefaultOptions merge chain applies (R14).
+     */
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void dispatchGhostGroup(DmApprovalDO ticket, DmTicketDbStmtDO group, String via) {
+        // Concurrency contract (handleV2JobCompletion :757-766 semantics — single lock, same
+        // order in every path): take the TICKET ROW LOCK first, before the remote launch and
+        // the group-row write. A fast-finishing migration's terminal hook (which locks the same
+        // ticket row before its EXECUTING-CAS read) then waits for this dispatch transaction to
+        // commit instead of skipping the writeback over a stale PENDING group snapshot.
+        approvalDal.approvalMapper().selectByIdForUpdate(ticket.getId());
+
+        // CAS re-check under the lock: the auto-advance caller passes a PRE-LOCK group snapshot,
+        // and a concurrent retryGroup ghost variant (same lock discipline) may have rebuilt and
+        // dispatched the group while this transaction waited for the lock. Only PENDING/FAILED
+        // groups are dispatchable — anything else means another writer already owns the group,
+        // so skip idempotently instead of double-launching a second gh-ost session over a live
+        // migration (autoexec's equivalent guard is the uk_exec_auto_job_group physical CAS,
+        // which the ghost path has no analog of — this re-read is that analog).
+        DmTicketDbStmtDO lockedGroup = ticketDbStmtDal.stmtMapper().queryById(group.getId());
+        if (lockedGroup == null
+            || (!EXEC_STATUS_PENDING.equals(lockedGroup.getExecStatus())
+                && !EXEC_STATUS_FAILED.equals(lockedGroup.getExecStatus()))) {
+            log.warn("[GovTicketV2] ghost dispatch skipped for ticket {} group {} — status {} under the lock"
+                    + " (a concurrent writer already dispatched it)", ticket.getId(), group.getId(),
+                lockedGroup == null ? null : lockedGroup.getExecStatus());
+            return;
+        }
+
+        String submitterUid = ticket.getOwnerUid();
+        // pre-before baseline (first-capture-wins; failures never block — same contract as the
+        // autoexec dispatch sites)
+        schemaSnapshotService.captureIfMissing(lockedGroup, ticket.getId());
+
+        com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO fo
+            = new com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO();
+        fo.setDsId(lockedGroup.getDsId());
+        fo.setDbName(lockedGroup.getDbName());
+        fo.setDdlSql(lockedGroup.getSqlContent());
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO vo
+            = ghostService.executeForTicket(ticket.getPrimaryUid(), submitterUid, fo, ticket.getId(), group.getId());
+
+        // group row → EXECUTING (single-segment degenerate shape; the terminal writeback hook /
+        // sweep probe own the transition out of it)
+        ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), EXEC_STATUS_EXECUTING, null);
+
+        // step-times contract: close PREPARATION at the real (re)dispatch moment (retryGroup shape)
+        this.approvalStateService.markExecutionDispatched(ticket.getBizId());
+
+        // R10 audit: GHOST_EXECUTE in the submitter's name, obj annotated with the ticket source.
+        // Audit failure must NOT roll back the already-started remote migration (the session and
+        // task exist regardless) — log and proceed.
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj auditObj = vo == null ? null : vo.getAudit();
+        if (auditObj != null) {
+            auditObj.setTicketId(ticket.getId());
+            auditObj.setGroupId(group.getId());
+            auditObj.setVia(via);
+        }
+        try {
+            rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
+                GHOST_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE,
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+        } catch (RuntimeException e) {
+            log.error("[GovTicketV2] GHOST_EXECUTE audit failed for ticket {} group {} (dispatch kept)",
+                ticket.getId(), group.getId(), e);
+        }
+    }
+
+    /** positional ghost-route lookup of one group (id-ASC index — see GhostRouteFlags contract). */
+    private boolean isGhostRoutedGroup(ApprovalMO mo, DmTicketDbStmtDO group) {
+        if (!com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo)) {
+            return false; // cheap pre-filter: legacy/unmarked tickets never touch the mapper
+        }
+        List<DmTicketDbStmtDO> all = ticketDbStmtDal.stmtMapper().queryByTicketId(group.getTicketId());
+        for (int i = 0; i < all.size(); i++) {
+            DmTicketDbStmtDO one = all.get(i);
+            if (one.getId() != null && one.getId().equals(group.getId())) {
+                return com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * retryGroup ghost variant: rebuild = close the old session / dispose the old task, then
+     * dispatch fresh. Old-table remnants are deliberately NOT cleaned (R7 retention semantics —
+     * they stay manually droppable). An ACTIVE ghost task rejects the retry (the extended
+     * active check: WAIT_START/RUNNING/BLOCK/PAUSE plus the transient INIT/PAUSING/CANCELING —
+     * a superset of the ruling's set, since rebuilding over a settling task could let its
+     * lost-session writeback fail the FRESH dispatch through the EXECUTING CAS window).
+     */
+    private void retryGhostGroup(String puid, String uid, DmApprovalDO ticket, DmTicketDbStmtDO group, ApprovalMO mo) {
+        long groupId = group.getId();
+        // Lock-order discipline: the ticket row lock precedes ANY group-row write in this
+        // transaction, so the retry never forms an AB-BA deadlock with the terminal hook
+        // (ticket → group order in every ghost writer).
+        approvalDal.approvalMapper().selectByIdForUpdate(ticket.getId());
+
+        com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO oldTask
+            = ghostService.findTaskForTicketGroup(ticket.getId(), groupId);
+        if (oldTask != null && !isTerminalGhostTaskStatus(oldTask.getStatus())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GHOST_TASK_ACTIVE.name()));
+        }
+
+        // Reset group to PENDING (autoexec variant parity)
+        ticketDbStmtDal.stmtMapper().updateExecStatus(groupId, EXEC_STATUS_PENDING, null);
+
+        // idempotent cleanup of the previous attempt (best effort — a dead sidecar must not block
+        // the rebuild; the old task is already terminal so cancelTask inside close is a no-op)
+        if (oldTask != null) {
+            try {
+                ghostService.close(puid, uid, oldTask.getBizId());
+            } catch (RuntimeException e) {
+                log.warn("[GovTicketV2] old ghost session cleanup failed for group {} (rebuild continues)", groupId, e);
+            }
+        }
+
+        dispatchGhostGroup(ticket, group, GHOST_VIA_RETRY);
+    }
+
+    private static boolean isTerminalGhostTaskStatus(com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus status) {
+        return status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.COMPLETE
+            || status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.FAILURE
+            || status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.CANCEL;
+    }
+
+    /** null when NO group is routed (legacy ticketInfo shape kept byte-identical). */
+    private static List<Boolean> buildGhostRouteFlags(List<GroupPrecheck> prechecks) {
+        List<Boolean> flags = new ArrayList<>(prechecks.size());
+        boolean any = false;
+        for (GroupPrecheck pc : prechecks) {
+            boolean routed = hasGhostRoute(pc.result);
+            flags.add(routed);
+            any |= routed;
+        }
+        return any ? flags : null;
+    }
+
+    private static boolean hasGhostRoute(GovTicketV2CheckVO.GroupResult gr) {
+        if (gr == null || gr.getGhostRoutes() == null) {
+            return false;
+        }
+        return gr.getGhostRoutes().stream()
+            .anyMatch(r -> GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST.equals(r.getRoute()));
+    }
+
+    /**
+     * resubmit rebuild of the positional flags: fresh evaluations for the modified groups,
+     * retained flags for untouched (SUCCESS) groups at their positions.
+     */
+    private static void rebuildGhostRouteFlags(ApprovalMO mo, List<DmTicketDbStmtDO> allGroups,
+                                               Map<Long, GroupPrecheck> precheckByGroupId) {
+        List<Boolean> oldFlags = mo.getGhostRouteFlags();
+        List<Boolean> newFlags = new ArrayList<>(allGroups.size());
+        boolean any = false;
+        for (int i = 0; i < allGroups.size(); i++) {
+            GroupPrecheck pc = precheckByGroupId.get(allGroups.get(i).getId());
+            Boolean flag;
+            if (pc != null) {
+                flag = hasGhostRoute(pc.result);
+            } else {
+                flag = oldFlags != null && i < oldFlags.size() ? oldFlags.get(i) : Boolean.FALSE;
+            }
+            newFlags.add(flag);
+            any |= Boolean.TRUE.equals(flag);
+        }
+        if (any) {
+            mo.setGhostRouteFlags(newFlags);
+        } else if (oldFlags != null) {
+            mo.setGhostRouteFlags(null);
+        }
+    }
+
+    /**
+     * R15 告警放行 registration (design §6.2): ALERT_PASS marks collected during the authoritative
+     * precheck are trailed as ONE ticket event (in-transaction, zero new tables) and pushed to the
+     * tenant IM robots afterCommit. Switch off → no trail, no push (nothing was triggered);
+     * every send-side failure degrades inside AlertPushService (never-throw).
+     */
+    private void registerGhostAlerts(String puid, String actorUid, long ticketId, String applicantUid,
+                                     List<GroupPrecheck> prechecks) {
+        List<AlertHit> hits = new ArrayList<>();
+        for (GroupPrecheck pc : prechecks) {
+            if (pc.result == null || pc.result.getGhostRoutes() == null) {
+                continue;
+            }
+            for (GovTicketV2CheckVO.GhostRouteVO r : pc.result.getGhostRoutes()) {
+                if (GovTicketV2CheckVO.GhostRouteVO.ROUTE_ALERT_PASS.equals(r.getRoute())) {
+                    hits.add(new AlertHit(pc.result.getDbName(), r));
+                }
+            }
+        }
+        if (hits.isEmpty() || !alertPushService.isAlertPushEnabled()) {
+            return;
+        }
+        appendGhostAlertEvent(ticketId, actorUid, hits);
+        for (AlertHit hit : hits) {
+            com.clougence.clouddm.console.web.component.alert.AlertContext ctx
+                = new com.clougence.clouddm.console.web.component.alert.AlertContext();
+            ctx.setTicketId(ticketId);
+            ctx.setApplicantUid(applicantUid);
+            ctx.setDbName(hit.dbName);
+            ctx.setTableName(hit.route.getTableName());
+            ctx.setTableRows(hit.route.getTableRows());
+            ctx.setTotalBytes(hit.route.getTotalBytes());
+            ctx.setSizeThresholdBytes(hit.route.getSizeThresholdBytes());
+            ctx.setRowThreshold(hit.route.getRowThreshold());
+            ctx.setRiskCode(hit.route.getAlertReason());
+            alertPushService.pushAlert(puid,
+                com.clougence.clouddm.console.web.component.alert.AlertScene.GHOST_LARGE_TABLE_NO_PK, ctx);
+        }
+    }
+
+    private void appendGhostAlertEvent(long ticketId, String actorUid, List<AlertHit> hits) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.GHOST_ALERT_TRIGGERED.name());
+        event.setFromStatus(null);
+        event.setToStatus(null);
+        event.setOperatorUid(actorUid);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("scene", com.clougence.clouddm.console.web.component.alert.AlertScene.GHOST_LARGE_TABLE_NO_PK.name());
+        List<Map<String, Object>> tables = new ArrayList<>();
+        for (AlertHit hit : hits) {
+            Map<String, Object> t = new HashMap<>();
+            t.put("dbName", hit.dbName);
+            t.put("tableName", hit.route.getTableName());
+            t.put("alertReason", hit.route.getAlertReason());
+            t.put("tableRows", hit.route.getTableRows());
+            t.put("totalBytes", hit.route.getTotalBytes());
+            tables.add(t);
+        }
+        data.put("tables", tables);
+        event.setEventData(JsonUtils.toJson(data));
+
+        dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    /** one ALERT_PASS mark with its group dbName (the display VO carries no db). */
+    private static class AlertHit {
+        final String dbName;
+        final GovTicketV2CheckVO.GhostRouteVO route;
+
+        AlertHit(String dbName, GovTicketV2CheckVO.GhostRouteVO route) {
+            this.dbName = dbName;
+            this.route = route;
+        }
     }
 
     // ==================== returnTicket ====================
@@ -672,6 +970,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (resubmitTotalRows != null) {
             ticketUpdate.setExpectedAffectedRows(resubmitTotalRows);
         }
+        // B6 M1: rebuild the positional ghost-route flags — fresh evaluations for the modified
+        // groups, retained flags for untouched (SUCCESS, non-editable) groups. The authoritative
+        // precheck re-run above recomputed the marks from scratch (thresholds/table growth during
+        // the revision interval are naturally absorbed). Null when nothing is routed anymore.
+        rebuildGhostRouteFlags(mo, allGroups, precheckByGroupId);
         ticketUpdate.setTicketInfo(JsonUtils.toJson(mo));
         approvalDal.approvalMapper().updateById(ticketUpdate);
 
@@ -721,6 +1024,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             approvalStateService.initializeExecutionProgress(ticketId);
 
             // Per-group createGroupJob + startJob (mirrors GovAutoAdvanceServiceImpl L178-196)
+            // B6 M1 note (design §6.3): this branch carries NO ghost dispatch — it is unreachable
+            // for ghost-routed groups BY CONSTRUCTION: External-channel tickets are PROD_DML-only
+            // (submit rejects the External approval type for PRE_DDL — the template check above
+            // runs under the PROD_DML guard), and PROD_DML's type-purity rule (:953-959) excludes
+            // DDL, so no group here can ever carry a ghost route mark. A defensive ghost branch
+            // would be dead code; the M3 defensive-equivalence ruling keeps it out.
             com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO execConfig = buildAutoExecConfig(ticketChangeType);
             java.util.Locale locale = DmI18nUtils.getLocale();
             String languageTag = locale.toLanguageTag();
@@ -784,6 +1093,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 approvalMode != null ? approvalMode : APPROVAL_MODE_DIRECT);
         }
 
+        // B6 M1 (R15): resubmit is an authoritative precheck path too — a modified group that
+        // re-hits an alert-pass condition alerts again (same registration shape as submit; the
+        // External branch is PROD_DML-only and can never carry ghost marks — harmless).
+        registerGhostAlerts(puid, uid, ticketId, ticket.getOwnerUid(), prechecks);
+
         // Step 7: resolveChangeType now reads the LATEST SUBMIT event (GovAutoAdvanceServiceImpl
         // change) — the scheduler will pick up the new changeType on the next cycle.
         // Step 8: PRE_DDL auto-advance will fire (ticket is WAIT_APPROVAL, PRE_DDL, in IN set);
@@ -804,8 +1118,14 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (CollectionUtils.isEmpty(groups)) {
             return Collections.emptyList();
         }
+        // B6 M1 (Step 7d D0): positional ghost-route flags = the execution-time authority
+        // (GhostRouteFlags contract: index i ↔ i-th group of this id-ASC list). Cheap pre-filter —
+        // legacy/unrouted tickets never touch the GHOST task mapper.
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        boolean anyGhostRouted = com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo);
         List<GovTicketV2GroupVO> result = new ArrayList<>();
-        for (DmTicketDbStmtDO g : groups) {
+        for (int i = 0; i < groups.size(); i++) {
+            DmTicketDbStmtDO g = groups.get(i);
             GovTicketV2GroupVO vo = new GovTicketV2GroupVO();
             vo.setGroupId(g.getId());
             vo.setPairId(g.getPairId());
@@ -815,9 +1135,84 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             vo.setPrecheckResult(g.getPrecheckResult());
             vo.setExecStatus(g.getExecStatus());
             vo.setExecDetail(g.getExecDetail());
+            if (anyGhostRouted
+                && com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
+                fillGhostTaskProjection(vo, ticketId, g.getId());
+            }
             result.add(vo);
         }
         return result;
+    }
+
+    /**
+     * B6 M1 (Step 7d D0): additive ghost-task projection for the ticket-detail group panel —
+     * the NEWEST GHOST AsyncTask bound to the group (configData ticketId/groupId binding) supplies
+     * the sessionId (live progress/control channel), the cut-over old-table facts (R7) and the
+     * effective tool status. Never-throw: a projection failure degrades to null ghost fields —
+     * the group list itself (a plain read endpoint) must survive.
+     */
+    private void fillGhostTaskProjection(GovTicketV2GroupVO vo, long ticketId, long groupId) {
+        try {
+            com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO task
+                = ghostService.findTaskForTicketGroup(ticketId, groupId);
+            if (task == null) {
+                return; // ghost-marked but not dispatched yet (pending approval) — nothing to project
+            }
+            vo.setGhostTaskId(task.getId());
+            vo.setGhostSessionId(task.getBizId()); // launch contract: bizId = tool sessionId
+            com.clougence.clouddm.console.web.service.ghost.asyntask.GhostAsyncTaskConfig cfg
+                = parseGhostTaskConfig(task);
+            if (cfg != null) {
+                if (StringUtils.isNotBlank(cfg.getSessionId())) {
+                    vo.setGhostSessionId(cfg.getSessionId());
+                }
+                vo.setGhostOldTableName(cfg.getOldTableName());
+                vo.setGhostOldTableDropped(cfg.getOldTableDropped());
+            }
+            vo.setGhostTaskStatus(resolveGhostTaskStatus(task, cfg));
+        } catch (Exception e) {
+            log.warn("[GovTicketV2] ghost task projection failed for ticket {} group {} (ghost fields degrade to null)",
+                ticketId, groupId, e);
+        }
+    }
+
+    /** GhostServiceImpl.parseTaskConfig precedent — an unparsable configData only degrades the cfg-derived fields. */
+    private static com.clougence.clouddm.console.web.service.ghost.asyntask.GhostAsyncTaskConfig parseGhostTaskConfig(
+            com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO task) {
+        if (StringUtils.isBlank(task.getConfigData())) {
+            return null;
+        }
+        try {
+            return JsonUtils.toObj(task.getConfigData(),
+                com.clougence.clouddm.console.web.service.ghost.asyntask.GhostAsyncTaskConfig.class);
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception
+            log.warn("[GovTicketV2] ghost task configData unparsable, taskId={}", task.getId(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Effective tool-level status of the bound task: a TERMINAL AsyncTaskStatus wins over the
+     * captured lastStatus — the session-lost FAILED path (GhostAsyncTask R3 ruling) terminates
+     * the task without a final tool-state capture, and a stale non-terminal lastStatus would
+     * otherwise keep the frontend polling a dead session forever. Non-terminal → the captured
+     * lastStatus (null = not captured yet; the frontend renders INIT).
+     */
+    private static String resolveGhostTaskStatus(
+            com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO task,
+            com.clougence.clouddm.console.web.service.ghost.asyntask.GhostAsyncTaskConfig cfg) {
+        com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus status = task.getStatus();
+        if (status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.COMPLETE) {
+            return com.clougence.clouddm.console.web.service.ghost.GhostService.STATUS_COMPLETED;
+        }
+        if (status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.FAILURE) {
+            return com.clougence.clouddm.console.web.service.ghost.GhostService.STATUS_FAILED;
+        }
+        if (status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.CANCEL) {
+            return com.clougence.clouddm.console.web.service.ghost.GhostService.STATUS_ABORTED;
+        }
+        return cfg == null ? null : cfg.getLastStatus();
     }
 
     // ==================== availablePairs / availableServices ====================
@@ -1007,8 +1402,164 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             result.setRowsEstimated(false);
         }
 
+        // Step 5 (B6 M1, design §6.1): ghost auto-route evaluation — PRE_DDL only, MySQL only,
+        // ghostAutoRoute kill-switch gated (off → no evaluation/marking/alerting at all). The
+        // shared path (/check preview + submit + resubmit) recomputes the marks from scratch on
+        // every run (idempotent). Degradation contract like Step 4: an evaluation failure keeps
+        // the status quo and never blocks submission — EXCEPT the M1-transition multi-statement
+        // intercept which is a deliberate FAIL (design §6.10 boundary matrix).
+        if (TICKET_TYPE_PRE_DDL.equals(ticketType)
+                && dsDO.getDataSourceType() == com.clougence.clouddm.base.metadata.ds.DataSourceType.MySQL
+                && isGhostAutoRouteEnabled()) {
+            try {
+                evaluateGhostRoute(uid, dsDO, dsConfig, result, scripts, dbName);
+            } catch (RuntimeException e) {
+                log.warn("[GovTicketV2] ghost route evaluation failed for pair {}, status quo kept", pairId, e);
+            }
+            if ("FAIL".equals(result.getCheckStatus())) {
+                return result;
+            }
+        }
+
         result.setCheckStatus("PASS");
         return result;
+    }
+
+    /**
+     * B6 M1 ghost auto-route evaluation of one PRE_DDL group (design §6.1/§6.10 boundary matrix):
+     * <ul>
+     * <li>single-ALTER group + hard checks pass (PK/UK + direct connection) + ≥ threshold →
+     *     route mark GHOST (execution-time dispatch through the tool session);</li>
+     * <li>multi-statement group containing a threshold-exceeding hard-pass ALTER → FAIL with
+     *     split guidance (M1 transition — segment orchestration lifts this in M2);</li>
+     * <li>≥ threshold but NOT lock-free capable (no PK/UK ∨ SSH/SSL datasource) → ALERT_PASS:
+     *     the direct chain proceeds and the submit path pushes the IM alert (R15 告警放行);</li>
+     * <li>&lt; threshold / degraded probe / non-ALTER → status quo (no marks, no alerts).</li>
+     * </ul>
+     * Cost = one channel-C probe per ALTER statement (R6 ruling: 10s timeout, degrade, no cache).
+     */
+    private void evaluateGhostRoute(String uid, com.clougence.clouddm.platform.dal.model.datasource.DmDsDO dsDO,
+                                    DataSourceConfig dsConfig, GovTicketV2CheckVO.GroupResult result,
+                                    List<SplitScript> scripts, String dbName) {
+        // ALTER candidates in the 1-based exec_order domain (R11: SplitScript.index + 1 — the
+        // preview index elsewhere in this method is 0-based, do not mix the two domains)
+        List<GhostAlterCandidate> alters = new ArrayList<>();
+        for (SplitScript script : scripts) {
+            Set<SplitQueryType> types = script.getType();
+            if (types == null || !types.contains(SplitQueryType.ALTER_TABLE)) {
+                continue;
+            }
+            try {
+                com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.AlterStmtTarget target
+                    = com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.check(script.getScript(), dbName);
+                alters.add(new GhostAlterCandidate((int) script.getIndex() + 1, target.getTableName()));
+            } catch (com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.AlterStmtReject reject) {
+                // exotic ALTER shapes (comments / non-[\w$] identifiers / schema mismatch) are not
+                // ghost-routable — they stay on the direct chain (宁可误拒不可误放)
+                log.debug("[GovTicketV2] statement {} is not ghost-routable: {}", script.getIndex(), reject.getDetail());
+            }
+        }
+        if (alters.isEmpty() || dsConfig == null) {
+            return;
+        }
+
+        // ds-level hard check (in-memory, zero SQL): gh-ost speaks the plain MySQL wire protocol
+        boolean tunnelBlocked = Boolean.TRUE.equals(dsConfig.getSshProxyEnabled())
+            || (dsConfig.getSslMode() != null
+                && dsConfig.getSslMode() != com.clougence.clouddm.base.metadata.ds.SslMode.DISABLED);
+
+        List<GovTicketV2CheckVO.GhostRouteVO> routes = new ArrayList<>();
+        for (GhostAlterCandidate alter : alters) {
+            com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe
+                = ghostService.probeForRoute(uid, dsDO, dsConfig, dbName, alter.tableName);
+            if (!probe.isProbed() || !probe.isExceeded()) {
+                continue; // degraded probe or below threshold → status quo
+            }
+            if (tunnelBlocked) {
+                routes.add(buildGhostRouteVO(dbName, alter, probe,
+                    GovTicketV2CheckVO.GhostRouteVO.ROUTE_ALERT_PASS,
+                    com.clougence.clouddm.console.web.component.alert.AlertContext.RISK_TUNNEL));
+                continue;
+            }
+            if (!probe.isUniqueKeyPresent()) {
+                routes.add(buildGhostRouteVO(dbName, alter, probe,
+                    GovTicketV2CheckVO.GhostRouteVO.ROUTE_ALERT_PASS,
+                    com.clougence.clouddm.console.web.component.alert.AlertContext.RISK_NO_UNIQUE_KEY));
+                continue;
+            }
+            // ≥ threshold + hard checks pass
+            if (scripts.size() == 1) {
+                routes.add(buildGhostRouteVO(dbName, alter, probe,
+                    GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST, null));
+            } else {
+                // M1 transition intercept (design §6.1): mixed-statement orchestration lands in
+                // M2 — until then a multi-statement group with a lock-free-capable large ALTER
+                // is rejected with split guidance. FAIL outranks any alert marks (no submission).
+                result.setCheckStatus("FAIL");
+                result.setErrorMessage(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_GHOST_SPLIT_REQUIRED.name(), dbName + "." + alter.tableName));
+                return;
+            }
+        }
+        if (!routes.isEmpty()) {
+            result.setGhostRoutes(routes);
+        }
+    }
+
+    private static GovTicketV2CheckVO.GhostRouteVO buildGhostRouteVO(
+            String dbName, GhostAlterCandidate alter,
+            com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe,
+            String route, String alertReason) {
+        GovTicketV2CheckVO.GhostRouteVO vo = new GovTicketV2CheckVO.GhostRouteVO();
+        vo.setStmtIndex(alter.stmtIndex);
+        vo.setRoute(route);
+        vo.setTableName(alter.tableName);
+        vo.setTableRows(probe.getTableRows());
+        vo.setTotalBytes(probe.getTotalBytes());
+        vo.setSizeThresholdBytes(probe.getSizeThresholdBytes());
+        vo.setRowThreshold(probe.getRowThreshold());
+        vo.setAlertReason(alertReason);
+        if (GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST.equals(route)) {
+            vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_ROUTE_ANNOUNCE.name(), //
+                alter.tableName, display(probe.getTableRows()), displayMb(probe.getTotalBytes()), //
+                display(probe.getRowThreshold()), displayMb(probe.getSizeThresholdBytes())));
+        } else {
+            I18nDmMsgKeys riskKey = com.clougence.clouddm.console.web.component.alert.AlertContext.RISK_TUNNEL.equals(alertReason) //
+                ? I18nDmMsgKeys.GHOST_ROUTE_RISK_TUNNEL : I18nDmMsgKeys.GHOST_ROUTE_RISK_NO_UNIQUE_KEY;
+            vo.setMessage(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_ROUTE_ALERT_PASS.name(), //
+                dbName + "." + alter.tableName, DmI18nUtils.getMessage(riskKey.name())));
+        }
+        return vo;
+    }
+
+    private static String display(Long value) {
+        return value == null ? "-" : String.valueOf(value);
+    }
+
+    private static String displayMb(Long bytes) {
+        return bytes == null ? "-" : String.valueOf(bytes / (1024L * 1024L));
+    }
+
+    /** one ghost-routable ALTER statement of the group (1-based exec_order domain). */
+    private static class GhostAlterCandidate {
+        final int    stmtIndex;
+        final String tableName;
+
+        GhostAlterCandidate(int stmtIndex, String tableName) {
+            this.stmtIndex = stmtIndex;
+            this.tableName = tableName;
+        }
+    }
+
+    /** ghostAutoRoute kill switch — fail-safe read mirroring the govTicketFullWidthLintBlock pattern. */
+    private boolean isGhostAutoRouteEnabled() {
+        try {
+            Boolean enabled = systemDal.fetchSystemConf(
+                com.clougence.clouddm.console.web.component.config.RootUserConfig.Fields.ghostAutoRoute, Boolean.class);
+            return enabled == null || enabled; // default true (mirrors the @UserConfigDef defaultValue)
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     private GovTicketV2CheckVO.RulesCheckSummary buildRulesSummary(SecRulesCheckResult checkResult) {
@@ -1076,6 +1627,31 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
         if (gr.getRowsEstimated() != null) {
             json.put("rowsEstimated", gr.getRowsEstimated());
+        }
+
+        // Additive (B6 M1): ghost auto-route marks — the DISPLAY carrier of the routing decision
+        // (the execution-time authority is ApprovalMO.ghostRouteFlags). stmtIndex is 1-based in
+        // the exec_order domain (R11). Absent when no evaluation took place (legacy shape).
+        if (gr.getGhostRoutes() != null && !gr.getGhostRoutes().isEmpty()) {
+            List<Map<String, Object>> routes = new ArrayList<>();
+            for (GovTicketV2CheckVO.GhostRouteVO r : gr.getGhostRoutes()) {
+                Map<String, Object> m = new HashMap<>();
+                m.put("stmtIndex", r.getStmtIndex());
+                m.put("route", r.getRoute());
+                m.put("tableName", r.getTableName());
+                m.put("tableRows", r.getTableRows());
+                m.put("totalBytes", r.getTotalBytes());
+                m.put("sizeThresholdBytes", r.getSizeThresholdBytes());
+                m.put("rowThreshold", r.getRowThreshold());
+                if (r.getAlertReason() != null) {
+                    m.put("alertReason", r.getAlertReason());
+                }
+                if (r.getMessage() != null) {
+                    m.put("message", r.getMessage());
+                }
+                routes.add(m);
+            }
+            json.put("ghostRoutes", routes);
         }
 
         json.put("checkedAt", OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));

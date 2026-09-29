@@ -44,6 +44,42 @@ public class GovTicketV2CheckVO {
         // Row estimation (design D3) — additive, null on legacy rows.
         private Long    estimatedRows;    // sum of per-statement EXPLAIN estimates
         private Boolean rowsEstimated;    // false if any statement failed/unsupported
+
+        // B6 M1 ghost auto-route evaluation (additive; null/empty = no ghost evaluation took
+        // place — non-PRE_DDL, switch off, non-MySQL or no ALTER candidate). Display carrier:
+        // serialized into the group's precheck_result JSON under the same "ghostRoutes" key.
+        private List<GhostRouteVO> ghostRoutes;
+    }
+
+    /**
+     * One evaluated ALTER statement's routing decision (design §6.10 boundary matrix).
+     * {@code stmtIndex} is 1-based in the exec_order domain (R11 — pinned by unit tests).
+     */
+    @Getter
+    @Setter
+    public static class GhostRouteVO {
+
+        /** route decision: gh-ost auto-route */
+        public static final String ROUTE_GHOST       = "GHOST";
+        /** route decision: direct execution + IM alert push (threshold exceeded but not lock-free capable) */
+        public static final String ROUTE_ALERT_PASS  = "ALERT_PASS";
+
+        /** 1-based statement position in the exec_order domain (SplitScript.index + 1) */
+        private int     stmtIndex;
+        /** GHOST | ALERT_PASS */
+        private String  route;
+        private String  tableName;
+
+        /** B4-estimate stats + the admin thresholds in effect (display/alert copy) */
+        private Long    tableRows;
+        private Long    totalBytes;
+        private Long    sizeThresholdBytes;
+        private Long    rowThreshold;
+
+        /** ALERT_PASS only: NO_UNIQUE_KEY | TUNNEL_UNSUPPORTED (AlertContext risk codes) */
+        private String  alertReason;
+        /** already-translated display line (B3 privilegeHint precedent — frontend renders verbatim) */
+        private String  message;
     }
 
     @Getter
