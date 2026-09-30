@@ -582,13 +582,16 @@ public enum I18nDmMsgKeys {
     GHOST_ASYNC_TITLE_MESSAGE,
     GHOST_ASYNC_DESC_MESSAGE,
 
-    // B6 M1: ticket auto-route (precheck announce / M1-transition multi-statement intercept / retry guard)
+    // B6 M1: ticket auto-route (precheck announce / retry guard). The M1-transition
+    // multi-statement intercept key (GOV_TICKET_V2_GHOST_SPLIT_REQUIRED) was removed with the
+    // M2 segmentation lift (mixed groups split into segments instead of being rejected).
     GHOST_ROUTE_ANNOUNCE,
     GHOST_ROUTE_ALERT_PASS,
     GHOST_ROUTE_RISK_NO_UNIQUE_KEY,
     GHOST_ROUTE_RISK_TUNNEL,
-    GOV_TICKET_V2_GHOST_SPLIT_REQUIRED,
     GOV_TICKET_V2_GHOST_TASK_ACTIVE,
+    // B6 M2 (R10 window guard): segmented-group retryGroup tightening — resume-from-failed-segment lands in M3
+    GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED,
 
     // B6 M1 (R15): AlertPushService scene message keys (GHOST_LARGE_TABLE_NO_PK family)
     ALERT_PUSH_GHOST_TITLE,

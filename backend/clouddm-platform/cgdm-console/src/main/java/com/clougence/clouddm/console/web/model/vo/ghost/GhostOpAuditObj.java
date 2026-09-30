@@ -43,7 +43,9 @@ public class GhostOpAuditObj {
     /** B6 M1 (R10): ticket-source annotation of an AUTO-dispatched migration (null = standalone entry) */
     private Long   ticketId;
     private Long   groupId;
-    /** dispatch origin label, e.g. TICKET_AUTO_ROUTE / TICKET_RETRY */
+    /** B6 M2: the 1-based segment position of an auto-dispatched GHOST segment (null = M1/standalone shape) */
+    private Integer segmentIndex;
+    /** dispatch origin label, e.g. TICKET_AUTO_ROUTE / TICKET_RETRY / TICKET_SEGMENT_CHAIN */
     private String via;
 
     /** max length of the DDL text stored in the audit row */

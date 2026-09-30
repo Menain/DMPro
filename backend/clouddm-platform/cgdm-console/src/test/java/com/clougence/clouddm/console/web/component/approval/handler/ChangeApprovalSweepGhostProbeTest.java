@@ -53,6 +53,7 @@ public class ChangeApprovalSweepGhostProbeTest {
     private DmTicketDbStmtMapper          stmtMapper;
     private ApprovalStateService          approvalStateService;
     private GhostGroupCompletionService   completion;
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService;
 
     private static final long TICKET_ID = 900L;
     private static final String BIZ_ID  = "biz-900";
@@ -72,12 +73,14 @@ public class ChangeApprovalSweepGhostProbeTest {
         when(ticketDbStmtDal.stmtMapper()).thenReturn(stmtMapper);
         approvalStateService = mock(ApprovalStateService.class);
         completion = mock(GhostGroupCompletionService.class);
+        segmentService = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
 
         ReflectionTestUtils.setField(handler, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(handler, "execDal", execDal);
         ReflectionTestUtils.setField(handler, "ticketDbStmtDal", ticketDbStmtDal);
         ReflectionTestUtils.setField(handler, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(handler, "ghostGroupCompletionService", completion);
+        ReflectionTestUtils.setField(handler, "ticketSegmentService", segmentService);
 
         when(approvalMapper.queryById(TICKET_ID)).thenAnswer(inv -> ticket(List.of(true)));
         when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenAnswer(inv -> ticket(List.of(true)));
@@ -101,7 +104,11 @@ public class ChangeApprovalSweepGhostProbeTest {
     public void sweep_probeJudgedDead_aggregationTailFailsTicket() {
         DmTicketDbStmtDO executing = group(100L, "EXECUTING");
         DmTicketDbStmtDO failed = group(100L, "FAILED");
-        // first read (probe scan) → EXECUTING; second read (aggregation) → the probe wrote FAILED
+        // handler tail pin: the aggregation acts on what ITS read returns. Production note
+        // (check F1): the probe's judgement/writes run in their own REQUIRES_NEW transaction, so
+        // a FAILED written THIS cycle is invisible to the sweep's pre-lock read view — the tail
+        // aggregates it on the NEXT cycle (~7s). The two-read stubbing here pins the handler's
+        // "tail sees a terminal group → failExecution" logic (the prior-cycle-judgement shape).
         when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(executing), List.of(failed));
         when(completion.probeGhostGroupUnderLock(any(), eq(executing))).thenReturn(true);
 
@@ -192,6 +199,62 @@ public class ChangeApprovalSweepGhostProbeTest {
         verifyNoInteractions(completion);
         verify(stmtMapper, never()).queryByTicketId(anyLong());
         verifyNoInteractions(approvalStateService);
+    }
+
+    // ======= B6 M2: segmented groups route to the orchestrator repair (advance+aggregate dual duty) =======
+
+    @Test
+    public void sweep_segmentedExecutingGroup_routedToSegmentRepair_notTheM1Probe_m2() {
+        DmTicketDbStmtDO segmented = group(100L, "EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"EXECUTING\"}]");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(segmented));
+
+        handler.executeTicket(TICKET_ID, com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_CHANGE, null);
+
+        verify(segmentService).repairGroupUnderLock(any(DmApprovalDO.class), eq(segmented));
+        // the M1 positional probe must NOT double-judge the same group
+        verify(completion, never()).probeGhostGroupUnderLock(any(), any());
+        // the scan set stays untouched: non-terminal read → the tail does not aggregate
+        verify(approvalStateService, never()).failExecution(anyString(), any());
+        verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    @Test
+    public void sweep_repairWritesGroupTerminal_aggregationTailFinishesTicket_m2() {
+        DmTicketDbStmtDO executing = group(100L, "EXECUTING");
+        executing.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"EXECUTING\"}]");
+        DmTicketDbStmtDO succeeded = group(100L, "SUCCESS");
+        // first read (repair scan) → EXECUTING; second read (aggregation tail) → the repair wrote SUCCESS
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(executing), List.of(succeeded));
+
+        handler.executeTicket(TICKET_ID, com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_CHANGE, null);
+
+        verify(segmentService).repairGroupUnderLock(any(DmApprovalDO.class), eq(executing));
+        verify(approvalStateService).completeExecution(BIZ_ID);
+    }
+
+    @Test
+    public void sweep_repairFailure_isolated_nextCycleRetries_m2() {
+        DmTicketDbStmtDO executing = group(100L, "EXECUTING");
+        executing.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"EXECUTING\"}]");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(executing));
+        doThrow(new RuntimeException("rpc down")).when(segmentService).repairGroupUnderLock(any(), any());
+
+        handler.executeTicket(TICKET_ID, com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_CHANGE, null); // must not throw
+
+        verify(approvalStateService, never()).failExecution(anyString(), any());
+    }
+
+    @Test
+    public void sweep_unsegmentedGhostGroup_keepsTheM1Probe_regressionPin() {
+        // exec_segments blank + positional flag → the M1 probe path stays byte-identical
+        DmTicketDbStmtDO m1Group = group(100L, "EXECUTING"); // no execSegments
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(m1Group));
+
+        handler.executeTicket(TICKET_ID, com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_CHANGE, null);
+
+        verify(completion).probeGhostGroupUnderLock(any(DmApprovalDO.class), eq(m1Group));
+        verifyNoInteractions(segmentService);
     }
 
     // ======= helpers =======

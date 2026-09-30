@@ -417,6 +417,20 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
 
+        // B6 M2 (R10 window guard, design §6.5): a SEGMENTED group (plan segments ∨ runtime
+        // exec_segments) rejects the whole-group replay retry — replaying an already-SUCCESS
+        // ghost segment would necessarily fail (its ALTER already landed: column exists) and
+        // could trigger a second migration / old-table pile-up. M3 restores "resume from the
+        // failed segment"; until then the user is guided to the return-revise loop (whose
+        // authoritative precheck recomputes the plan and resets the runtime). M1-marked groups
+        // WITHOUT a segment plan (ghostRouteFlags only — the single-ALTER degenerate shape of
+        // existing tickets) keep the ghost retry variant below (backward compatibility pin).
+        if (StringUtils.isNotBlank(group.getExecSegments())
+            || com.clougence.clouddm.console.web.component.governance.TicketSegment.isSegmentedPlan(group.getPrecheckResult())) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED.name()));
+        }
+
         // B6 M1: ghost-route variant — a group marked at precheck has NO autoexec job; its retry
         // rebuilds the GHOST tool session instead (dispatch site #2, design §6.3). The active
         // check is extended inside: active autoexec job ∨ active GHOST AsyncTask both reject.
@@ -502,8 +516,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         fo.setDsId(lockedGroup.getDsId());
         fo.setDbName(lockedGroup.getDbName());
         fo.setDdlSql(lockedGroup.getSqlContent());
+        // M1 single-segment degenerate shape: the whole group text IS the ALTER; no segmentIndex
+        // binding (null) — existing M1 tickets keep the M1 completion/probe path (compatibility pin).
         com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO vo
-            = ghostService.executeForTicket(ticket.getPrimaryUid(), submitterUid, fo, ticket.getId(), group.getId());
+            = ghostService.executeForTicket(ticket.getPrimaryUid(), submitterUid, fo, ticket.getId(), group.getId(), null);
 
         // group row → EXECUTING (single-segment degenerate shape; the terminal writeback hook /
         // sweep probe own the transition out of it)
@@ -530,6 +546,61 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         } catch (RuntimeException e) {
             log.error("[GovTicketV2] GHOST_EXECUTE audit failed for ticket {} group {} (dispatch kept)",
                 ticket.getId(), group.getId(), e);
+        }
+    }
+
+    /**
+     * B6 M2 (design §6.3): dispatch ONE GHOST segment of a segmented group — the in-chain
+     * variant of dispatchGhostGroup. Caller contract: the ticket row lock is ALREADY held and
+     * the group/segment state transitions are owned by the caller (TicketSegmentService) — no
+     * PENDING/FAILED group CAS here (the group is mid-chain EXECUTING; the segment-status CAS
+     * already passed under the same lock). The session launch binds (ticketId, groupId,
+     * segmentIndex) into the AsyncTask configData; sessionId/taskId are recorded ON the passed
+     * segment instance and the CALLER persists the runtime (single writer discipline).
+     */
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void dispatchGhostSegment(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                     com.clougence.clouddm.console.web.component.governance.TicketSegment segment,
+                                     String via) {
+        String submitterUid = ticket.getOwnerUid();
+        // pre-before baseline (first-capture-wins; never blocks — same contract as the other
+        // dispatch sites; mid-chain this is usually a no-op, the first dispatch already captured)
+        schemaSnapshotService.captureIfMissing(group, ticket.getId());
+
+        com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO fo
+            = new com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO();
+        fo.setDsId(group.getDsId());
+        fo.setDbName(group.getDbName());
+        fo.setDdlSql(segment.getSql()); // the FULL frozen statement text from the plan (never the group fulltext)
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO vo
+            = ghostService.executeForTicket(ticket.getPrimaryUid(), submitterUid, fo,
+                ticket.getId(), group.getId(), segment.getSegIdx());
+        segment.setSessionId(vo == null ? null : vo.getSessionId());
+        segment.setTaskId(vo == null ? null : vo.getTaskId());
+
+        // group row → EXECUTING (first segment: PENDING→EXECUTING; mid-chain: idempotent rewrite)
+        ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), EXEC_STATUS_EXECUTING, null);
+
+        // R10 audit: GHOST_EXECUTE in the submitter's name, obj annotated with the ticket source
+        // + segment position. Audit failure must NOT roll back the already-started remote
+        // migration (dispatchGhostGroup contract).
+        com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj auditObj = vo == null ? null : vo.getAudit();
+        if (auditObj != null) {
+            auditObj.setTicketId(ticket.getId());
+            auditObj.setGroupId(group.getId());
+            auditObj.setSegmentIndex(segment.getSegIdx());
+            auditObj.setVia(via);
+        }
+        try {
+            rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
+                GHOST_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE,
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+        } catch (RuntimeException e) {
+            log.error("[GovTicketV2] GHOST_EXECUTE audit failed for ticket {} group {} segment {} (dispatch kept)",
+                ticket.getId(), group.getId(), segment.getSegIdx(), e);
         }
     }
 
@@ -905,6 +976,14 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Step 3: in-place update sql_content + precheck_result + reset exec_status to PENDING (stmt id unchanged)
         for (GroupPrecheck pc : prechecks) {
             ticketDbStmtDal.stmtMapper().updateSqlForRevision(pc.groupId, pc.sqlContent, pc.precheckResultJson);
+            // B6 M2 (design §6.5, contract :417 step3): the segment RUNTIME must reset together
+            // with the rewritten plan — a FAILED group may carry exec_segments of the previous
+            // round whose stmtRanges point into the OLD text; a stale runtime would make the
+            // first-segment dispatch execute wrong statement bounds. Null = the fresh plan
+            // (recomputed by the authoritative precheck above) re-initializes the runtime at
+            // dispatch time. Java-side write (not folded into updateSqlForRevision) so the
+            // reset stays unit-testable at the mapper seam.
+            ticketDbStmtDal.stmtMapper().updateExecSegments(pc.groupId, null);
         }
 
         // Step 4: update dm_approval ticket_status. VIA_RELEASE returns to the release ledger pool
@@ -1426,17 +1505,20 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     }
 
     /**
-     * B6 M1 ghost auto-route evaluation of one PRE_DDL group (design §6.1/§6.10 boundary matrix):
+     * B6 M1+M2 ghost auto-route evaluation of one PRE_DDL group (design §6.1/§6.10 boundary matrix):
      * <ul>
-     * <li>single-ALTER group + hard checks pass (PK/UK + direct connection) + ≥ threshold →
-     *     route mark GHOST (execution-time dispatch through the tool session);</li>
-     * <li>multi-statement group containing a threshold-exceeding hard-pass ALTER → FAIL with
-     *     split guidance (M1 transition — segment orchestration lifts this in M2);</li>
+     * <li>ALTER + hard checks pass (PK/UK + direct connection) + ≥ threshold → route mark GHOST
+     *     AND one GHOST segment in the segment plan (M2 — the single-ALTER group is the
+     *     single-GHOST-segment degenerate shape; the M1 multi-statement FAIL intercept is LIFTED,
+     *     consecutive plain statements merge into AUTOEXEC segments around each GHOST segment);</li>
      * <li>≥ threshold but NOT lock-free capable (no PK/UK ∨ SSH/SSL datasource) → ALERT_PASS:
-     *     the direct chain proceeds and the submit path pushes the IM alert (R15 告警放行);</li>
+     *     the statement STAYS in its AUTOEXEC segment (direct execution) and the submit path
+     *     pushes the IM alert (R15 告警放行);</li>
      * <li>&lt; threshold / degraded probe / non-ALTER → status quo (no marks, no alerts).</li>
      * </ul>
      * Cost = one channel-C probe per ALTER statement (R6 ruling: 10s timeout, degrade, no cache).
+     * The segments plan is ONLY written when at least one GHOST segment exists — a pure-normal
+     * group keeps the legacy precheck_result shape byte-identical (zero overhead, regression pin).
      */
     private void evaluateGhostRoute(String uid, com.clougence.clouddm.platform.dal.model.datasource.DmDsDO dsDO,
                                     DataSourceConfig dsConfig, GovTicketV2CheckVO.GroupResult result,
@@ -1452,7 +1534,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             try {
                 com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.AlterStmtTarget target
                     = com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.check(script.getScript(), dbName);
-                alters.add(new GhostAlterCandidate((int) script.getIndex() + 1, target.getTableName()));
+                alters.add(new GhostAlterCandidate((int) script.getIndex() + 1, target.getTableName(), script.getScript()));
             } catch (com.clougence.clouddm.console.web.service.ghost.GhostAlterStmtChecker.AlterStmtReject reject) {
                 // exotic ALTER shapes (comments / non-[\w$] identifiers / schema mismatch) are not
                 // ghost-routable — they stay on the direct chain (宁可误拒不可误放)
@@ -1469,6 +1551,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 && dsConfig.getSslMode() != com.clougence.clouddm.base.metadata.ds.SslMode.DISABLED);
 
         List<GovTicketV2CheckVO.GhostRouteVO> routes = new ArrayList<>();
+        List<GhostAlterCandidate> ghostRouted = new ArrayList<>();
+        Map<Integer, Long> rowsByStmtIdx = new HashMap<>();
         for (GhostAlterCandidate alter : alters) {
             com.clougence.clouddm.console.web.model.vo.ghost.GhostRouteProbe probe
                 = ghostService.probeForRoute(uid, dsDO, dsConfig, dbName, alter.tableName);
@@ -1487,23 +1571,49 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                     com.clougence.clouddm.console.web.component.alert.AlertContext.RISK_NO_UNIQUE_KEY));
                 continue;
             }
-            // ≥ threshold + hard checks pass
-            if (scripts.size() == 1) {
-                routes.add(buildGhostRouteVO(dbName, alter, probe,
-                    GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST, null));
-            } else {
-                // M1 transition intercept (design §6.1): mixed-statement orchestration lands in
-                // M2 — until then a multi-statement group with a lock-free-capable large ALTER
-                // is rejected with split guidance. FAIL outranks any alert marks (no submission).
-                result.setCheckStatus("FAIL");
-                result.setErrorMessage(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_TICKET_V2_GHOST_SPLIT_REQUIRED.name(), dbName + "." + alter.tableName));
-                return;
-            }
+            // ≥ threshold + hard checks pass → GHOST mark + GHOST segment (M2 segmentation —
+            // multi-statement groups are NO LONGER intercepted; ALERT_PASS statements above
+            // stay inside their AUTOEXEC segments and never produce a GHOST segment)
+            routes.add(buildGhostRouteVO(dbName, alter, probe,
+                GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST, null));
+            ghostRouted.add(alter);
+            rowsByStmtIdx.put(alter.stmtIndex, probe.getTableRows());
         }
         if (!routes.isEmpty()) {
             result.setGhostRoutes(routes);
         }
+        if (!ghostRouted.isEmpty()) {
+            result.setSegments(buildSegmentPlan(scripts.size(), ghostRouted, rowsByStmtIdx));
+        }
+    }
+
+    /**
+     * M2 segment plan (design §6.1): consecutive plain statements merge into ONE AUTOEXEC
+     * segment, every ghost-routed ALTER becomes its own GHOST segment — [普通×2, GHOST, 普通]
+     * yields 3 segments. All bounds are 1-based in the exec_order domain (R11). The GHOST
+     * segment carries the FULL frozen statement text so the execution-time dispatch is
+     * self-contained (sql_content is frozen between precheck and execution — same splitter +
+     * same text ⇒ the plan stays positionally valid after the execution-time re-split).
+     */
+    private static List<com.clougence.clouddm.console.web.component.governance.TicketSegment> buildSegmentPlan(
+            int totalStmts, List<GhostAlterCandidate> ghostRouted, Map<Integer, Long> rowsByStmtIdx) {
+        List<com.clougence.clouddm.console.web.component.governance.TicketSegment> plan = new ArrayList<>();
+        int segIdx = 1;
+        int runStart = 1;
+        for (GhostAlterCandidate ghost : ghostRouted) {
+            if (ghost.stmtIndex > runStart) {
+                plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
+                    .autoexecPlan(segIdx++, runStart, ghost.stmtIndex - 1));
+            }
+            plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .ghostPlan(segIdx++, ghost.stmtIndex, ghost.tableName, rowsByStmtIdx.get(ghost.stmtIndex), ghost.sql));
+            runStart = ghost.stmtIndex + 1;
+        }
+        if (runStart <= totalStmts) {
+            plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .autoexecPlan(segIdx, runStart, totalStmts));
+        }
+        return plan;
     }
 
     private static GovTicketV2CheckVO.GhostRouteVO buildGhostRouteVO(
@@ -1544,10 +1654,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     private static class GhostAlterCandidate {
         final int    stmtIndex;
         final String tableName;
+        /** M2: the FULL frozen statement text — rides into the GHOST segment plan (self-contained dispatch) */
+        final String sql;
 
-        GhostAlterCandidate(int stmtIndex, String tableName) {
+        GhostAlterCandidate(int stmtIndex, String tableName, String sql) {
             this.stmtIndex = stmtIndex;
             this.tableName = tableName;
+            this.sql = sql;
         }
     }
 
@@ -1652,6 +1765,37 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 routes.add(m);
             }
             json.put("ghostRoutes", routes);
+        }
+
+        // Additive (B6 M2): the segment PLAN (plan of record, contract :404) — written ONLY when
+        // at least one GHOST segment exists, so a pure-normal group keeps the legacy shape
+        // byte-identical. 1-based exec_order domain keys (R11): AUTOEXEC carries stmtRange
+        // [from,to] inclusive, GHOST carries stmtIndex + the probed table/rows + the FULL frozen
+        // statement text (self-contained execution-time dispatch).
+        if (gr.getSegments() != null && !gr.getSegments().isEmpty()) {
+            List<Map<String, Object>> segments = new ArrayList<>();
+            for (com.clougence.clouddm.console.web.component.governance.TicketSegment seg : gr.getSegments()) {
+                Map<String, Object> m = new HashMap<>();
+                m.put("segIdx", seg.getSegIdx());
+                m.put("type", seg.getType());
+                if (seg.getStmtRange() != null) {
+                    m.put("stmtRange", seg.getStmtRange());
+                }
+                if (seg.getStmtIndex() != null) {
+                    m.put("stmtIndex", seg.getStmtIndex());
+                }
+                if (seg.getTable() != null) {
+                    m.put("table", seg.getTable());
+                }
+                if (seg.getRows() != null) {
+                    m.put("rows", seg.getRows());
+                }
+                if (seg.getSql() != null) {
+                    m.put("sql", seg.getSql());
+                }
+                segments.add(m);
+            }
+            json.put("segments", segments);
         }
 
         json.put("checkedAt", OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));

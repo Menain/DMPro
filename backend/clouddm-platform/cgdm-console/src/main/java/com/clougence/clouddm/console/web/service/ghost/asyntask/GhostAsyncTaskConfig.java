@@ -63,6 +63,14 @@ public class GhostAsyncTaskConfig {
     private Long    groupId;
 
     /**
+     * B6 M2 segment binding: the 1-based segIdx of the GHOST segment this session executes
+     * (multi-ghost-segment groups host one task per segment — the terminal hook CAS and the
+     * sweep liveness probe key on the triple). Null for the M1 single-segment degenerate shape
+     * and standalone tasks (their groups carry no exec_segments runtime — M1 path unchanged).
+     */
+    private Integer segmentIndex;
+
+    /**
      * B6 M1 (R14): snapshot of the EFFECTIVE gh-ost options at launch time — the resolved
      * result of the merge chain (task options → admin {@code ghostDefaultOptions} JSON →
      * plugin @ConfigDef defaults), persisted for auditability/reproduction.

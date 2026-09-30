@@ -116,7 +116,7 @@ public class GhostDispatchTest {
         schemaSnapshotService = mock(com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService.class);
 
         ghostService = mock(GhostService.class);
-        when(ghostService.executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong()))
+        when(ghostService.executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any()))
             .thenAnswer(inv -> {
                 GhostExecuteVO vo = new GhostExecuteVO();
                 vo.setSessionId("session-new");
@@ -154,12 +154,12 @@ public class GhostDispatchTest {
         //     (a fast terminal hook must never observe the pre-dispatch group snapshot) ---
         InOrder lockOrder = inOrder(approvalMapper, ghostService, stmtMapper);
         lockOrder.verify(approvalMapper).selectByIdForUpdate(TICKET_ID);
-        lockOrder.verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID));
+        lockOrder.verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         lockOrder.verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
 
         // --- launch: submitter-owned session bound to ticket/group, empty FO options (R14 chain) ---
         ArgumentCaptor<GhostExecuteFO> foCaptor = ArgumentCaptor.forClass(GhostExecuteFO.class);
-        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), foCaptor.capture(), eq(TICKET_ID), eq(GROUP_ID));
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), foCaptor.capture(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         GhostExecuteFO fo = foCaptor.getValue();
         assertEquals(Long.valueOf(DS_ID), fo.getDsId());
         assertEquals(DB, fo.getDbName());
@@ -184,7 +184,7 @@ public class GhostDispatchTest {
 
     @Test
     public void dispatch_launchFailure_propagates_groupStaysUntouched() {
-        when(ghostService.executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong()))
+        when(ghostService.executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any()))
             .thenThrow(new ErrorMessageException("GHOST_BINARY_MISSING: no binary"));
         DmApprovalDO ticket = ticket(List.of(true));
         DmTicketDbStmtDO group = group("PENDING");
@@ -225,7 +225,7 @@ public class GhostDispatchTest {
 
         service.dispatchGhostGroup(ticket, staleSnapshot, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
 
-        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong());
+        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any());
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
         verify(approvalStateService, never()).markExecutionDispatched(anyString());
         verify(schemaSnapshotService, never()).captureIfMissing(any(), anyLong());
@@ -239,7 +239,7 @@ public class GhostDispatchTest {
 
         service.dispatchGhostGroup(ticket, group("PENDING"), GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
 
-        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong());
+        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any());
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
 
@@ -252,7 +252,7 @@ public class GhostDispatchTest {
 
         service.dispatchGhostGroup(ticket, group("FAILED"), GovTicketV2Service.GHOST_VIA_RETRY);
 
-        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID));
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
     }
 
@@ -276,7 +276,7 @@ public class GhostDispatchTest {
         inOrder.verify(approvalMapper).selectByIdForUpdate(TICKET_ID);
         inOrder.verify(stmtMapper).updateExecStatus(GROUP_ID, "PENDING", null);
         inOrder.verify(ghostService).close(PUID, ACTOR, "session-old");
-        inOrder.verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID));
+        inOrder.verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         inOrder.verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
         verify(approvalStateService).markExecutionDispatched("biz-900");
         // the autoexec rebuild path must stay untouched for a ghost group
@@ -305,7 +305,7 @@ public class GhostDispatchTest {
             // GOV_TICKET_V2_GHOST_TASK_ACTIVE
         }
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
-        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong());
+        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any());
         verify(ghostService, never()).close(anyString(), anyString(), anyString());
     }
 
@@ -344,7 +344,7 @@ public class GhostDispatchTest {
         service.retryGroup(PUID, ACTOR, GROUP_ID);
 
         verify(ghostService, never()).close(anyString(), anyString(), anyString());
-        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID));
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
     }
 
@@ -361,7 +361,7 @@ public class GhostDispatchTest {
 
         service.retryGroup(PUID, ACTOR, GROUP_ID); // must not throw
 
-        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID));
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID), isNull());
         verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
     }
 
@@ -379,7 +379,7 @@ public class GhostDispatchTest {
 
         service.retryGroup(PUID, ACTOR, GROUP_ID + 1);
 
-        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID + 1));
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), any(), eq(TICKET_ID), eq(GROUP_ID + 1), isNull());
         verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
     }
 
@@ -392,7 +392,7 @@ public class GhostDispatchTest {
         service.retryGroup(PUID, ACTOR, GROUP_ID);
 
         verify(ghostService, never()).findTaskForTicketGroup(anyLong(), anyLong());
-        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong());
+        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any());
         verify(autoExecService).createGroupJob(eq(group), anyString(), anyBoolean(), any(), anyString(), eq(ACTOR));
         verify(autoExecService).startJob(anyString(), eq(ACTOR));
         verify(stmtMapper).updateExecStatus(GROUP_ID, "PENDING", null);
@@ -408,8 +408,63 @@ public class GhostDispatchTest {
 
         service.retryGroup(PUID, ACTOR, GROUP_ID);
 
-        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong());
+        verify(ghostService, never()).executeForTicket(anyString(), anyString(), any(), anyLong(), anyLong(), any());
         verify(autoExecService).createGroupJob(eq(group), anyString(), anyBoolean(), any(), anyString(), eq(ACTOR));
+    }
+
+    // ==================== B6 M2: dispatchGhostSegment (the in-chain single-segment launch) ====================
+
+    @Test
+    public void dispatchSegment_launchesWithSegmentSqlAndIndex_recordsSessionOnSegment_audits() {
+        DmApprovalDO ticket = ticket(List.of(true));
+        DmTicketDbStmtDO group = group("EXECUTING"); // mid-chain: the group is already EXECUTING
+        com.clougence.clouddm.console.web.component.governance.TicketSegment seg
+            = com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .ghostPlan(2, 3, "t_big", 20_000_000L, "ALTER TABLE t_big ADD COLUMN c1 INT");
+        seg.setStatus(com.clougence.clouddm.console.web.component.governance.TicketSegment.STATUS_EXECUTING);
+
+        service.dispatchGhostSegment(ticket, group, seg, GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN);
+
+        // the launch carries the SEGMENT's frozen sql (never the group fulltext) + the segIdx binding
+        ArgumentCaptor<com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO> foCaptor
+            = ArgumentCaptor.forClass(com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO.class);
+        verify(ghostService).executeForTicket(eq(PUID), eq(OWNER), foCaptor.capture(),
+            eq(TICKET_ID), eq(GROUP_ID), eq(Integer.valueOf(2)));
+        assertEquals("ALTER TABLE t_big ADD COLUMN c1 INT", foCaptor.getValue().getDdlSql());
+        assertNull("ticket scene carries NO task options — the admin merge chain applies",
+            foCaptor.getValue().getOptions());
+
+        // sessionId/taskId land ON the segment instance (the caller persists the runtime — single writer)
+        assertEquals("session-new", seg.getSessionId());
+
+        // group row EXECUTING (idempotent mid-chain rewrite) + snapshot capture
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
+        verify(schemaSnapshotService).captureIfMissing(group, TICKET_ID);
+
+        // audit: submitter subject, segment position + chain via
+        ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(OWNER), anyString(), eq(null),
+            eq(DS_ID), objCaptor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.GHOST_EXECUTE),
+            eq(ResourceType.DATASOURCE));
+        GhostOpAuditObj auditObj = (GhostOpAuditObj) objCaptor.getValue();
+        assertEquals(Long.valueOf(TICKET_ID), auditObj.getTicketId());
+        assertEquals(Long.valueOf(GROUP_ID), auditObj.getGroupId());
+        assertEquals(Integer.valueOf(2), auditObj.getSegmentIndex());
+        assertEquals(GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN, auditObj.getVia());
+    }
+
+    @Test
+    public void dispatchSegment_auditFailure_neverBreaksTheDispatch() {
+        doThrow(new RuntimeException("audit store down")).when(rdpOpAuditService).logAndAddOperationAudit(
+            anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any());
+        com.clougence.clouddm.console.web.component.governance.TicketSegment seg
+            = com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .ghostPlan(1, 1, "t_big", 1L, "ALTER TABLE t_big ADD COLUMN c1 INT");
+
+        service.dispatchGhostSegment(ticket(List.of(true)), group("PENDING"), seg,
+            GovTicketV2Service.GHOST_VIA_AUTO_ROUTE); // must not throw
+
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
     }
 
     // ==================== helpers ====================

@@ -18,6 +18,8 @@ package com.clougence.clouddm.console.web.service.govticket.impl;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
+import java.util.List;
+
 import org.junit.Before;
 import org.junit.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -197,6 +199,80 @@ public class GovTicketV2RetryGroupTest {
             // ok
         }
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    // ==================== B6 M2 (R10 window guard): segmented groups reject the whole-group replay ====================
+
+    @Test
+    public void retryGroup_segmentedPlanGroup_rejected_m2WindowGuard() {
+        // a segment PLAN in precheck_result is enough — replaying an already-SUCCESS ghost
+        // segment would necessarily fail (its ALTER landed: column exists); M3 restores the
+        // resume-from-failed-segment retry, until then the user is guided to return-revise
+        long groupId = 105L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\",\"segments\":["
+            + "{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2]},"
+            + "{\"segIdx\":2,\"type\":\"GHOST\",\"stmtIndex\":3,\"sql\":\"ALTER TABLE t_big ADD c INT\"}]}");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(buildTicket(groupId + 100, PUID, "PRE_DDL"));
+
+        try {
+            service.retryGroup(PUID, UID, groupId);
+            fail("Expected ErrorMessageException");
+        } catch (ErrorMessageException ex) {
+            assertTrue("the tightened rejection must surface the revision guidance",
+                ex.getMessage().contains("退回修订") || ex.getMessage().contains("revision"));
+        }
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    @Test
+    public void retryGroup_segmentedRuntimeGroup_rejected_evenWithoutPlanParse_m2() {
+        long groupId = 106L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(buildTicket(groupId + 100, PUID, "PRE_DDL"));
+
+        try {
+            service.retryGroup(PUID, UID, groupId);
+            fail("Expected ErrorMessageException");
+        } catch (ErrorMessageException ex) {
+            // GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED
+        }
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void retryGroup_m1FlagOnlyGhostGroup_ghostVariantStillUsable_backwardCompatPin() {
+        // M1-marked tickets (ghostRouteFlags WITHOUT a segment plan) keep the single-session
+        // ghost retry variant — 存量 M1 工单必须继续走 M1 路径 (compatibility ruling)
+        long groupId = 107L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"ghostRoutes\":[{\"stmtIndex\":1,\"route\":\"GHOST\"}]}");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        when(stmtMapper.queryByTicketId(group.getTicketId())).thenReturn(List.of(group));
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        com.clougence.clouddm.console.web.component.approval.model.ApprovalMO mo
+            = com.clougence.utils.JsonUtils.toObj(ticket.getTicketInfo(),
+                com.clougence.clouddm.console.web.component.approval.model.ApprovalMO.class);
+        mo.setGhostRouteFlags(List.of(true));
+        ticket.setTicketInfo(com.clougence.utils.JsonUtils.toJson(mo));
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        when(autoJobMapper.queryByDependOnGroupId(groupId)).thenReturn(null);
+        com.clougence.clouddm.console.web.service.ghost.GhostService ghostService
+            = mock(com.clougence.clouddm.console.web.service.ghost.GhostService.class);
+        when(ghostService.findTaskForTicketGroup(group.getTicketId(), groupId)).thenReturn(null);
+        ReflectionTestUtils.setField(service, "ghostService", ghostService);
+        ReflectionTestUtils.setField(service, "rdpOpAuditService",
+            mock(com.clougence.rdp.service.RdpOpAuditService.class));
+
+        service.retryGroup(PUID, UID, groupId);
+
+        verify(ghostService).executeForTicket(any(), any(), any(),
+            eq(group.getTicketId()), eq(groupId), isNull());
+        verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
     }
 
     // ==================== helpers ====================

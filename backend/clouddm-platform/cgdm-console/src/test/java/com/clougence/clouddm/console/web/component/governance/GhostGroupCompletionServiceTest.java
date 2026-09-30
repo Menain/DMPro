@@ -194,13 +194,73 @@ public class GhostGroupCompletionServiceTest {
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
 
+    // ==================== B6 M2: segmented-group delegation (the M1 pins above stay untouched —
+    // the branch keys on exec_segments presence only) ====================
+
+    @Test
+    public void onTerminal_segmentedGroup_delegatesToOrchestrator_thenSharedTailAggregates() {
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.completeGhostSegmentUnderLock(any(), any(), eq(Integer.valueOf(2)), eq(true), isNull()))
+            .thenReturn(true);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket(ApprovalStatus.RUNNING));
+        DmTicketDbStmtDO segmented = group("EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":2,\"type\":\"GHOST\",\"stmtIndex\":3,\"status\":\"EXECUTING\"}]");
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(segmented);
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(group("SUCCESS")));
+
+        service.onGhostTerminal(TICKET_ID, GROUP_ID, 2, true, null);
+
+        // lock order preserved, the direct legacy group write never happens for a segmented group
+        InOrder inOrder = inOrder(approvalMapper, segmentService, stmtMapper);
+        inOrder.verify(approvalMapper).selectByIdForUpdate(TICKET_ID);
+        inOrder.verify(segmentService).completeGhostSegmentUnderLock(any(), same(segmented),
+            eq(Integer.valueOf(2)), eq(true), isNull());
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        // shared aggregation tail (the orchestrator wrote the group terminal for the last segment)
+        verify(approvalStateService).completeExecution(BIZ_ID);
+    }
+
+    @Test
+    public void onTerminal_segmentedCasSkipped_returnsBeforeTail_exactlyOnce() {
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.completeGhostSegmentUnderLock(any(), any(), any(), anyBoolean(), any()))
+            .thenReturn(false); // replayed hook / the sweep already advanced the segment
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket(ApprovalStatus.RUNNING));
+        DmTicketDbStmtDO segmented = group("EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"SUCCESS\"}]");
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(segmented);
+
+        service.onGhostTerminal(TICKET_ID, GROUP_ID, 1, true, null);
+
+        verify(stmtMapper, never()).queryByTicketId(anyLong());
+        verifyNoInteractions(approvalStateService);
+    }
+
+    @Test
+    public void onTerminal_fourArgOverload_delegatesWithNullSegmentIndex_m1Compat() {
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket(ApprovalStatus.RUNNING));
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group("EXECUTING"));
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(group("SUCCESS")));
+
+        service.onGhostTerminal(TICKET_ID, GROUP_ID, true, null); // M1 four-arg shape
+
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "SUCCESS", null);
+        verify(approvalStateService).completeExecution(BIZ_ID);
+    }
+
     // ==================== sweep liveness probe (R2/R3 judgement matrix) ====================
 
     @Test
     public void probe_taskMissing_judgedFailed() {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(null);
 
-        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("record missing"));
     }
@@ -212,7 +272,7 @@ public class GhostGroupCompletionServiceTest {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID))
             .thenReturn(task(AsyncTaskStatus.COMPLETE));
 
-        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("writeback lost"));
     }
@@ -222,7 +282,7 @@ public class GhostGroupCompletionServiceTest {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(task(AsyncTaskStatus.RUNNING));
         when(ghostService.hasSession("uid-launcher", "session-1")).thenReturn(true);
 
-        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
@@ -233,7 +293,7 @@ public class GhostGroupCompletionServiceTest {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(task(AsyncTaskStatus.PAUSE));
         when(ghostService.hasSession("uid-launcher", "session-1")).thenReturn(true);
 
-        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
@@ -243,7 +303,7 @@ public class GhostGroupCompletionServiceTest {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(task(AsyncTaskStatus.RUNNING));
         when(ghostService.hasSession("uid-launcher", "session-1")).thenReturn(false);
 
-        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("session lost"));
     }
@@ -256,9 +316,33 @@ public class GhostGroupCompletionServiceTest {
         when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(broken);
         when(ghostService.hasSession("uid-taskrow", "session-1")).thenReturn(true);
 
-        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), group("EXECUTING")));
+        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
 
         verify(ghostService).hasSession("uid-taskrow", "session-1");
+    }
+
+    @Test
+    public void probe_staleCallerRow_freshReReadTerminal_skipsZeroWrites_checkF1() {
+        // check F1 (RR staleness guard): the sweep's caller-side group row comes from a PRE-LOCK
+        // read view — a concurrent hook that committed its SUCCESS writeback while the sweep
+        // waited on the ticket lock is invisible to that snapshot. The probe's own fresh re-read
+        // (REQUIRES_NEW, post-lock) sees the terminal state and MUST skip — judging on the stale
+        // EXECUTING row would overwrite a committed SUCCESS with FAILED (session already released
+        // by the winning hook → hasSession false → false "session lost").
+        DmTicketDbStmtDO staleExecuting = group("EXECUTING"); // what the caller's snapshot shows
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group("SUCCESS")); // the fresh re-read
+
+        assertFalse(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), staleExecuting));
+
+        verifyNoInteractions(ghostService); // no task/session probe at all
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    /** the probe's fresh under-lock re-read: queryById returns the same EXECUTING row. */
+    private DmTicketDbStmtDO executingGroupForProbe() {
+        DmTicketDbStmtDO group = group("EXECUTING");
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group);
+        return group;
     }
 
     // ==================== helpers ====================

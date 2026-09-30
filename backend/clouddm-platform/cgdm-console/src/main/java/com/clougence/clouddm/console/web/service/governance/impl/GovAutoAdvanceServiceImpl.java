@@ -85,6 +85,11 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service govTicketV2Service;
+    // @Lazy: B6 M2 segment orchestration (first-segment dispatch) — the orchestrator lazy-reaches
+    //   GovTicketV2Service/AutoExecService back; safe-side proxy injection (iron rule)
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -193,6 +198,18 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
                 continue; // skip non-eligible groups
             }
             try {
+                // B6 M2 decision order (dispatch authority): the segment PLAN in precheck_result
+                // wins over the M1 positional flags — new submissions carry segments (a single
+                // ALTER group = the single-GHOST-segment degenerate shape) and are orchestrated
+                // segment-wise; EXISTING M1 tickets (flags only, no plan) keep the M1
+                // single-session path byte-for-byte (backward compatibility pin); unmarked
+                // groups keep the legacy autoexec path (regression pin).
+                if (com.clougence.clouddm.console.web.component.governance.TicketSegment
+                        .isSegmentedPlan(group.getPrecheckResult())) {
+                    this.ticketSegmentService.dispatchFirstSegment(ticket, group,
+                        config.isEnableTransactional(), config.getErrorStrategy(), languageTag, SYSTEM_OPERATOR);
+                    continue;
+                }
                 if (ghostRouted) {
                     // B6 M1 dispatch site #1 (design §6.3): the threshold-marked single-ALTER
                     // group early-exits into the GHOST tool session — no autoexec job is built.

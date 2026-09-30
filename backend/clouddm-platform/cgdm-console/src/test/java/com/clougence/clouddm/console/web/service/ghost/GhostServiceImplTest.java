@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -1356,7 +1357,7 @@ public class GhostServiceImplTest {
         when(systemDal.fetchSystemConf(eq(RootUserConfig.Fields.ghostDefaultOptions), eq(String.class), any()))
                 .thenReturn("{\"chunkSize\":2000,\"verbose\":true}");
 
-        GhostExecuteVO vo = service.executeForTicket(PUID, UID, fo, 555L, 666L);
+        GhostExecuteVO vo = service.executeForTicket(PUID, UID, fo, 555L, 666L, null);
 
         // launch DTO: fully-resolved options + the ticket binding
         ArgumentCaptor<ToolSessionContextDTO> ctxCaptor = ArgumentCaptor.forClass(ToolSessionContextDTO.class);
@@ -1390,8 +1391,137 @@ public class GhostServiceImplTest {
         GhostAsyncTaskConfig cfg = JsonUtils.toObj(taskCaptor.getValue().getConfigData(), GhostAsyncTaskConfig.class);
         assertNull(cfg.getTicketId());
         assertNull(cfg.getGroupId());
+        assertNull("standalone carries no segment binding", cfg.getSegmentIndex());
         // the effective-options snapshot rides on both forms (R14)
         assertNotNull(cfg.getEffectiveOptions());
+    }
+
+    @Test
+    public void executeForTicket_segmentIndex_persistedIntoConfigData_m2() {
+        GhostExecuteFO fo = executeFO("ALTER TABLE db1.t_order ADD COLUMN extra VARCHAR(64)");
+
+        service.executeForTicket(PUID, UID, fo, 555L, 666L, 2);
+
+        ArgumentCaptor<AsyncTaskConfig> taskCaptor = ArgumentCaptor.forClass(AsyncTaskConfig.class);
+        verify(asyncTaskServiceService).submitTask(eq(UID), taskCaptor.capture());
+        GhostAsyncTaskConfig cfg = JsonUtils.toObj(taskCaptor.getValue().getConfigData(), GhostAsyncTaskConfig.class);
+        assertEquals(Long.valueOf(555L), cfg.getTicketId());
+        assertEquals(Long.valueOf(666L), cfg.getGroupId());
+        assertEquals(Integer.valueOf(2), cfg.getSegmentIndex());
+    }
+
+    @Test
+    public void execute_submitTaskFailure_releasesTheStartedSession_m2Step0Edge6() {
+        // S4 debt closure (M1 check ruling 3): createSession + START already succeeded — a
+        // failing submitTask must NOT leave an untracked live gh-ost session behind (nothing
+        // would ever write back / release the sidecar slot, and a user retry could double-launch)
+        GhostExecuteFO fo = executeFO("ALTER TABLE db1.t_order ADD COLUMN extra VARCHAR(64)");
+        doThrow(new IllegalStateException("task store down"))
+                .when(asyncTaskServiceService).submitTask(eq(UID), any(AsyncTaskConfig.class));
+
+        try {
+            service.execute(PUID, UID, fo);
+            fail("Expected the submitTask failure to propagate");
+        } catch (IllegalStateException expected) {
+            // the original failure surfaces to the caller
+        }
+        ArgumentCaptor<String> sessionCaptor = ArgumentCaptor.forClass(String.class);
+        verify(toolsService).closeSession(eq(UID), sessionCaptor.capture());
+        verify(toolsService).invoke(eq(UID), eq(sessionCaptor.getValue()), eq("START"), eq(null));
+    }
+
+    @Test
+    public void pause_ticketBoundTask_throttleOnly_noDockTransition_m2Step0Edge5() {
+        // ⑤ ruling (option a): 面板暂停 = throttle 不改跟踪状态 — the framework pause cancels the
+        // handler future and the worker's finishTask can terminalize the task (COMPLETE) over a
+        // merely-throttled LIVE migration; keeping the poller RUNNING guarantees the terminal
+        // writeback and keeps the sweep probe on the healthy non-terminal path.
+        GhostAsyncTaskConfig cfg = taskConfig(OWNER_UID);
+        cfg.setTicketId(555L);
+        cfg.setGroupId(666L);
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, cfg));
+
+        service.pause(PUID, UID, SESSION_ID);
+
+        verify(toolsService).invoke(OWNER_UID, SESSION_ID, "PAUSE", null); // the throttle itself
+        verify(asyncTaskServiceService, never()).pauseTask(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    public void pause_standaloneTask_keepsTheDockPause_regressionPin() {
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, taskConfig(OWNER_UID)));
+
+        service.pause(PUID, UID, SESSION_ID);
+
+        verify(toolsService).invoke(OWNER_UID, SESSION_ID, "PAUSE", null);
+        verify(asyncTaskServiceService).pauseTask(eq(SESSION_ID), eq(TOOL), anyString());
+    }
+
+    @Test
+    public void resume_ticketBoundTask_liftsThrottle_andKeepsDockResumeForRawDockPause() {
+        // resume keeps resumeTask unconditionally: it is a no-op while the task polls (RUNNING)
+        // and the recovery path when the task WAS raw-dock-paused (PAUSE → WAIT_START re-poll)
+        GhostAsyncTaskConfig cfg = taskConfig(OWNER_UID);
+        cfg.setTicketId(555L);
+        cfg.setGroupId(666L);
+        when(asyncTaskServiceService.queryAsyncTaskByBizId(SESSION_ID, TOOL))
+                .thenReturn(task(AsyncTaskStatus.RUNNING, cfg));
+
+        service.resume(PUID, UID, SESSION_ID);
+
+        verify(toolsService).invoke(OWNER_UID, SESSION_ID, "RESUME", null);
+        verify(asyncTaskServiceService).resumeTask(eq(SESSION_ID), eq(TOOL), anyString());
+    }
+
+    @Test
+    public void findTaskForTicketGroup_segmentIndexBound_exactTripleMatch_m2() {
+        // 前瞻③: a segmented group hosts one task PER ghost segment — the lookup must resolve the
+        // exact (ticketId, groupId, segmentIndex) triple, not "newest of the group"
+        // lambda column rendering needs the MP TableInfo cache — seeded by hand (bare unit test)
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""),
+                DmExecAsyncTaskDO.class);
+        GhostAsyncTaskConfig seg1 = taskConfig(OWNER_UID);
+        seg1.setTicketId(555L);
+        seg1.setGroupId(666L);
+        seg1.setSegmentIndex(1);
+        GhostAsyncTaskConfig seg3 = taskConfig(OWNER_UID);
+        seg3.setTicketId(555L);
+        seg3.setGroupId(666L);
+        seg3.setSegmentIndex(3);
+        DmExecAsyncTaskDO newer = task(AsyncTaskStatus.RUNNING, seg3);
+        newer.setId(88L);
+        DmExecAsyncTaskDO older = task(AsyncTaskStatus.COMPLETE, seg1);
+        older.setId(77L);
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(newer, older));
+
+        DmExecAsyncTaskDO found = service.findTaskForTicketGroup(555L, 666L, 1);
+
+        assertNotNull(found);
+        assertEquals(Long.valueOf(77L), found.getId()); // the segment-1 task, NOT the newest
+        // the LIKE pre-filter carries all three compact-JSON binding keys
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DmExecAsyncTaskDO>> captor
+                = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(asyncTaskMapper).selectList(captor.capture());
+        // MP 3.5.x defers formatParam into the segment lambdas — rendering materializes the params
+        captor.getValue().getSqlSegment();
+        assertTrue(captor.getValue().getParamNameValuePairs().values().stream()
+                .anyMatch(v -> String.valueOf(v).contains("\"segmentIndex\":1")));
+    }
+
+    @Test
+    public void findTaskForTicketGroup_nullSegmentIndex_m1TwoKeyMatch_regressionPin() {
+        GhostAsyncTaskConfig m1Cfg = taskConfig(OWNER_UID);
+        m1Cfg.setTicketId(555L);
+        m1Cfg.setGroupId(666L); // M1 shape: no segmentIndex binding
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(task(AsyncTaskStatus.RUNNING, m1Cfg)));
+
+        assertNotNull(service.findTaskForTicketGroup(555L, 666L));
+        // a segment-precise query must NOT match the M1 task (its configData has no segmentIndex)
+        when(asyncTaskMapper.selectList(any())).thenReturn(List.of(task(AsyncTaskStatus.RUNNING, m1Cfg)));
+        assertNull(service.findTaskForTicketGroup(555L, 666L, 1));
     }
 
     @Test
@@ -1408,7 +1538,7 @@ public class GhostServiceImplTest {
         service.stop(PUID, UID, SESSION_ID);
 
         verify(toolsService).invoke(OWNER_UID, SESSION_ID, "STOP", null);
-        verify(completion).onGhostTerminal(eq(555L), eq(666L), eq(false), anyString());
+        verify(completion).onGhostTerminal(eq(555L), eq(666L), isNull(), eq(false), anyString());
         verify(asyncTaskServiceService).cancelTask(eq(SESSION_ID), eq(TOOL), anyString());
     }
 
@@ -1430,7 +1560,7 @@ public class GhostServiceImplTest {
     public void stop_writebackFailure_neverBreaksTheStopItself() {
         com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService completion
                 = mock(com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService.class);
-        doThrow(new RuntimeException("db down")).when(completion).onGhostTerminal(anyLong(), anyLong(), anyBoolean(), any());
+        doThrow(new RuntimeException("db down")).when(completion).onGhostTerminal(anyLong(), anyLong(), any(), anyBoolean(), any());
         ReflectionTestUtils.setField(service, "ghostGroupCompletionService", completion);
         GhostAsyncTaskConfig cfg = taskConfig(OWNER_UID);
         cfg.setTicketId(555L);

@@ -39,4 +39,12 @@ public interface DmTicketDbStmtMapper extends BaseMapper<DmTicketDbStmtDO> {
      */
     int updateSqlForRevision(@Param("id") long id, @Param("sqlContent") String sqlContent,
                              @Param("precheckResult") String precheckResult);
+
+    /**
+     * B6 M2: write the segment runtime state JSON (dm_ticket_db_stmt.exec_segments).
+     * ONLY legal inside the advanceSegment ticket-row-lock window (same transaction as the
+     * exec_status write); {@code null} clears the runtime (resubmit reset — the fresh
+     * authoritative precheck recomputes the plan from scratch).
+     */
+    int updateExecSegments(@Param("id") long id, @Param("execSegments") String execSegments);
 }

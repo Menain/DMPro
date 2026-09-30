@@ -84,11 +84,25 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig(null));
 
-        verify(completion).onGhostTerminal(TICKET_ID, GROUP_ID, true, null);
+        verify(completion).onGhostTerminal(TICKET_ID, GROUP_ID, (Integer) null, true, null);
         assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
         // deviation-6 closure: the chain owns the session lifecycle — the sidecar GHOST slot
         // (cap 2) is only returned on session close, so every ticket terminal releases
         verify(ghostService).releaseSessionQuietly(USER_ID, SESSION_ID);
+    }
+
+    @Test
+    public void completed_ticketBoundWithSegmentIndex_hookCarriesTheBinding_m2() {
+        // B6 M2: the configData segmentIndex rides into the writeback hook — the orchestrator's
+        // segment CAS keys on the exact binding (multi-ghost-segment groups host one task each)
+        when(ghostService.tailStatusForTask(USER_ID, SESSION_ID)).thenReturn(status("COMPLETED", null, null));
+        GhostAsyncTaskConfig cfg = ticketBoundConfig(null);
+        cfg.setSegmentIndex(2);
+
+        run(cfg);
+
+        verify(completion).onGhostTerminal(TICKET_ID, GROUP_ID, Integer.valueOf(2), true, null);
+        assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
     }
 
     @Test
@@ -98,7 +112,7 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig(null));
 
-        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), eq(false), contains("FATAL binlog invalid"));
+        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), isNull(), eq(false), contains("FATAL binlog invalid"));
         assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
         // failedTaskDoNotPause: fastFail → the dock task lands FAILURE (never a retryable PAUSE)
         assertEquals(Boolean.TRUE, ReflectionTestUtils.getField(task, "fastFail"));
@@ -113,7 +127,7 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig(null));
 
-        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), eq(false), startsWith("ABORTED"));
+        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), isNull(), eq(false), startsWith("ABORTED"));
         assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
         verify(ghostService).releaseSessionQuietly(USER_ID, SESSION_ID);
     }
@@ -124,7 +138,7 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig("RUNNING")); // last seen status is NOT failed → outcome unknown
 
-        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), eq(false), contains("session lost"));
+        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), isNull(), eq(false), contains("session lost"));
         assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
         assertEquals(Boolean.TRUE, ReflectionTestUtils.getField(task, "fastFail"));
     }
@@ -135,14 +149,14 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig("FAILED"));
 
-        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), eq(false), contains("ghost migration failed"));
+        verify(completion).onGhostTerminal(eq(TICKET_ID), eq(GROUP_ID), isNull(), eq(false), contains("ghost migration failed"));
         assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
     }
 
     @Test
     public void hookThrows_taskLifecycleProceeds_isolation() {
         doThrow(new RuntimeException("db down")).when(completion)
-            .onGhostTerminal(anyLong(), anyLong(), anyBoolean(), any());
+            .onGhostTerminal(anyLong(), anyLong(), any(), anyBoolean(), any());
         when(ghostService.tailStatusForTask(USER_ID, SESSION_ID)).thenReturn(status("COMPLETED", null, null));
 
         run(ticketBoundConfig(null)); // must not throw
@@ -158,7 +172,7 @@ public class GhostAsyncTaskTicketHookTest {
 
         run(ticketBoundConfig(null)); // must not throw
 
-        verify(completion).onGhostTerminal(TICKET_ID, GROUP_ID, true, null);
+        verify(completion).onGhostTerminal(TICKET_ID, GROUP_ID, (Integer) null, true, null);
         assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
     }
 

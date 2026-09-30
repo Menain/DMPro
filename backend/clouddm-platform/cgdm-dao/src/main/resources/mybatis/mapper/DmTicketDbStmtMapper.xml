@@ -15,11 +15,12 @@
         <result column="precheck_result" property="precheckResult"/>
         <result column="exec_status" property="execStatus"/>
         <result column="exec_detail" property="execDetail"/>
+        <result column="exec_segments" property="execSegments"/>
     </resultMap>
 
     <sql id="sqlColumns">
         id, gmt_create, gmt_modified, ticket_id, pair_id, ds_id, db_name,
-        sql_content, precheck_result, exec_status, exec_detail
+        sql_content, precheck_result, exec_status, exec_detail, exec_segments
     </sql>
 
     <select id="queryByTicketId" resultMap="ticketDbStmtDO">
@@ -72,6 +73,18 @@
             precheck_result = #{precheckResult},
             exec_status     = 'PENDING',
             exec_detail     = NULL
+        WHERE
+            id = #{id}
+    </update>
+
+    <!-- B6 M2: segment runtime state write — ONLY legal inside the advanceSegment ticket-row
+         lock window (same transaction as the exec_status write); null clears the runtime
+         (resubmit reset — the fresh authoritative precheck recomputes the plan). -->
+    <update id="updateExecSegments">
+        UPDATE
+            dm_ticket_db_stmt
+        SET
+            exec_segments = #{execSegments}
         WHERE
             id = #{id}
     </update>

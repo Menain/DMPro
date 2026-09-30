@@ -49,6 +49,11 @@ public class GovTicketV2CheckVO {
         // place — non-PRE_DDL, switch off, non-MySQL or no ALTER candidate). Display carrier:
         // serialized into the group's precheck_result JSON under the same "ghostRoutes" key.
         private List<GhostRouteVO> ghostRoutes;
+
+        // B6 M2 segment PLAN (additive; null/empty = no GHOST segment → the group keeps the
+        // legacy unsegmented shape byte-identical). Serialized into precheck_result "segments"
+        // (plan of record, contract :404); 1-based exec_order domain keys (R11).
+        private List<com.clougence.clouddm.console.web.component.governance.TicketSegment> segments;
     }
 
     /**

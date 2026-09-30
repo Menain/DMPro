@@ -86,6 +86,10 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService ghostGroupCompletionService;
+    // @Lazy: B6 M2 segment sweep repair (advance+aggregate dual duty) — safe-side proxy injection (iron rule)
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
 
     @Override
     public ApprovalBiz handleType() {
@@ -145,10 +149,18 @@ public class ChangeApprovalHandler implements ApprovalHandler {
     }
 
     /**
-     * Ghost-only sweep extension (B6 M1): probes the EXECUTING groups of a ghost-marked ticket
-     * for task/session liveness and judges dead ones FAILED (no aggregation here — the caller's
-     * tail does it uniformly). Pure-autoexec tickets (no ghost flags) return immediately with
-     * ZERO behavior change; probe failures are caught per group and retried on the next cycle.
+     * Ghost-only sweep extension (B6 M1, extended by M2): probes the EXECUTING groups of a
+     * ghost-marked ticket for task/session liveness and judges dead ones FAILED (no aggregation
+     * here — the caller's tail does it uniformly). Pure-autoexec tickets (no ghost flags) return
+     * immediately with ZERO behavior change; probe failures are caught per group and retried on
+     * the next cycle.
+     * <p>
+     * B6 M2 dual-duty extension: a group carrying a segment runtime (exec_segments) is routed to
+     * the segment orchestrator's repair instead — "组 EXECUTING ∧ 当前段终态/作业终态 ∧ 下段未派发
+     * → 补推进" + "全段终态 → 组终态补写" (the contractual WAIT_EXEC safety net, hybrid ruling —
+     * the scan set stays unchanged, still no new statuses in the IN set). The M1 positional-flag
+     * probe below serves ONLY unsegmented ghost groups (segmented groups always carry the flags
+     * too — the runtime check must precede the flag check to avoid double-judging).
      */
     private void probeGhostGroupsIfDue(DmApprovalDO locked) {
         ApprovalMO mo;
@@ -166,8 +178,22 @@ public class ChangeApprovalHandler implements ApprovalHandler {
         List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(locked.getId());
         for (int i = 0; i < groups.size(); i++) {
             DmTicketDbStmtDO group = groups.get(i);
-            if (!"EXECUTING".equals(group.getExecStatus())
-                || !com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
+            if (!"EXECUTING".equals(group.getExecStatus())) {
+                continue;
+            }
+            // B6 M2: segmented groups → the orchestrator's advance+aggregate repair (the ghost
+            // liveness probe for a GHOST segment lives inside, keyed by segmentIndex — it never
+            // depends on autoexec task rows, which die with the segment job replacement, 前瞻④)
+            if (StringUtils.isNotBlank(group.getExecSegments())) {
+                try {
+                    this.ticketSegmentService.repairGroupUnderLock(locked, group);
+                } catch (Exception e) {
+                    log.warn("[ChangeApproval] segment repair failed for ticket {} group {} (next sweep retries)",
+                        locked.getId(), group.getId(), e);
+                }
+                continue;
+            }
+            if (!com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
                 continue;
             }
             try {

@@ -111,8 +111,13 @@ public interface GhostService {
      * ticketId/groupId binding persisted into the AsyncTask configData — the terminal
      * writeback hook, retryGroup rebuild and sweep liveness probe all key on that pair.
      * NEVER expose through a controller (the binding is a system decision, not user input).
+     * <p>
+     * B6 M2: {@code segmentIndex} additionally binds the launch to ONE GHOST segment of a
+     * segmented group (1-based segIdx; the terminal hook / sweep probe CAS on it). Null for
+     * the M1 single-segment degenerate shape (existing tickets keep the M1 path — compatibility).
      */
-    GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId);
+    GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId,
+                                    Integer segmentIndex);
 
     /**
      * Auto-route precheck probe (design §6.1): one channel-C round trip — B4-caliber table
@@ -128,4 +133,14 @@ public interface GhostService {
      * {@code TASK_LIST_LIMIT} GHOST rows) — the group binding lives in the configData JSON.
      */
     DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId);
+
+    /**
+     * B6 M2 segment-precise variant (M1 check 前瞻③): additionally requires the configData
+     * {@code segmentIndex} binding — a segmented group can host MULTIPLE ghost segments (one
+     * task each), so the sweep probe / writeback must not resolve "newest of the group" across
+     * segments. {@code segmentIndex == null} degrades to the M1 two-key match (its tasks carry
+     * no segmentIndex binding). LIKE pre-filters on the compact-JSON keys bound the scan; the
+     * parse-equality check stays the authority.
+     */
+    DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId, Integer segmentIndex);
 }

@@ -60,4 +60,14 @@ public class DmTicketDbStmtDO {
     private String execStatus;
 
     private String execDetail;
+
+    /**
+     * B6 M2 segment RUNTIME state (V202609290001, nullable JSON array):
+     * [{segIdx,type,status(PENDING/EXECUTING/SUCCESS/FAILED),jobBizId?,sessionId?,taskId?,
+     * error?,startedAt?,finishedAt?,summary?}]. Mutated ONLY inside the advanceSegment
+     * ticket-row-lock window (same row/transaction as exec_status); null for legacy groups
+     * and pure-normal groups (no segment plan → zero-overhead status quo shape). The segment
+     * PLAN lives in the precheck_result JSON "segments" key (recomputed per authoritative precheck).
+     */
+    private String execSegments;
 }

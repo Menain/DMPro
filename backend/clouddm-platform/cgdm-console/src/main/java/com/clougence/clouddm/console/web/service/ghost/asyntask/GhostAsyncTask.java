@@ -154,7 +154,7 @@ public class GhostAsyncTask extends AsyncTask {
         }
         try {
             this.ghostGroupCompletionService.onGhostTerminal(
-                    taskConfig.getTicketId(), taskConfig.getGroupId(), success, detail);
+                    taskConfig.getTicketId(), taskConfig.getGroupId(), taskConfig.getSegmentIndex(), success, detail);
         } catch (Exception e) {
             log.error("[GhostAsyncTask] ticket writeback failed for ticket {} group {} (the sweep probe backstops)",
                     taskConfig.getTicketId(), taskConfig.getGroupId(), e);

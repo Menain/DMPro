@@ -289,6 +289,100 @@ public class GovAutoAdvanceServiceTest {
         return ticket;
     }
 
+    // ======= B6 M2: segment-plan decision order at dispatch site #1 =======
+
+    @Test
+    public void advance_segmentedAndPlainGroups_firstSegmentDispatchPerGroup_m2() {
+        // DmTeamUtils static executionDal (required by nextExecJobBizId on the plain-group dispatch)
+        com.clougence.clouddm.platform.dal.access.ExecutionDal staticExecDal
+            = mock(com.clougence.clouddm.platform.dal.access.ExecutionDal.class);
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoJobMapper staticJobMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoJobMapper.class);
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoTaskMapper staticTaskMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.execution.DmExecAutoTaskMapper.class);
+        when(staticExecDal.autoJobMapper()).thenReturn(staticJobMapper);
+        when(staticExecDal.autoTaskMapper()).thenReturn(staticTaskMapper);
+        when(staticJobMapper.queryByBizId(anyString())).thenReturn(null);
+        when(staticTaskMapper.queryByBizId(anyString())).thenReturn(null);
+        ReflectionTestUtils.setField(com.clougence.clouddm.console.web.util.DmTeamUtils.class, "executionDal", staticExecDal);
+
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        ReflectionTestUtils.setField(impl, "ticketSegmentService", segmentService);
+        com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service govTicketV2Service
+            = mock(com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.class);
+        ReflectionTestUtils.setField(impl, "govTicketV2Service", govTicketV2Service);
+
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
+        setupSubmitEvent(ChangeType.MIXED);
+
+        // group A: segmented plan (precheck_result "segments" with a GHOST segment) + flags true
+        DmTicketDbStmtDO segmented = new DmTicketDbStmtDO();
+        segmented.setId(11L);
+        segmented.setExecStatus("PENDING");
+        segmented.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\",\"segments\":["
+            + "{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2]},"
+            + "{\"segIdx\":2,\"type\":\"GHOST\",\"stmtIndex\":3}]}");
+        // group B: plain (no plan, no flag) — the legacy createGroupJob path must stay untouched
+        DmTicketDbStmtDO plain = new DmTicketDbStmtDO();
+        plain.setId(12L);
+        plain.setExecStatus("PENDING");
+        plain.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\"}");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(segmented, plain));
+
+        service.advancePreTickets();
+
+        // decision order: the segment PLAN wins — the orchestrator owns the whole dispatch
+        // (lock + CAS + runtime init + first-segment build); D15 config flows through (MIXED →
+        // non-transactional, ErrorStrategy.NONE)
+        verify(segmentService).dispatchFirstSegment(same(ticket), same(segmented), eq(false),
+            eq(com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE), anyString(), eq("SYSTEM"));
+        verify(autoExecService, never()).createGroupJob(same(segmented), anyString(), anyBoolean(), any(), anyString(), anyString());
+        verify(govTicketV2Service, never()).dispatchGhostGroup(any(), any(), anyString());
+        // the plain group keeps the legacy path bit-for-bit
+        verify(autoExecService).createGroupJob(same(plain), anyString(), eq(false),
+            eq(com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE), anyString(), eq("SYSTEM"));
+        verify(autoExecService).startJob(anyString(), eq("SYSTEM"));
+        // ticket-level dispatch mark stays (post-loop, unchanged)
+        verify(approvalStateService).markExecutionDispatched("biz-001");
+    }
+
+    @Test
+    public void advance_m1FlagGroupWithoutPlan_keepsTheM1GhostDispatch_backwardCompatPin() {
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        ReflectionTestUtils.setField(impl, "ticketSegmentService", segmentService);
+        com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service govTicketV2Service
+            = mock(com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.class);
+        ReflectionTestUtils.setField(impl, "govTicketV2Service", govTicketV2Service);
+
+        // an EXISTING M1 ticket: positional flags true, precheck_result carries ghostRoutes but
+        // NO segments plan → the M1 single-session dispatch path (existing tickets must keep it)
+        ApprovalMO mo = new ApprovalMO();
+        mo.setTicketType("PRE_DDL");
+        mo.setGhostRouteFlags(List.of(true));
+        DmApprovalDO ticket = buildTicket(ApprovalBiz.DM_CHANGE, "PRE_DDL", ApprovalStatus.WAIT_APPROVAL);
+        ticket.setTicketInfo(JsonUtils.toJson(mo));
+        when(approvalMapper.listUnFinishTicketIdList()).thenReturn(List.of(TICKET_ID));
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
+        setupSubmitEvent(ChangeType.DDL);
+
+        DmTicketDbStmtDO m1Group = new DmTicketDbStmtDO();
+        m1Group.setId(11L);
+        m1Group.setExecStatus("PENDING");
+        m1Group.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"ghostRoutes\":[{\"stmtIndex\":1,\"route\":\"GHOST\"}]}");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(m1Group));
+
+        service.advancePreTickets();
+
+        verify(govTicketV2Service).dispatchGhostGroup(same(ticket), same(m1Group),
+            eq(com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.GHOST_VIA_AUTO_ROUTE));
+        verifyNoInteractions(segmentService);
+        verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
     @Test
     public void advance_submitEventWithoutChangeType_fallsBackToGroupPrechecks() {
         // Legacy SUBMIT events carry no changeType: derive MIXED from DDL+DML group prechecks (non-transactional)

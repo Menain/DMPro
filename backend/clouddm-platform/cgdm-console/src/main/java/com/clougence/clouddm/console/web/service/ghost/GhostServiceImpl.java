@@ -334,28 +334,44 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
 
     @Override
     public DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId) {
+        return findTaskForTicketGroup(ticketId, groupId, null);
+    }
+
+    @Override
+    public DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId, Integer segmentIndex) {
         LambdaQueryWrapper<DmExecAsyncTaskDO> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(DmExecAsyncTaskDO::getBizType, GhostPluginConfig.TOOL_NAME) //
-                // Targeted pre-filter on the compact-JSON binding key ("ticketId":<id> — JsonUtils
+                // Targeted pre-filter on the compact-JSON binding keys ("ticketId":<id> — JsonUtils
                 // writes no spaces). Without it the LIMIT-bounded newest-first scan can miss the
                 // bound task of a LONG-RUNNING migration once TASK_LIST_LIMIT newer GHOST tasks
                 // pile up above it (all tenants share the scan): the sweep probe would then
                 // misjudge "task record missing" → FAILED, and a retry could double-launch over
                 // the live migration. Substring over-inclusion (ticketId 90 vs 900) is harmless —
                 // the exact parse-equality check below remains the authority.
+                // B6 M2 (前瞻③): the pre-filter extends to groupId + segmentIndex — a segmented
+                // group hosts one task PER ghost segment, so "newest of the group" would be
+                // ambiguous across segments; the triple locates the segment's task exactly.
                 .like(DmExecAsyncTaskDO::getConfigData, "\"ticketId\":" + ticketId) //
+                .like(DmExecAsyncTaskDO::getConfigData, "\"groupId\":" + groupId) //
                 .orderByDesc(DmExecAsyncTaskDO::getId) //
                 .last("LIMIT " + TASK_LIST_LIMIT);
+        if (segmentIndex != null) {
+            wrapper.like(DmExecAsyncTaskDO::getConfigData, "\"segmentIndex\":" + segmentIndex);
+        }
         List<DmExecAsyncTaskDO> rows = executionDal.asyncTaskMapper().selectList(wrapper);
         if (rows == null || rows.isEmpty()) {
             return null;
         }
         for (DmExecAsyncTaskDO row : rows) {
             GhostAsyncTaskConfig cfg = parseTaskConfig(row);
-            if (cfg != null && cfg.getTicketId() != null && cfg.getTicketId() == ticketId //
-                    && cfg.getGroupId() != null && cfg.getGroupId() == groupId) {
-                return row;
+            if (cfg == null || cfg.getTicketId() == null || cfg.getTicketId() != ticketId //
+                    || cfg.getGroupId() == null || cfg.getGroupId() != groupId) {
+                continue;
             }
+            if (segmentIndex != null && !segmentIndex.equals(cfg.getSegmentIndex())) {
+                continue; // exact segment binding required (M1 tasks carry none)
+            }
+            return row;
         }
         return null;
     }
@@ -366,20 +382,23 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
 
     @Override
     public GhostExecuteVO execute(String puid, String uid, GhostExecuteFO fo) {
-        return doExecute(puid, uid, fo, null, null);
+        return doExecute(puid, uid, fo, null, null, null);
     }
 
     @Override
-    public GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId) {
-        return doExecute(puid, uid, fo, ticketId, groupId);
+    public GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId,
+                                           Integer segmentIndex) {
+        return doExecute(puid, uid, fo, ticketId, groupId, segmentIndex);
     }
 
     /**
      * Shared launch body of both forms (dual-form compatibility, design §6.4): the ticket form
-     * only differs by the ticketId/groupId binding persisted into the AsyncTask configData —
-     * everything else (session chain, task submission, audit payload) is identical.
+     * only differs by the ticketId/groupId(+segmentIndex, B6 M2) binding persisted into the
+     * AsyncTask configData — everything else (session chain, task submission, audit payload)
+     * is identical.
      */
-    private GhostExecuteVO doExecute(String puid, String uid, GhostExecuteFO fo, Long ticketId, Long groupId) {
+    private GhostExecuteVO doExecute(String puid, String uid, GhostExecuteFO fo, Long ticketId, Long groupId,
+                                     Integer segmentIndex) {
         DmDsDO dsDO = requireOwnedSupportedDs(puid, fo == null ? null : fo.getDsId());
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
         checkDirectConnection(dsConfig);
@@ -438,6 +457,7 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         taskConfig.setDdlSql(fo.getDdlSql());
         taskConfig.setTicketId(ticketId);
         taskConfig.setGroupId(groupId);
+        taskConfig.setSegmentIndex(segmentIndex);
         taskConfig.setEffectiveOptions(effectiveOptions);
 
         AsyncTaskConfig config = new AsyncTaskConfig();
@@ -449,7 +469,18 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         config.setHandlerType(GhostAsyncTask.class);
         config.setBizType(GhostPluginConfig.TOOL_NAME);
         config.setBizId(sessionId);
-        asyncTaskServiceService.submitTask(uid, config);
+        try {
+            asyncTaskServiceService.submitTask(uid, config);
+        } catch (RuntimeException e) {
+            // B6 M2 Step-0 ⑥ (S4 debt closure, M1 check ruling 3): createSession + START already
+            // succeeded — without the tracking task NOTHING would ever write back, release the
+            // sidecar slot or panic the process, and a user retry could double-launch a second
+            // gh-ost over the live one (initiallyDropGhostTable makes them delete each other's
+            // shadow table). Release the session, then surface the original failure.
+            log.error("[Ghost] AsyncTask submission failed for session {} — releasing the started session", sessionId, e);
+            closeQuietly(uid, sessionId);
+            throw e;
+        }
 
         GhostExecuteVO vo = new GhostExecuteVO();
         vo.setSessionId(sessionId);
@@ -766,7 +797,17 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         DmExecAsyncTaskDO task = requireTenantTask(puid, sessionId);
         GhostAsyncTaskConfig cfg = parseTaskConfig(task);
         invokeControl(resolveOwnerUid(task, cfg), sessionId, PAUSE);
-        asyncTaskServiceService.pauseTask(sessionId, GhostPluginConfig.TOOL_NAME, "pause By console");
+        // B6 M2 Step-0 ⑤ ruling (option a, dock-PAUSE edge): a TICKET-bound task is NOT dock-
+        // paused — 暂停=throttle is a session-level control that must not change tracking state
+        // (design §6.3). The framework pause cancels the handler's future, and the worker's
+        // finishTask can win the race against f.cancel(), terminalizing the task (COMPLETE)
+        // while gh-ost is merely throttled — the sweep would then judge the EXECUTING group
+        // "writeback lost" → FAILED over a LIVE migration. Keeping the poller RUNNING preserves
+        // progress capture and guarantees the terminal writeback fires. Standalone tasks keep
+        // the dock-pause shape (S5 behavior, resumable through the dock).
+        if (cfg == null || cfg.getTicketId() == null) {
+            asyncTaskServiceService.pauseTask(sessionId, GhostPluginConfig.TOOL_NAME, "pause By console");
+        }
         return auditObjOf(task, cfg, null);
     }
 
@@ -790,8 +831,8 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         // writeback, the sweep liveness probe is the backstop. Never breaks the stop itself.
         if (cfg != null && cfg.getTicketId() != null && cfg.getGroupId() != null) {
             try {
-                ghostGroupCompletionService.onGhostTerminal(cfg.getTicketId(), cfg.getGroupId(), false,
-                        "terminated by user (panic flag)");
+                ghostGroupCompletionService.onGhostTerminal(cfg.getTicketId(), cfg.getGroupId(),
+                        cfg.getSegmentIndex(), false, "terminated by user (panic flag)");
             } catch (RuntimeException e) {
                 log.error("[Ghost] ticket writeback on stop failed for session {} (the sweep probe backstops)", sessionId, e);
             }

@@ -155,6 +155,85 @@ public class AutoExecV2JobCompletionTest {
         verifyNoInteractions(approvalStateService);
     }
 
+    // ==================== B6 M2: segment-aware delegation (the 5 pins above stay byte-identical
+    // for unsegmented groups — the delegation branch keys on exec_segments presence only) ====================
+
+    @Test
+    public void handleV2JobCompletion_segmentedGroup_delegatesToOrchestrator_thenSharedTailAggregates() {
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.completeAutoexecSegmentUnderLock(any(), eq(GROUP_ID), eq("job-biz"),
+            eq(true), isNull(), any())).thenReturn(true);
+        ReflectionTestUtils.setField(autoExecService, "ticketSegmentService", segmentService);
+
+        DmExecAutoJobDO job = v2Job();
+        job.setBizId("job-biz");
+        job.setUid("SYSTEM");
+        when(autoJobMapper.queryById(JOB_ID)).thenReturn(job);
+        DmTicketDbStmtDO segmented = group(GROUP_ID, "EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2],\"status\":\"EXECUTING\"}]");
+        when(ticketStmtMapper.queryById(GROUP_ID)).thenReturn(segmented);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket());
+        // the orchestrator wrote the last-segment group terminal → the tail sees all SUCCESS
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID))
+            .thenReturn(List.of(group(GROUP_ID, "SUCCESS"), group(201L, "SUCCESS")));
+
+        autoExecService.handleV2JobCompletion(JOB_ID, true, null);
+
+        // the lock still precedes everything (the :412 concurrency contract is untouched)
+        InOrder inOrder = inOrder(approvalMapper, segmentService);
+        inOrder.verify(approvalMapper).selectByIdForUpdate(TICKET_ID);
+        inOrder.verify(segmentService).completeAutoexecSegmentUnderLock(any(), eq(GROUP_ID),
+            eq("job-biz"), eq(true), isNull(), eq("SYSTEM"));
+        // the direct legacy group write must NOT happen for a segmented group (the orchestrator owns it)
+        verify(ticketStmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        // the shared aggregation tail still runs (last segment → all groups terminal → ticket)
+        verify(approvalStateService).completeExecution(BIZ_ID);
+    }
+
+    @Test
+    public void handleV2JobCompletion_segmentedNonLastSegment_tailSeesExecuting_noTicketAction() {
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.completeAutoexecSegmentUnderLock(any(), anyLong(), any(),
+            anyBoolean(), any(), any())).thenReturn(true);
+        ReflectionTestUtils.setField(autoExecService, "ticketSegmentService", segmentService);
+
+        when(autoJobMapper.queryById(JOB_ID)).thenReturn(v2Job());
+        DmTicketDbStmtDO segmented = group(GROUP_ID, "EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2],\"status\":\"EXECUTING\"}]");
+        when(ticketStmtMapper.queryById(GROUP_ID)).thenReturn(segmented);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket());
+        // a middle segment advanced → the next one dispatched → the group stays EXECUTING
+        when(ticketStmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(group(GROUP_ID, "EXECUTING")));
+
+        autoExecService.handleV2JobCompletion(JOB_ID, true, null);
+
+        verifyNoInteractions(approvalStateService);
+    }
+
+    @Test
+    public void handleV2JobCompletion_segmentedCasSkipped_returnsBeforeTail_exactlyOnce() {
+        // a replayed callback: the orchestrator's segment CAS skipped → the tail must NOT run
+        // again (the first writer already drove the aggregation — exactly-once contract)
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.completeAutoexecSegmentUnderLock(any(), anyLong(), any(),
+            anyBoolean(), any(), any())).thenReturn(false);
+        ReflectionTestUtils.setField(autoExecService, "ticketSegmentService", segmentService);
+
+        when(autoJobMapper.queryById(JOB_ID)).thenReturn(v2Job());
+        DmTicketDbStmtDO segmented = group(GROUP_ID, "EXECUTING");
+        segmented.setExecSegments("[{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2],\"status\":\"SUCCESS\"}]");
+        when(ticketStmtMapper.queryById(GROUP_ID)).thenReturn(segmented);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket());
+
+        autoExecService.handleV2JobCompletion(JOB_ID, true, null);
+
+        verify(ticketStmtMapper, never()).queryByTicketId(anyLong());
+        verifyNoInteractions(approvalStateService);
+    }
+
     // ==================== helpers ====================
 
     private DmExecAutoJobDO v2Job() {

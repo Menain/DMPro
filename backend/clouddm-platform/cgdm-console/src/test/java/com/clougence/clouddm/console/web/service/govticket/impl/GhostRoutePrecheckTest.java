@@ -282,6 +282,7 @@ public class GhostRoutePrecheckTest {
 
         assertEquals("PASS", gr.getCheckStatus());
         assertNull(gr.getGhostRoutes());
+        assertNull("no GHOST segment → no segment plan at all (legacy shape)", gr.getSegments());
         verifyNoInteractions(alertPushService);
     }
 
@@ -322,19 +323,88 @@ public class GhostRoutePrecheckTest {
     }
 
     @Test
-    public void check_multiStmtWithExceededHardPassAlter_failsWithSplitGuidance() {
+    public void check_multiStmtWithExceededHardPassAlter_segmentedNotIntercepted_m2() {
         splitScripts = List.of(alterScript(0, "ALTER TABLE t_big ADD COLUMN c1 INT"),
                                dmlScript(1, "INSERT INTO t_other VALUES (1)"));
 
         GovTicketV2CheckVO.GroupResult gr = checkPreDdl("ALTER TABLE t_big ADD COLUMN c1 INT; INSERT INTO t_other VALUES (1);");
 
-        // M1 transition intercept: FAIL with the split guidance, no route marks
-        assertEquals("FAIL", gr.getCheckStatus());
-        assertNotNull(gr.getErrorMessage());
-        assertTrue(gr.getErrorMessage().contains(DB + ".t_big"));
-        assertNull(gr.getGhostRoutes());
-        // early return on the first hard-pass hit: the second statement is not probed…
-        verify(ghostService, times(1)).probeForRoute(anyString(), any(), any(), anyString(), anyString());
+        // B6 M2 lifts the M1 transition intercept: the group is SPLIT INTO SEGMENTS instead —
+        // [GHOST(1), AUTOEXEC[2,2]], submitted and executed serially without any user action
+        assertEquals("PASS", gr.getCheckStatus());
+        assertEquals(1, gr.getGhostRoutes().size());
+        assertEquals(GovTicketV2CheckVO.GhostRouteVO.ROUTE_GHOST, gr.getGhostRoutes().get(0).getRoute());
+        assertNotNull(gr.getSegments());
+        assertEquals(2, gr.getSegments().size());
+        com.clougence.clouddm.console.web.component.governance.TicketSegment s1 = gr.getSegments().get(0);
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST, s1.getType());
+        assertEquals(1, s1.getSegIdx());
+        assertEquals(Integer.valueOf(1), s1.getStmtIndex()); // 1-based exec_order domain (R11)
+        assertEquals("t_big", s1.getTable());
+        assertEquals("ALTER TABLE t_big ADD COLUMN c1 INT", s1.getSql()); // FULL frozen text
+        com.clougence.clouddm.console.web.component.governance.TicketSegment s2 = gr.getSegments().get(1);
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_AUTOEXEC, s2.getType());
+        assertEquals(2, s2.getSegIdx());
+        assertEquals(List.of(2, 2), s2.getStmtRange());
+    }
+
+    @Test
+    public void check_segmentMatrix_normal2GhostNormal_threeSegments() {
+        // the ruling's canonical shape: [普通×2, GHOST, 普通] → 3 segments, dense segIdx,
+        // 1-based exec_order-domain bounds, consecutive plain statements merged into ONE run
+        splitScripts = List.of(dmlScript(0, "INSERT INTO a VALUES (1)"),
+                               dmlScript(1, "UPDATE b SET x=1"),
+                               alterScript(2, "ALTER TABLE t_big ADD COLUMN c1 INT"),
+                               dmlScript(3, "DELETE FROM c WHERE 1=1"));
+
+        GovTicketV2CheckVO.GroupResult gr = checkPreDdl("INSERT; UPDATE; ALTER; DELETE;");
+
+        assertEquals("PASS", gr.getCheckStatus());
+        assertEquals(3, gr.getSegments().size());
+        com.clougence.clouddm.console.web.component.governance.TicketSegment s1 = gr.getSegments().get(0);
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_AUTOEXEC, s1.getType());
+        assertEquals(1, s1.getSegIdx());
+        assertEquals(List.of(1, 2), s1.getStmtRange());
+        com.clougence.clouddm.console.web.component.governance.TicketSegment s2 = gr.getSegments().get(1);
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST, s2.getType());
+        assertEquals(2, s2.getSegIdx());
+        assertEquals(Integer.valueOf(3), s2.getStmtIndex());
+        assertEquals("t_big", s2.getTable());
+        assertEquals(Long.valueOf(20_000_000L), s2.getRows());
+        com.clougence.clouddm.console.web.component.governance.TicketSegment s3 = gr.getSegments().get(2);
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_AUTOEXEC, s3.getType());
+        assertEquals(3, s3.getSegIdx());
+        assertEquals(List.of(4, 4), s3.getStmtRange());
+    }
+
+    @Test
+    public void check_twoGhostAlters_adjacentGhostSegments() {
+        splitScripts = List.of(alterScript(0, "ALTER TABLE t_big1 ADD COLUMN c1 INT"),
+                               alterScript(1, "ALTER TABLE t_big2 ADD COLUMN c2 INT"),
+                               dmlScript(2, "INSERT INTO a VALUES (1)"));
+
+        GovTicketV2CheckVO.GroupResult gr = checkPreDdl("ALTER; ALTER; INSERT;");
+
+        assertEquals("PASS", gr.getCheckStatus());
+        assertEquals(3, gr.getSegments().size());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST, gr.getSegments().get(0).getType());
+        assertEquals(Integer.valueOf(1), gr.getSegments().get(0).getStmtIndex());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST, gr.getSegments().get(1).getType());
+        assertEquals(Integer.valueOf(2), gr.getSegments().get(1).getStmtIndex());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_AUTOEXEC, gr.getSegments().get(2).getType());
+        assertEquals(List.of(3, 3), gr.getSegments().get(2).getStmtRange());
+        // both ALTERs are probed (no M1-style early return)
+        verify(ghostService, times(2)).probeForRoute(anyString(), any(), any(), anyString(), anyString());
+    }
+
+    @Test
+    public void check_singleAlter_degenerateSingleGhostSegment_m1CompatShape() {
+        GovTicketV2CheckVO.GroupResult gr = checkPreDdl("ALTER TABLE t_big ADD COLUMN c1 INT");
+
+        // the single-ALTER group is the single-GHOST-segment degenerate shape (M1 ⊂ M2)
+        assertEquals(1, gr.getSegments().size());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST, gr.getSegments().get(0).getType());
+        assertEquals(Integer.valueOf(1), gr.getSegments().get(0).getStmtIndex());
     }
 
     @Test
@@ -349,6 +419,9 @@ public class GhostRoutePrecheckTest {
         assertEquals("PASS", gr.getCheckStatus());
         assertEquals(1, gr.getGhostRoutes().size());
         assertEquals(GovTicketV2CheckVO.GhostRouteVO.ROUTE_ALERT_PASS, gr.getGhostRoutes().get(0).getRoute());
+        // M2: an ALERT_PASS statement STAYS in its AUTOEXEC segment — no GHOST segment, and a
+        // pure-alert group carries NO segment plan at all (the whole group runs the legacy shape)
+        assertNull(gr.getSegments());
     }
 
     @Test
@@ -482,6 +555,46 @@ public class GhostRoutePrecheckTest {
         assertEquals("GHOST", route.get("route"));
         assertEquals("t_big", route.get("tableName"));
         assertEquals(1, route.get("stmtIndex"));
+
+        // B6 M2: the segment plan (plan of record, contract :404 additive key) rides in the same
+        // JSON — degenerate single-GHOST-segment shape for the single-ALTER group, with the FULL
+        // frozen statement text (self-contained execution-time dispatch)
+        List<?> segments = (List<?>) precheckJson.get("segments");
+        assertNotNull("plan carrier: precheck_result.segments", segments);
+        assertEquals(1, segments.size());
+        Map<?, ?> seg = (Map<?, ?>) segments.get(0);
+        assertEquals(1, seg.get("segIdx"));
+        assertEquals("GHOST", seg.get("type"));
+        assertEquals(1, seg.get("stmtIndex")); // 1-based exec_order domain (R11)
+        assertEquals("t_big", seg.get("table"));
+        assertEquals("ALTER TABLE t_big ADD COLUMN c1 INT", seg.get("sql"));
+    }
+
+    @Test
+    public void submit_segmentedMixedGroup_planJsonCarriesRangesAndHoleNumbering() {
+        splitScripts = List.of(dmlScript(0, "INSERT INTO a VALUES (1)"),
+                               dmlScript(1, "UPDATE b SET x=1"),
+                               alterScript(2, "ALTER TABLE t_big ADD COLUMN c1 INT"),
+                               dmlScript(3, "DELETE FROM c WHERE 1=1"));
+
+        service.submit(PUID, UID, submitFO("INSERT; UPDATE; ALTER; DELETE;"));
+
+        Map<?, ?> precheckJson = JsonUtils.toObj(captureStmt().getPrecheckResult(), Map.class);
+        List<?> segments = (List<?>) precheckJson.get("segments");
+        assertEquals(3, segments.size());
+        Map<?, ?> s1 = (Map<?, ?>) segments.get(0);
+        assertEquals("AUTOEXEC", s1.get("type"));
+        assertEquals(List.of(1, 2), s1.get("stmtRange")); // 1-based inclusive bounds (R11 pin)
+        Map<?, ?> s2 = (Map<?, ?>) segments.get(1);
+        assertEquals("GHOST", s2.get("type"));
+        assertEquals(3, s2.get("stmtIndex"));
+        assertNull("AUTOEXEC segments carry no sql (the execution-time re-split owns the text)", s1.get("sql"));
+        // the flags authority stays written (sweep/projection pre-filters keep working — the
+        // segment plan wins at the dispatch decision points, decision order pinned in dispatch tests)
+        ArgumentCaptor<DmApprovalDO> ticketCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).insert(ticketCaptor.capture());
+        ApprovalMO mo = JsonUtils.toObj(ticketCaptor.getValue().getTicketInfo(), ApprovalMO.class);
+        assertEquals(List.of(Boolean.TRUE), mo.getGhostRouteFlags());
     }
 
     @Test
@@ -497,6 +610,9 @@ public class GhostRoutePrecheckTest {
         Map<?, ?> precheckJson = JsonUtils.toObj(
             captureStmt().getPrecheckResult(), Map.class);
         assertFalse(precheckJson.containsKey("ghostRoutes"));
+        // pure-normal group: NO segments key at all — the legacy precheck_result shape stays
+        // byte-identical (zero overhead + 存量形态逐位不变 regression pin)
+        assertFalse(precheckJson.containsKey("segments"));
     }
 
     @Test
@@ -618,6 +734,33 @@ public class GhostRoutePrecheckTest {
         verify(stmtMapper).updateSqlForRevision(eq(51L), anyString(), jsonCaptor.capture());
         Map<?, ?> precheckJson = JsonUtils.toObj(jsonCaptor.getValue(), Map.class);
         assertNotNull(precheckJson.get("ghostRoutes"));
+    }
+
+    @Test
+    public void resubmit_segmentedFailedGroup_runtimeResetPlanRecomputed_m2() {
+        // B6 M2 (contract :417 step3): the resubmit of a FAILED segmented group MUST reset the
+        // segment runtime — a stale exec_segments whose stmtRanges point into the OLD text would
+        // make the first-segment dispatch execute wrong statement bounds. The fresh authoritative
+        // precheck recomputes the plan (segments re-probed from scratch).
+        DmApprovalDO ticket = revisionTicket(List.of(true));
+        when(approvalMapper.queryById(900L)).thenReturn(ticket);
+        DmTicketDbStmtDO g1 = revisionGroup(51L, "FAILED", "ALTER TABLE t_big ADD COLUMN c1 INT");
+        g1.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        when(stmtMapper.queryByTicketId(900L)).thenReturn(List.of(g1));
+        splitScripts = List.of(alterScript(0, "ALTER TABLE t_big ADD COLUMN c2 INT"));
+
+        service.resubmit(PUID, UID, resubmitFO(51L, "ALTER TABLE t_big ADD COLUMN c2 INT"));
+
+        // the runtime reset lands on the mapper seam (Java-side write, unit-testable)
+        verify(stmtMapper).updateExecSegments(51L, null);
+        // the rewritten precheck_result carries the RECOMPUTED plan
+        ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
+        verify(stmtMapper).updateSqlForRevision(eq(51L), anyString(), jsonCaptor.capture());
+        Map<?, ?> precheckJson = JsonUtils.toObj(jsonCaptor.getValue(), Map.class);
+        List<?> segments = (List<?>) precheckJson.get("segments");
+        assertNotNull(segments);
+        assertEquals(1, segments.size());
+        assertEquals("ALTER TABLE t_big ADD COLUMN c2 INT", ((Map<?, ?>) segments.get(0)).get("sql"));
     }
 
     @Test

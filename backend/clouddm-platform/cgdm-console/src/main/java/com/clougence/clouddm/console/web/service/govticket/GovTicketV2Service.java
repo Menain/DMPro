@@ -32,6 +32,8 @@ public interface GovTicketV2Service {
     /** B6 M1: dispatch-origin annotations of the ghost auto-route GHOST_EXECUTE audit row. */
     String GHOST_VIA_AUTO_ROUTE = "TICKET_AUTO_ROUTE";
     String GHOST_VIA_RETRY      = "TICKET_RETRY";
+    /** B6 M2: mid-chain dispatch of a GHOST segment by the segment orchestrator (advance/first). */
+    String GHOST_VIA_SEGMENT_CHAIN = "TICKET_SEGMENT_CHAIN";
 
     /** Read-only precheck preview (no persistence). */
     GovTicketV2CheckVO check(String puid, String uid, GovTicketV2CheckFO fo);
@@ -54,6 +56,21 @@ public interface GovTicketV2Service {
     void dispatchGhostGroup(com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO ticket,
                             com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO group,
                             String via);
+
+    /**
+     * B6 M2 (design §6.3): dispatch ONE GHOST segment of a segmented group — the in-chain
+     * variant of {@link #dispatchGhostGroup}. Caller contract: the ticket row lock is ALREADY
+     * held and the group/segment state transitions are owned by the caller
+     * (TicketSegmentService.advanceSegment / dispatchFirstSegment) — no PENDING/FAILED CAS here
+     * (the group is mid-chain EXECUTING; the segment-status CAS already passed under the same
+     * lock). Launches the session bound to (ticketId, groupId, segmentIndex), records
+     * sessionId/taskId ON the passed segment instance (the caller persists the runtime), writes
+     * the group row EXECUTING and audits GHOST_EXECUTE in the submitter's name.
+     */
+    void dispatchGhostSegment(com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO ticket,
+                              com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO group,
+                              com.clougence.clouddm.console.web.component.governance.TicketSegment segment,
+                              String via);
 
     /** List statement groups for a ticket (detail page). */
     List<GovTicketV2GroupVO> groupList(String puid, String uid, long ticketId);

@@ -138,6 +138,11 @@ public class AutoExecServiceImpl implements AutoExecService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.approval.ApprovalControlService approvalControlService;
+    // @Lazy: B6 M2 segment orchestration — the orchestrator lazy-reaches this service back
+    //   (chain-dispatch of the next AUTOEXEC segment) — safe-side proxy injection (iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
     @Resource
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
     @Resource
@@ -295,24 +300,62 @@ public class AutoExecServiceImpl implements AutoExecService {
         // Previously it was before insert, leaving the group in EXECUTING with no job if insert failed.
         this.ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), "EXECUTING", null);
 
+        // B6 M2 segment-aware task construction (design §6.3): with a segment runtime present,
+        // ONLY the current AUTOEXEC segment's stmtRange becomes task rows — exec_order keeps the
+        // GLOBAL numbering WITH HOLES (ghost statements consume their number without a row), so
+        // "exec_order = SplitScript.index + 1" still holds for every task row that exists
+        // (stmt_index contract, M2 revision). The plan↔task join key stays globally consistent.
+        // Unsegmented groups run the original loop bit-for-bit (range [1,∞) — regression pin).
+        final int segFrom;
+        final int segTo;
+        if (StringUtils.isNotBlank(group.getExecSegments())) {
+            List<com.clougence.clouddm.console.web.component.governance.TicketSegment> runtime
+                = com.clougence.clouddm.console.web.component.governance.TicketSegment.parseRuntime(group.getExecSegments());
+            if (runtime == null) {
+                // a runtime we wrote cannot corrupt — refuse rather than execute the WHOLE text
+                // (that would run the ghost ALTERs directly, the exact accident segmentation prevents)
+                throw new IllegalStateException("Unparsable segment runtime for group " + group.getId());
+            }
+            com.clougence.clouddm.console.web.component.governance.TicketSegment current
+                = com.clougence.clouddm.console.web.component.governance.TicketSegment.firstNonTerminal(runtime);
+            if (current == null
+                || !com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_AUTOEXEC.equals(current.getType())
+                || current.getStmtRange() == null || current.getStmtRange().size() < 2) {
+                throw new IllegalStateException(
+                    "Segmented group dispatched without a current AUTOEXEC segment, groupId: " + group.getId());
+            }
+            segFrom = current.getStmtRange().get(0);
+            segTo = current.getStmtRange().get(1);
+        } else {
+            segFrom = 1;
+            segTo = Integer.MAX_VALUE;
+        }
+
         // Split SQL and create tasks
         try (StringReader reader = new StringReader(group.getSqlContent());
              Stream<SplitScript> scripts = this.analysisService.analysisSplitStream(
                  dsConfig, reader, Collections.emptyList(), 1, 0)) {
 
             int order = 1;
+            int taskCount = 0;
             List<DmExecAutoTaskDO> taskBatch = new ArrayList<>(AUTO_EXEC_TASK_INSERT_BATCH_SIZE);
             Iterator<SplitScript> iterator = scripts.iterator();
             while (iterator.hasNext()) {
                 SplitScript script = iterator.next();
+                int execOrder = order++;
+                if (execOrder < segFrom || execOrder > segTo) {
+                    continue; // outside the current segment (a GHOST segment's statement consumes
+                              // its global number without a task row — the exec_order hole)
+                }
                 DmExecAutoTaskDO execTask = new DmExecAutoTaskDO();
                 execTask.setExecSql(script.getScript());
-                execTask.setExecOrder(order++);
+                execTask.setExecOrder(execOrder);
                 execTask.setStatus(AutoExecTaskStatus.WAIT_EXEC);
                 execTask.setAutoExecJobId(job.getId());
                 execTask.setBizId(DmTeamUtils.nextExecTaskBizId());
                 execTask.setQueryId(UUID.randomUUID().toString());
                 taskBatch.add(execTask);
+                taskCount++;
                 if (taskBatch.size() == AUTO_EXEC_TASK_INSERT_BATCH_SIZE) {
                     if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
                         throw new IllegalStateException("Batch insert auto execution tasks failed.");
@@ -321,7 +364,7 @@ public class AutoExecServiceImpl implements AutoExecService {
                 }
             }
 
-            if (order == 1) {
+            if (taskCount == 0) {
                 throw new IllegalStateException("Auto execution job must contain at least one SQL statement.");
             }
 
@@ -768,9 +811,24 @@ public class AutoExecServiceImpl implements AutoExecService {
             return;
         }
 
-        // Update group exec_status
-        String groupStatus = success ? "SUCCESS" : "FAILED";
-        this.ticketDbStmtDal.stmtMapper().updateExecStatus(job.getDependOnGroupId(), groupStatus, errorDetail);
+        // B6 M2: segment-aware completion — a group carrying a segment runtime delegates to the
+        // orchestrator (fresh under-lock re-read + segment-status CAS + jobBizId cross-check →
+        // segment terminal + summary → chained next-segment dispatch, or the group terminal
+        // write when this was the LAST segment). The aggregation tail below is SHARED by both
+        // shapes (unchanged semantics — "all groups terminal → ticket terminal"); a CAS skip
+        // (replayed callback / a concurrent writer already advanced) returns WITHOUT re-driving
+        // the tail — exactly-once, the first writer owns it (the :412 concurrency contract).
+        if (StringUtils.isNotBlank(group.getExecSegments())) {
+            boolean advanced = this.ticketSegmentService.completeAutoexecSegmentUnderLock(
+                ticket, job.getDependOnGroupId(), job.getBizId(), success, errorDetail, job.getUid());
+            if (!advanced) {
+                return;
+            }
+        } else {
+            // Update group exec_status
+            String groupStatus = success ? "SUCCESS" : "FAILED";
+            this.ticketDbStmtDal.stmtMapper().updateExecStatus(job.getDependOnGroupId(), groupStatus, errorDetail);
+        }
 
         // Check all groups for this ticket
         List<DmTicketDbStmtDO> allGroups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(group.getTicketId());

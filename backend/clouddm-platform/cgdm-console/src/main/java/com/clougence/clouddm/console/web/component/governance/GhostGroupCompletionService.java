@@ -70,6 +70,17 @@ public class GhostGroupCompletionService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GhostService           ghostService;
+    // @Lazy: B6 M2 segment orchestration — the orchestrator lazy-reaches GovTicketV2Service /
+    //   AutoExecService back; safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private TicketSegmentService   ticketSegmentService;
+
+    /** M1 four-arg shape (segmentIndex unbound) — delegates with a null segment binding. */
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void onGhostTerminal(long ticketId, long groupId, boolean success, String detail) {
+        onGhostTerminal(ticketId, groupId, null, success, detail);
+    }
 
     /**
      * GhostAsyncTask terminal hook / stop-endpoint writeback. Mirrors handleV2JobCompletion
@@ -78,12 +89,21 @@ public class GhostGroupCompletionService {
      * The hook method carries its own transaction — the AsyncTask worker thread has no
      * transaction context (the design §6.3 implementation-difference note vs the RSocket
      * reportMessage entry).
+     * <p>
+     * B6 M2: a SEGMENTED group (exec_segments runtime present) delegates to the segment
+     * orchestrator — the CAS narrows from "group EXECUTING" to "THIS segment EXECUTING"
+     * (segmentIndex-bound when the task carries one), the terminal write targets the segment
+     * (+ group only when it was the last one / on failure) and the next segment is chain-
+     * dispatched under the same lock. The aggregation tail below is shared by both shapes; a
+     * CAS skip (replayed hook / sweep already advanced) returns WITHOUT re-driving the tail —
+     * the first writer owns it (exactly-once, the M1 dual-event-source contract extended).
      *
+     * @param segmentIndex the configData segment binding (null = M1 single-segment degenerate shape)
      * @param success true ONLY for the tool status COMPLETED; FAILED/ABORTED/unknown → false
      * @param detail  exec_detail text (pure error semantics — the frontend renders it verbatim)
      */
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
-    public void onGhostTerminal(long ticketId, long groupId, boolean success, String detail) {
+    public void onGhostTerminal(long ticketId, long groupId, Integer segmentIndex, boolean success, String detail) {
         // Lock the ticket row BEFORE writing the group status (handleV2JobCompletion contract:
         // serializes the concurrent event sources per ticket — single lock, same order).
         DmApprovalDO ticket = this.approvalDal.approvalMapper().selectByIdForUpdate(ticketId);
@@ -91,13 +111,26 @@ public class GhostGroupCompletionService {
             return; // ticket gone or already driven terminal by the other event source / sweep
         }
         DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(groupId);
-        if (group == null || !EXEC_STATUS_EXECUTING.equals(group.getExecStatus())) {
-            // CAS guard: a replayed hook, a sweep that already judged the group, or a retryGroup
-            // rebuild that already moved on — the first writer wins, later writers skip.
+        if (group == null) {
             return;
         }
 
-        this.ticketDbStmtDal.stmtMapper().updateExecStatus(groupId, success ? EXEC_STATUS_SUCCESS : EXEC_STATUS_FAILED, detail);
+        if (StringUtils.isNotBlank(group.getExecSegments())) {
+            // B6 M2 segment shape: the orchestrator re-reads nothing extra (this group row IS
+            // the fresh under-lock read) and owns the segment CAS + next-segment dispatch.
+            boolean advanced = this.ticketSegmentService.completeGhostSegmentUnderLock(
+                ticket, group, segmentIndex, success, detail);
+            if (!advanced) {
+                return; // CAS skip: replayed hook / the sweep already judged this segment
+            }
+        } else {
+            if (!EXEC_STATUS_EXECUTING.equals(group.getExecStatus())) {
+                // CAS guard: a replayed hook, a sweep that already judged the group, or a retryGroup
+                // rebuild that already moved on — the first writer wins, later writers skip.
+                return;
+            }
+            this.ticketDbStmtDal.stmtMapper().updateExecStatus(groupId, success ? EXEC_STATUS_SUCCESS : EXEC_STATUS_FAILED, detail);
+        }
 
         List<DmTicketDbStmtDO> allGroups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
         boolean allTerminal = allGroups.stream().allMatch(g ->
@@ -115,7 +148,7 @@ public class GhostGroupCompletionService {
 
     /**
      * WAIT_EXEC sweep liveness probe (R2, design §6.3): the CALLER (recoverV2CompletionIfDue)
-     * already holds the ticket row lock — this method performs NO lock acquisition and NO
+     * already holds the ticket row lock — this method performs NO ticket-lock acquisition and NO
      * aggregation (the sweep's own tail aggregates uniformly).
      * <p>
      * Judgement for an EXECUTING group bound to a ghost migration:
@@ -128,10 +161,28 @@ public class GhostGroupCompletionService {
      *     FAILED.</li>
      * </ul>
      * Best-effort: any probe failure is caught by the caller and retried on the next sweep cycle.
+     * <p>
+     * <b>RR staleness guard (check F1, same class as TicketSegmentService.repairGroupUnderLock)</b>:
+     * the judgement runs in a FRESH transaction ({@code REQUIRES_NEW}) and re-reads the group row
+     * here — the caller's sweep read view predates its ticket row lock, so a hook terminal write
+     * committed while the sweep waited on the lock would be invisible to the caller's snapshot:
+     * the probe would then mix the stale "group EXECUTING / task RUNNING" view with the CURRENT
+     * remote {@code hasSession} (the hook released the session right after committing) and
+     * overwrite a committed SUCCESS with FAILED. Under the fresh post-lock read view the
+     * invariant holds: the hook commits BEFORE the task flips terminal and BEFORE the session
+     * closes, so "group still EXECUTING after the re-read" ⟹ the hook never committed ⟹ the
+     * task/session signals are judgement-sound. The inner transaction must NEVER take the ticket
+     * row lock (the suspended caller holds it); its FAILED write commits independently, so the
+     * caller's stale aggregation tail may fail the ticket on the NEXT sweep cycle (~7s cadence).
      *
      * @return true when the group was judged dead and written FAILED
      */
-    public boolean probeGhostGroupUnderLock(DmApprovalDO lockedTicket, DmTicketDbStmtDO group) {
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRES_NEW)
+    public boolean probeGhostGroupUnderLock(DmApprovalDO lockedTicket, DmTicketDbStmtDO staleGroup) {
+        DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(staleGroup.getId());
+        if (group == null || !EXEC_STATUS_EXECUTING.equals(group.getExecStatus())) {
+            return false; // the concurrent hook/sweep already wrote the terminal (fresh re-read)
+        }
         DmExecAsyncTaskDO task = this.ghostService.findTaskForTicketGroup(lockedTicket.getId(), group.getId());
         if (task == null) {
             return failGroup(group.getId(), "ghost task record missing while the group is EXECUTING");
