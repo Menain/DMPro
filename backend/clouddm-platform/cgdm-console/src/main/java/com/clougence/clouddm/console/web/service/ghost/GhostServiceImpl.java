@@ -337,6 +337,61 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         return findTaskForTicketGroup(ticketId, groupId, null);
     }
 
+    /**
+     * B6 M3 segment-retry target-effect probe (interface contract above): parse the decidable
+     * single-action ADD COLUMN shape, then one channel-C round trip against
+     * information_schema.COLUMNS. NEVER-THROW — every failure/timeout/undecidable shape degrades
+     * to false (the caller conservatively rebuilds; gh-ost's duplicate-column error backstops).
+     * Trusted ticket-chain surface: no tenant check (the group row's dsId comes from the ticket).
+     */
+    @Override
+    public boolean probeAddColumnLanded(String uid, long dsId, String dbName, String alterSql) {
+        try {
+            GhostResumeProbe.Target target = GhostResumeProbe.parseSingleAddColumn(alterSql, dbName);
+            if (target == null) {
+                return false; // undecidable shape (MODIFY/DROP/multi-action/...) → conservative rebuild
+            }
+            DmDsDO dsDO = dsDal.dsMapper().queryDsIdentityById(dsId);
+            if (dsDO == null || !SUPPORTED.contains(dsDO.getDataSourceType())) {
+                return false;
+            }
+            validateIdentifier(dbName);
+            validateIdentifier(target.getTable());
+            validateIdentifier(target.getColumn());
+            DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsId);
+            String sql = columnExistsSql(escapeMySqlStringLiteral(dbName), //
+                    escapeMySqlStringLiteral(target.getTable()), escapeMySqlStringLiteral(target.getColumn()));
+            boolean[] landed = { false };
+            diagnosticExecutor.runInSession(uid, dsDO, dsConfig, diagOpts(), session -> {
+                List<Map<String, String>> rows = executeStatement(session, sql);
+                if (!rows.isEmpty()) {
+                    Long cnt = parseLong(rows.get(0).get("cnt"));
+                    landed[0] = cnt != null && cnt > 0;
+                }
+                return null;
+            });
+            if (landed[0]) {
+                log.info("[Ghost] resume probe: column {}.{}.{} already exists — treating the lost-writeback"
+                        + " segment as landed", dbName, target.getTable(), target.getColumn());
+            }
+            return landed[0];
+        } catch (DiagTimeoutException e) {
+            log.warn("[Ghost] resume probe timed out after {}s on dsId={} — conservative rebuild", queryTimeoutSeconds, dsId);
+            return false;
+        } catch (Exception e) {
+            // NEVER-THROW contract: including sneaky-thrown checked shapes — conservative rebuild
+            log.warn("[Ghost] resume probe failed on dsId={}, db {} — conservative rebuild", dsId, dbName, e);
+            return false;
+        }
+    }
+
+    /** existence probe of ONE column (value comparisons — string-literal escaping, B4 contract). */
+    static String columnExistsSql(String escapedDb, String escapedTable, String escapedColumn) {
+        return "SELECT COUNT(*) AS cnt FROM information_schema.columns " //
+                + "WHERE table_schema = " + escapedDb + " AND table_name = " + escapedTable //
+                + " AND column_name = " + escapedColumn;
+    }
+
     @Override
     public DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId, Integer segmentIndex) {
         LambdaQueryWrapper<DmExecAsyncTaskDO> wrapper = new LambdaQueryWrapper<>();

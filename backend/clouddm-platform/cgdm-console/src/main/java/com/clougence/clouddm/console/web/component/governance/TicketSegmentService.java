@@ -23,9 +23,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.api.console.autoexec.ErrorStrategy;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
+import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
+import com.clougence.clouddm.console.web.service.ghost.GhostResumeProbe;
 import com.clougence.clouddm.console.web.service.ghost.GhostService;
 import com.clougence.clouddm.console.web.service.ghost.asyntask.GhostAsyncTaskConfig;
 import com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service;
@@ -161,6 +164,235 @@ public class TicketSegmentService {
     }
 
     // ==================================================================================
+    // B6 M3: retryGroup resume-from-failed-segment (design §6.5, contract :417 M3 revision)
+    // ==================================================================================
+
+    /**
+     * Resume a SEGMENTED group from its failed segment (caller: GovTicketV2ServiceImpl.retryGroup,
+     * UNDER the ticket row lock it just took — same lock-order discipline as every writer here).
+     * <p>
+     * Semantics (the M2 window-guard replacement; whole-group replay would necessarily fail on an
+     * already-SUCCESS ghost segment — its ALTER landed):
+     * <ul>
+     * <li><b>Fresh-read-after-lock</b> (dispatchFirstSegment/check-F1 discipline): the pre-lock
+     *     group row of the caller is NEVER trusted — status and runtime are re-read here;</li>
+     * <li>already-SUCCESS segments keep their terminal state and are NEVER re-played;</li>
+     * <li>the resume target = the first non-SUCCESS segment (FAILED in the normal shape; a
+     *     dead-body EXECUTING / undispatched PENDING is picked up by the same lookup) — it resets
+     *     to PENDING with cleared error/timestamps/bindings, then re-marks EXECUTING and
+     *     dispatches through the SAME {@link #dispatchSegmentUnderLock} the chain uses;</li>
+     * <li>GHOST target: idempotent pre-rebuild cleanup (closeQuietly the recorded old session —
+     *     the sidecar cap-2 slot; the old AsyncTask is guaranteed terminal by the active check and
+     *     is NEVER reused — the rebuild launches a fresh task; old-table remnants are deliberately
+     *     not cleaned, R7 retention) + the target-effect probe (M1 check 前瞻①): a decidable
+     *     single-action ADD COLUMN whose target column already exists means the lost-writeback
+     *     migration ACTUALLY LANDED — the segment advances as SUCCESS carrying the probe evidence
+     *     in its summary instead of replaying over the altered table. Undecidable shapes
+     *     (MODIFY/DROP/multi-action) skip the probe; probe failure/timeout degrades to the
+     *     conservative rebuild (gh-ost's duplicate-column error is the safe backstop);</li>
+     * <li>extended active check (the ruling's "活跃 autoexec job ∨ 该组任一段活跃 GHOST AsyncTask"):
+     *     an in-flight job always rejects; a FINISH job rejects only when the target is its own
+     *     AUTOEXEC segment (lost writeback = the sweep's advance job, not a retry replay — legacy
+     *     :394-399 parity); an earlier segment's FINISH job remnant (uk single-row) never blocks a
+     *     GHOST resume. Ghost tasks: the repo-consistent non-terminal set (COMPLETE/FAILURE/CANCEL
+     *     terminal — everything else, including the transient INIT/PAUSING/CANCELING, is active:
+     *     the M1 superset ruling);</li>
+     * <li>a group WITHOUT a parsable runtime: PENDING + plan present = pre-first-dispatch →
+     *     initialize from the plan and dispatch the first segment; anything else (a FAILED/
+     *     EXECUTING group whose per-segment history is missing/corrupt) rejects with the
+     *     return-revise guidance — replaying the whole text could re-run a landed ghost ALTER.</li>
+     * </ul>
+     * The group row itself is never written here except through the dispatch (EXECUTING, stale
+     * exec_detail cleared) / probe-success advance (group terminal when it was the last segment) —
+     * markExecutionDispatched stays in retryGroup.
+     *
+     * @param uid the retry operator (AUTOEXEC job uid; the ghost launch keeps the submitter owner)
+     * @return true ONLY when the probe-success advance wrote the GROUP TERMINAL synchronously
+     *         (last resumable segment landed, NOTHING dispatched): no completion callback will
+     *         ever fire and the EXEC_FAIL ticket is outside the WAIT_EXEC sweep IN set, so the
+     *         CALLER must run the shared all-groups aggregation tail itself (the
+     *         handleV2JobCompletion tail mirror) or the ticket sticks at EXEC_FAIL over
+     *         all-SUCCESS groups. Every other path (dispatch / rejection) returns false —
+     *         the dispatched body's callback owns the aggregation there.
+     */
+    public boolean resumeGroupUnderLock(DmApprovalDO ticket, long groupId, String uid) {
+        DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(groupId); // fresh under-lock read
+        if (group == null) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FOUND.name(), groupId));
+        }
+        String status = group.getExecStatus();
+        if (!EXEC_STATUS_FAILED.equals(status) && !TicketSegment.STATUS_PENDING.equals(status)
+            && !EXEC_STATUS_EXECUTING.equals(status)) {
+            // a concurrent writer (hook/callback/sweep) already moved the group under the lock
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FAILED.name()));
+        }
+
+        List<TicketSegment> runtime = TicketSegment.parseRuntime(group.getExecSegments());
+        if (runtime == null) {
+            if (TicketSegment.STATUS_PENDING.equals(status)
+                && TicketSegment.hasGhostSegment(TicketSegment.parsePlan(group.getPrecheckResult()))) {
+                // pre-first-dispatch (or its rollback): nothing ever executed — safe to start over
+                assertNoActiveJob(group);
+                initializeAndDispatchFirstSegment(ticket, group, uid);
+                return false; // a dispatch happened — its completion callback owns the aggregation
+            }
+            // a group that already ran with a missing/corrupt runtime: per-segment history is gone,
+            // a whole-text replay could re-run a landed ghost ALTER → return-revise guidance
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED.name()));
+        }
+
+        TicketSegment target = TicketSegment.firstResumable(runtime);
+        if (target == null) {
+            // every segment SUCCESS while the group row is non-terminal — inconsistent carrier,
+            // nothing to resume (the sweep's all-terminal repair owns the group write)
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FAILED.name()));
+        }
+
+        assertNoActiveBody(ticket, group, runtime, target);
+
+        // pre-before baseline (first-capture-wins; mid-chain usually a no-op — the first dispatch
+        // already captured; mirrors the legacy retryGroup :455 and dispatchGhostSegment contracts)
+        this.schemaSnapshotService.captureIfMissing(group, ticket.getId());
+
+        if (TicketSegment.TYPE_GHOST.equals(target.getType())) {
+            // idempotent pre-rebuild cleanup: release the old session (sidecar cap-2 slot). The old
+            // AsyncTask needs no disposal — the active check above guaranteed it is terminal, and
+            // the rebuild launches a FRESH task (never reused). Old-table remnants stay (R7).
+            releaseSegmentSessionQuietly(ticket, target);
+            // target-effect probe (M1 check 前瞻①): decidable ADD COLUMN already landed → the
+            // lost-writeback migration actually succeeded — advance as SUCCESS with the evidence
+            if (this.ghostService.probeAddColumnLanded(ticket.getOwnerUid(), group.getDsId(),
+                    group.getDbName(), target.getSql())) {
+                target.setError(null);
+                // no next PENDING segment ⟹ advanceUnderLock writes the GROUP TERMINAL right here
+                // and NOTHING dispatches — signal the caller to run the aggregation tail itself
+                boolean groupTerminal = TicketSegment.nextPending(runtime, target.getSegIdx()) == null;
+                advanceUnderLock(ticket, group, runtime, target, true, null,
+                    buildProbeSummary(target, group.getDbName()), uid);
+                return groupTerminal;
+            }
+        }
+        // reset the failed segment → PENDING (+ clear error/timestamps/stale bindings), then the
+        // advanceSegment-shaped re-mark + dispatch (one persist — the intermediate PENDING is
+        // never observable outside this transaction)
+        resetSegmentForRerun(target);
+        target.setStatus(TicketSegment.STATUS_EXECUTING);
+        target.setStartedAt(System.currentTimeMillis());
+        persistRuntime(group, runtime);
+        dispatchSegmentUnderLock(ticket, group, runtime, target, uid, GovTicketV2Service.GHOST_VIA_RETRY);
+        return false; // a dispatch happened — its completion callback owns the aggregation
+    }
+
+    /** the runtime-null PENDING shape: rebuild the runtime from the plan and dispatch segment 1. */
+    private void initializeAndDispatchFirstSegment(DmApprovalDO ticket, DmTicketDbStmtDO group, String uid) {
+        List<TicketSegment> plan = TicketSegment.parsePlan(group.getPrecheckResult());
+        List<TicketSegment> runtime = TicketSegment.initRuntime(plan);
+        TicketSegment first = runtime.get(0);
+        first.setStatus(TicketSegment.STATUS_EXECUTING);
+        first.setStartedAt(System.currentTimeMillis());
+        this.schemaSnapshotService.captureIfMissing(group, ticket.getId());
+        persistRuntime(group, runtime);
+        dispatchSegmentUnderLock(ticket, group, runtime, first, uid, GovTicketV2Service.GHOST_VIA_RETRY);
+    }
+
+    /**
+     * Extended active check (design §6.5): "活跃 autoexec job ∨ 该组任一段活跃 GHOST AsyncTask".
+     * Job: an in-flight status always rejects; FINISH rejects only when the resume target is its
+     * OWN AUTOEXEC segment (lost writeback → the sweep advances it as SUCCESS — a retry replay
+     * would re-run landed statements; legacy retryGroup :394-399 parity), while an earlier
+     * segment's FINISH remnant (uk single-row ruling (a)) never blocks a GHOST resume.
+     * Ghost tasks: checked over EVERY ghost segment binding, not just the target (the ruling's
+     * 任一段); non-terminal = active (M1 superset incl. INIT/PAUSING/CANCELING). A segment without
+     * a recorded taskId never launched (the recording commits with the launch) — nothing to check.
+     */
+    private void assertNoActiveBody(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                    List<TicketSegment> runtime, TicketSegment target) {
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryByDependOnGroupId(group.getId());
+        if (job != null) {
+            AutoExecJobStatus jobStatus = job.getStatus();
+            boolean terminalJob = jobStatus == AutoExecJobStatus.FAILED || jobStatus == AutoExecJobStatus.TERMINATION;
+            boolean finishRemnant = jobStatus == AutoExecJobStatus.FINISH
+                && !TicketSegment.TYPE_AUTOEXEC.equals(target.getType());
+            if (!terminalJob && !finishRemnant) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_RELEASE_STMT_JOB_ACTIVE.name()));
+            }
+        }
+        for (TicketSegment seg : runtime) {
+            if (seg == null || !TicketSegment.TYPE_GHOST.equals(seg.getType()) || seg.getTaskId() == null) {
+                continue;
+            }
+            DmExecAsyncTaskDO task = this.execDal.asyncTaskMapper().queryById(seg.getTaskId());
+            if (task != null && !isTerminalTaskStatus(task.getStatus())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_GHOST_TASK_ACTIVE.name()));
+            }
+        }
+    }
+
+    /** the runtime-null branch's job guard (legacy PENDING/EXECUTING retry parity, under lock). */
+    private void assertNoActiveJob(DmTicketDbStmtDO group) {
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryByDependOnGroupId(group.getId());
+        if (job != null && job.getStatus() != AutoExecJobStatus.FAILED
+            && job.getStatus() != AutoExecJobStatus.TERMINATION) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.GOV_RELEASE_STMT_JOB_ACTIVE.name()));
+        }
+    }
+
+    /** reset a resumed segment to PENDING: clear error/timestamps and every stale execution binding. */
+    private static void resetSegmentForRerun(TicketSegment seg) {
+        seg.setStatus(TicketSegment.STATUS_PENDING);
+        seg.setError(null);
+        seg.setStartedAt(null);
+        seg.setFinishedAt(null);
+        seg.setJobBizId(null);
+        seg.setSessionId(null);
+        seg.setTaskId(null);
+        seg.setSummary(null);
+    }
+
+    /**
+     * Best-effort release of a ghost segment's recorded session (never-throw; the sidecar GHOST
+     * concurrency slot, cap 2, is only returned on close — a dead-judged or rebuilt segment must
+     * not starve future auto-route dispatches). Owner uid = the launch uid = the ticket submitter
+     * (dispatchGhostSegment binds executeForTicket to ticket.getOwnerUid() by construction).
+     */
+    private void releaseSegmentSessionQuietly(DmApprovalDO ticket, TicketSegment seg) {
+        if (seg == null || StringUtils.isBlank(seg.getSessionId())) {
+            return;
+        }
+        try {
+            this.ghostService.releaseSessionQuietly(ticket.getOwnerUid(), seg.getSessionId());
+        } catch (RuntimeException e) {
+            log.warn("[TicketSegment] ghost session release failed for segment {} (continues)", seg.getSegIdx(), e);
+        }
+    }
+
+    /** resume-probe evidence frozen into the segment summary (auditable "why SUCCESS" trail). */
+    private static Map<String, Object> buildProbeSummary(TicketSegment seg, String dbName) {
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("status", TicketSegment.STATUS_SUCCESS);
+        summary.put("resumeProbe", "TARGET_COLUMN_EXISTS"); // 迁移实成功:ADD COLUMN 目标列已存在
+        summary.put("table", seg.getTable());
+        // the probe already decided this exact input is parseable — the re-parse only recovers the
+        // column name for the evidence record (null-safe: the summary stays valid without it)
+        GhostResumeProbe.Target target = GhostResumeProbe.parseSingleAddColumn(seg.getSql(), dbName);
+        if (target != null) {
+            summary.put("column", target.getColumn());
+        }
+        if (seg.getStartedAt() != null) {
+            summary.put("startedAt", seg.getStartedAt());
+        }
+        summary.put("finishedAt", System.currentTimeMillis());
+        return summary;
+    }
+
+    // ==================================================================================
     // segment completion (the advanceSegment single service method — two callback callers)
     // ==================================================================================
 
@@ -274,16 +506,20 @@ public class TicketSegmentService {
         next.setStatus(TicketSegment.STATUS_EXECUTING);
         next.setStartedAt(System.currentTimeMillis());
         persistRuntime(group, runtime);
-        dispatchSegmentUnderLock(ticket, group, runtime, next, dispatchUid);
+        dispatchSegmentUnderLock(ticket, group, runtime, next, dispatchUid,
+            GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN);
         return true;
     }
 
-    /** Type-specific dispatch of an already-EXECUTING-marked segment (caller persists runtime after). */
+    /**
+     * Type-specific dispatch of an already-EXECUTING-marked segment (caller persists runtime after).
+     * {@code ghostVia} annotates the GHOST_EXECUTE audit row (segment chain vs M3 retry resume).
+     */
     private void dispatchSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
-                                          List<TicketSegment> runtime, TicketSegment seg, String uid) {
+                                          List<TicketSegment> runtime, TicketSegment seg, String uid,
+                                          String ghostVia) {
         if (TicketSegment.TYPE_GHOST.equals(seg.getType())) {
-            this.govTicketV2Service.dispatchGhostSegment(ticket, group, seg,
-                GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN);
+            this.govTicketV2Service.dispatchGhostSegment(ticket, group, seg, ghostVia);
             persistRuntime(group, runtime); // the launch recorded sessionId/taskId on the segment
             return;
         }
@@ -374,7 +610,8 @@ public class TicketSegmentService {
             current.setStatus(TicketSegment.STATUS_EXECUTING);
             current.setStartedAt(System.currentTimeMillis());
             persistRuntime(group, runtime);
-            dispatchSegmentUnderLock(ticket, group, runtime, current, SYSTEM_OPERATOR);
+            dispatchSegmentUnderLock(ticket, group, runtime, current, SYSTEM_OPERATOR,
+                GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN);
             return;
         }
 
@@ -440,6 +677,15 @@ public class TicketSegmentService {
                                       List<TicketSegment> runtime, TicketSegment seg, String detail) {
         log.warn("[TicketSegment] segment {} of group {} judged dead by the sweep probe: {}",
             seg.getSegIdx(), group.getId(), detail);
+        // B6 M3 orphan-session convergence (M2 check 裁决项 2): a dead-judged GHOST segment may
+        // still hold an OPEN tool session (crash between the hook commit and its release, or a
+        // pre-dock-guard raw pause remnant) — the sidecar GHOST concurrency slot (cap 2) is only
+        // returned on session close, so release it here or every future auto-route dispatch
+        // starves after two such leaks. Never-throw, best effort (closeSession on a gone session
+        // is a no-op; the segment FAILED write proceeds regardless).
+        if (TicketSegment.TYPE_GHOST.equals(seg.getType())) {
+            releaseSegmentSessionQuietly(ticket, seg);
+        }
         advanceUnderLock(ticket, group, runtime, seg, false, detail, null, SYSTEM_OPERATOR);
     }
 

@@ -345,6 +345,54 @@ public class GhostGroupCompletionServiceTest {
         return group;
     }
 
+    // ============ B6 M3 orphan-session convergence (M2 check 裁决项 2: dead judgement releases) ============
+
+    @Test
+    public void probe_taskTerminalWritebackLost_releasesOrphanSession_m3() {
+        // the hook died between its commit and releaseTicketSession (or a pre-dock-guard raw pause
+        // left the task finished over a throttled-alive session) — the dead judgement must return
+        // the sidecar GHOST slot (cap 2), or every future auto-route dispatch starves after two leaks
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID))
+            .thenReturn(task(AsyncTaskStatus.COMPLETE));
+
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
+
+        verify(ghostService).releaseSessionQuietly("uid-launcher", "session-1");
+        verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("writeback lost"));
+    }
+
+    @Test
+    public void probe_taskMissing_noSessionToRelease_m3() {
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(null);
+
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
+
+        verify(ghostService, never()).releaseSessionQuietly(anyString(), anyString());
+    }
+
+    @Test
+    public void probe_sessionLost_noRelease_sessionAlreadyGone_m3() {
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID)).thenReturn(task(AsyncTaskStatus.RUNNING));
+        when(ghostService.hasSession("uid-launcher", "session-1")).thenReturn(false);
+
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
+
+        // hasSession just proved the session is gone — a close RPC would be a pointless round trip
+        verify(ghostService, never()).releaseSessionQuietly(anyString(), anyString());
+    }
+
+    @Test
+    public void probe_releaseFailure_neverBlocksTheFailedWrite_m3() {
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID))
+            .thenReturn(task(AsyncTaskStatus.FAILURE));
+        doThrow(new RuntimeException("sidecar gone")).when(ghostService)
+            .releaseSessionQuietly(anyString(), anyString());
+
+        assertTrue(service.probeGhostGroupUnderLock(ticket(ApprovalStatus.RUNNING), executingGroupForProbe()));
+
+        verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("writeback lost"));
+    }
+
     // ==================== helpers ====================
 
     private static DmApprovalDO ticket(ApprovalStatus status) {

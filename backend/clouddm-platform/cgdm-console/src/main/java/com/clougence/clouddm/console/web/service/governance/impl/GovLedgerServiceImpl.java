@@ -189,6 +189,12 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             vo.setPreDbs(buildPreDbs(ticketStmts, dsNameMap));
             vo.setProdDbs(buildProdDbs(ticketStmts, pairMap, dsNameMap));
             vo.setPromoted(promoted);
+            // B6 M3 过渡明示 (additive display flag): any group carrying a ghost route mark
+            // (segment plan ∨ M1 ghostRoutes) → the merge-confirm modal shows the direct-replay
+            // lock-risk hint (release-chain ghost routing is M5).
+            vo.setGhostRouted(ticketStmts.stream().anyMatch(
+                s -> com.clougence.clouddm.console.web.component.governance.GhostRouteMarks
+                    .hasGhostRoute(s.getPrecheckResult())));
             if (promoted && releaseStmt != null) {
                 DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseStmt.getReleaseId());
                 if (release != null) {

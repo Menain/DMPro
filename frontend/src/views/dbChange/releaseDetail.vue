@@ -48,6 +48,10 @@
           </div>
         </section>
 
+        <Alert v-if="ghostReplayHint" type="warning" show-icon class="gov-ghost-replay-hint">
+          {{ $t('gov-release-ghost-replay-hint') }}
+        </Alert>
+
         <section v-if="showReleaseActions" class="page-section">
           <div class="gov-release-actions">
             <Button v-if="canReturnRelease" type="warning" :loading="returning" @click="openReturnModal">
@@ -305,6 +309,19 @@ export default {
         return false;
       }
       return ['REJECTED', 'CANCELLED', 'RETURNED'].includes(this.detail.status);
+    },
+    // B6 M3 发布链过渡明示：gate_result 的 additive 提示键（ghostRoutedStmtCount>0）→ 黄旗
+    // 「PROD 重放=直接执行，大表存在锁风险」；旧发布单无该键 → 不显示（容错解析）
+    ghostReplayHint() {
+      if (!this.detail || !this.detail.gateResult) {
+        return false;
+      }
+      try {
+        const gr = JSON.parse(this.detail.gateResult);
+        return Number(gr && gr.ghostRoutedStmtCount) > 0;
+      } catch (e) {
+        return false;
+      }
     }
   },
   mounted() {
@@ -556,6 +573,10 @@ export default {
 .db-change-release-detail {
   .release-detail-back {
     margin-bottom: 8px;
+  }
+
+  .gov-ghost-replay-hint {
+    margin-bottom: 24px;
   }
 
   .page-section {

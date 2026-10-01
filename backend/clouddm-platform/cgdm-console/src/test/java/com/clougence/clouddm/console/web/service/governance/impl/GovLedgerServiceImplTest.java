@@ -164,6 +164,75 @@ public class GovLedgerServiceImplTest {
         verify(approvalMapper, times(1)).selectBatchIds(anyCollection());
     }
 
+    // ==================== B6 M3 过渡明示: ghostRouted additive flag ====================
+
+    @Test
+    public void list_ghostRoutedTicket_flaggedForMergeConfirmHint_m3() {
+        long ticketId = 110L;
+        long stmtId = 210L;
+
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "pre_db", "SUCCESS");
+        stmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"segments\":["
+            + "{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"sql\":\"ALTER TABLE t_big ADD c INT\"}]}");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+        when(approvalMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL", 5L)));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(10L)).thenReturn(buildDs(10L, "pre-ds"));
+        when(dsMapper.queryDsIdentityById(20L)).thenReturn(buildDs(20L, "prod-ds"));
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertEquals(1, result.size());
+        assertTrue("the segmented ghost route marks the ledger row", result.get(0).isGhostRouted());
+    }
+
+    @Test
+    public void list_m1GhostRoutesMarkOnly_alsoFlagged_m3() {
+        // the M1 flags-only degenerate shape (ghostRoutes display marks, no segment plan) counts too
+        long ticketId = 111L;
+        long stmtId = 211L;
+
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "pre_db", "SUCCESS");
+        stmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"ghostRoutes\":["
+            + "{\"stmtIndex\":1,\"route\":\"GHOST\",\"tableName\":\"t_big\"}]}");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+        when(approvalMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL", 5L)));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(10L)).thenReturn(buildDs(10L, "pre-ds"));
+        when(dsMapper.queryDsIdentityById(20L)).thenReturn(buildDs(20L, "prod-ds"));
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertTrue(result.get(0).isGhostRouted());
+    }
+
+    @Test
+    public void list_plainTicket_flagStaysFalse_m3() {
+        long ticketId = 112L;
+        long stmtId = 212L;
+
+        DmTicketDbStmtDO stmt = buildStmt(stmtId, ticketId, 30L, 10L, "pre_db", "SUCCESS");
+        stmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\"}");
+        when(ticketStmtMapper.selectList(any())).thenReturn(List.of(stmt));
+        when(approvalMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL", 5L)));
+        when(releaseStmtMapper.queryBySourceStmtId(stmtId)).thenReturn(null);
+        when(pairMapper.selectBatchIds(anyCollection()))
+            .thenReturn(List.of(buildPair(30L, 20L, "prod_db", "ENABLED")));
+        when(dsMapper.queryDsIdentityById(10L)).thenReturn(buildDs(10L, "pre-ds"));
+        when(dsMapper.queryDsIdentityById(20L)).thenReturn(buildDs(20L, "prod-ds"));
+
+        List<GovLedgerTicketVO> result = service.list(PUID);
+
+        assertFalse(result.get(0).isGhostRouted());
+    }
+
     // ==================== two tickets, one batch query ====================
 
     @Test

@@ -193,6 +193,25 @@ public class TicketSegment {
         return null;
     }
 
+    /**
+     * B6 M3 retry-resume target: the first segment that is NOT SUCCESS (list order = segIdx
+     * order). Under the serial-progress invariant this is exactly the FAILED segment (its
+     * predecessors are SUCCESS, its successors never left PENDING); a dead-body EXECUTING or an
+     * undispatched PENDING segment is picked up by the same lookup. Null when every segment
+     * already landed (nothing to resume).
+     */
+    public static TicketSegment firstResumable(List<TicketSegment> runtime) {
+        if (runtime == null) {
+            return null;
+        }
+        for (TicketSegment seg : runtime) {
+            if (seg != null && !STATUS_SUCCESS.equals(seg.getStatus())) {
+                return seg;
+            }
+        }
+        return null;
+    }
+
     /** The segment with the given 1-based segIdx; null when absent. */
     public static TicketSegment byIdx(List<TicketSegment> runtime, int segIdx) {
         if (runtime == null) {

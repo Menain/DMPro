@@ -67,6 +67,7 @@ public class TicketSegmentServiceTest {
     private DmTicketDbStmtMapper     stmtMapper;
     private ExecutionDal             execDal;
     private DmExecAutoJobMapper      autoJobMapper;
+    private com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper asyncTaskMapper;
     private AutoExecService          autoExecService;
     private GovTicketV2Service       govTicketV2Service;
     private GhostService             ghostService;
@@ -103,6 +104,8 @@ public class TicketSegmentServiceTest {
         execDal = mock(ExecutionDal.class);
         autoJobMapper = mock(DmExecAutoJobMapper.class);
         when(execDal.autoJobMapper()).thenReturn(autoJobMapper);
+        asyncTaskMapper = mock(com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper.class);
+        when(execDal.asyncTaskMapper()).thenReturn(asyncTaskMapper);
         autoExecService = mock(AutoExecService.class);
         govTicketV2Service = mock(GovTicketV2Service.class);
         ghostService = mock(GhostService.class);
@@ -640,6 +643,340 @@ public class TicketSegmentServiceTest {
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
 
+    // ==================== B6 M3: retryGroup resume-from-failed-segment ====================
+
+    @Test
+    public void resume_failedGhostSegment_probeFalse_cleansSessionAndRebuilds_m3() {
+        TicketSegment g = seg(2, "GHOST", "FAILED", "ALTER TABLE t_big ADD c INT", null, 3);
+        g.setSessionId("s-old");
+        g.setTaskId(77L);
+        g.setError("boom");
+        g.setFinishedAt(123L);
+        DmTicketDbStmtDO group = resumeGroup("FAILED",
+            seg(1, "AUTOEXEC", "SUCCESS", null, List.of(1, 2), null),
+            g,
+            seg(3, "AUTOEXEC", "PENDING", null, List.of(4, 4), null));
+        when(asyncTaskMapper.queryById(77L)).thenReturn(taskWithStatus(AsyncTaskStatus.FAILURE));
+        DmExecAutoJobDO remnant = new DmExecAutoJobDO();
+        remnant.setStatus(AutoExecJobStatus.FINISH); // seg1's job remnant — must NOT block a GHOST resume
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(remnant);
+        when(ghostService.probeAddColumnLanded(OWNER, DS_ID, DB, "ALTER TABLE t_big ADD c INT")).thenReturn(false);
+
+        assertFalse("a rebuild dispatched — the completion callback owns the aggregation",
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op"));
+
+        // idempotent pre-rebuild cleanup: the old session is released (sidecar cap-2 slot)
+        verify(ghostService).releaseSessionQuietly(OWNER, "s-old");
+        // the SAME segment re-dispatches with the RETRY via; error/timestamps/bindings cleared
+        verify(govTicketV2Service).dispatchGhostSegment(any(DmApprovalDO.class), same(group),
+            argThat(s -> s.getSegIdx() == 2 && TicketSegment.STATUS_EXECUTING.equals(s.getStatus())
+                && s.getError() == null && s.getFinishedAt() == null
+                && s.getSessionId() == null && s.getTaskId() == null),
+            eq(GovTicketV2Service.GHOST_VIA_RETRY));
+        List<TicketSegment> saved = lastCapturedRuntime();
+        assertEquals("SUCCESS segments keep their terminal state (never re-played)",
+            TicketSegment.STATUS_SUCCESS, saved.get(0).getStatus());
+        assertEquals(TicketSegment.STATUS_EXECUTING, saved.get(1).getStatus());
+        assertEquals("downstream segments stay PENDING", TicketSegment.STATUS_PENDING, saved.get(2).getStatus());
+        verify(schemaSnapshotService).captureIfMissing(group, TICKET_ID);
+        verifyNoInteractions(autoExecService);
+    }
+
+    @Test
+    public void resume_probeSaysLanded_segmentSuccessWithEvidence_nextDispatched_m3() {
+        // M1 check 前瞻①: the writeback was lost but the migration ACTUALLY LANDED — the decidable
+        // ADD COLUMN probe finds the target column and advances the segment as SUCCESS (carrying
+        // the probe evidence) instead of replaying the ALTER over the altered table
+        TicketSegment g = seg(2, "GHOST", "FAILED", "ALTER TABLE t_big ADD c INT", null, 3);
+        g.setTable("t_big"); // the plan's probed target (ghostPlan always carries it)
+        g.setSessionId("s-old");
+        g.setTaskId(77L);
+        g.setError("boom");
+        DmTicketDbStmtDO group = resumeGroup("FAILED",
+            seg(1, "AUTOEXEC", "SUCCESS", null, List.of(1, 2), null),
+            g,
+            seg(3, "AUTOEXEC", "PENDING", null, List.of(4, 4), null));
+        when(asyncTaskMapper.queryById(77L)).thenReturn(taskWithStatus(AsyncTaskStatus.CANCEL));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+        when(ghostService.probeAddColumnLanded(OWNER, DS_ID, DB, "ALTER TABLE t_big ADD c INT")).thenReturn(true);
+
+        assertFalse("the next segment dispatched — its completion callback owns the aggregation",
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op"));
+
+        // the cleanup still ran (the session held a slot) but NO rebuild happens
+        verify(ghostService).releaseSessionQuietly(OWNER, "s-old");
+        verify(govTicketV2Service, never()).dispatchGhostSegment(any(), any(), any(), anyString());
+        // the advanceSegment-shaped continuation: the next AUTOEXEC segment dispatches
+        ArgumentCaptor<String> jobBiz = ArgumentCaptor.forClass(String.class);
+        verify(autoExecService).createGroupJob(same(group), jobBiz.capture(), eq(false),
+            eq(ErrorStrategy.NONE), anyString(), eq("uid-op"));
+        verify(autoExecService).startJob(jobBiz.getValue(), "uid-op");
+        List<List<TicketSegment>> writes = capturedRuntime(2);
+        TicketSegment landed = writes.get(0).get(1);
+        assertEquals(TicketSegment.STATUS_SUCCESS, landed.getStatus());
+        assertNull(landed.getError());
+        assertEquals("the summary records WHY this is a success (auditable probe evidence)",
+            "TARGET_COLUMN_EXISTS", landed.getSummary().get("resumeProbe"));
+        assertEquals("t_big", landed.getSummary().get("table"));
+        assertEquals("c", landed.getSummary().get("column"));
+        assertEquals(TicketSegment.STATUS_EXECUTING, writes.get(1).get(2).getStatus());
+        // mid-chain: the orchestrator never writes a group terminal
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void resume_probeSaysLanded_lastSegment_groupSuccess_m3() {
+        TicketSegment g = seg(2, "GHOST", "FAILED", "ALTER TABLE t_big ADD c INT", null, 3);
+        g.setTaskId(77L);
+        DmTicketDbStmtDO group = resumeGroup("FAILED",
+            seg(1, "AUTOEXEC", "SUCCESS", null, List.of(1, 2), null),
+            g);
+        when(asyncTaskMapper.queryById(77L)).thenReturn(taskWithStatus(AsyncTaskStatus.FAILURE));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+        when(ghostService.probeAddColumnLanded(OWNER, DS_ID, DB, "ALTER TABLE t_big ADD c INT")).thenReturn(true);
+
+        // last segment → the group terminal write lands and NOTHING dispatches: the return flag
+        // tells the caller (retryGroup) to run the shared aggregation tail itself — no completion
+        // callback will ever fire and the EXEC_FAIL ticket is outside the sweep IN set
+        assertTrue("the probe wrote the group terminal synchronously — the caller must aggregate",
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op"));
+
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "SUCCESS", null);
+        verifyNoInteractions(autoExecService);
+        verify(govTicketV2Service, never()).dispatchGhostSegment(any(), any(), any(), anyString());
+    }
+
+    @Test
+    public void resume_failedAutoexecSegment_rebuildsJob_ghostSuccessBindingsUntouched_m3() {
+        TicketSegment g1 = seg(1, "GHOST", "SUCCESS", "ALTER TABLE t_big ADD c INT", null, 1);
+        g1.setSessionId("s-1");
+        g1.setTaskId(71L);
+        TicketSegment a2 = seg(2, "AUTOEXEC", "FAILED", null, List.of(2, 3), null);
+        a2.setJobBizId("job-old");
+        a2.setError("syntax error");
+        a2.setFinishedAt(999L);
+        a2.setSummary(java.util.Map.of("status", "FAILED"));
+        DmTicketDbStmtDO group = resumeGroup("FAILED", g1, a2,
+            seg(3, "GHOST", "PENDING", "ALTER TABLE t2 ADD d INT", null, 4));
+        when(asyncTaskMapper.queryById(71L)).thenReturn(taskWithStatus(AsyncTaskStatus.COMPLETE));
+        DmExecAutoJobDO dead = new DmExecAutoJobDO();
+        dead.setStatus(AutoExecJobStatus.FAILED);
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(dead);
+
+        assertFalse(service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op"));
+
+        // AUTOEXEC resume = 整段重跑 through the standard segment dispatch (createGroupJob deletes
+        // the old job row itself — the uk idempotency of contract :417)
+        ArgumentCaptor<String> jobBiz = ArgumentCaptor.forClass(String.class);
+        verify(autoExecService).createGroupJob(same(group), jobBiz.capture(), eq(false),
+            eq(ErrorStrategy.NONE), anyString(), eq("uid-op"));
+        verify(autoExecService).startJob(jobBiz.getValue(), "uid-op");
+        assertNotEquals("job-old", jobBiz.getValue());
+        // no ghost cleanup/probe for an AUTOEXEC target; the SUCCESS ghost segment keeps its bindings
+        verify(ghostService, never()).releaseSessionQuietly(anyString(), anyString());
+        verify(ghostService, never()).probeAddColumnLanded(anyString(), anyLong(), anyString(), anyString());
+        verify(govTicketV2Service, never()).dispatchGhostSegment(any(), any(), any(), anyString());
+        List<TicketSegment> saved = lastCapturedRuntime();
+        assertEquals(TicketSegment.STATUS_SUCCESS, saved.get(0).getStatus());
+        assertEquals("s-1", saved.get(0).getSessionId());
+        TicketSegment resumed = saved.get(1);
+        assertEquals(TicketSegment.STATUS_EXECUTING, resumed.getStatus());
+        assertEquals(jobBiz.getValue(), resumed.getJobBizId());
+        assertNull(resumed.getError());
+        assertNull(resumed.getSummary());
+        assertNull(resumed.getFinishedAt());
+        assertEquals(TicketSegment.STATUS_PENDING, saved.get(2).getStatus());
+    }
+
+    @Test
+    public void resume_activeGhostTaskOnAnySegment_rejected_zeroSideEffects_m3() {
+        // the ruling's 任一段 active check: even a NON-target segment's active task rejects
+        TicketSegment g1 = seg(1, "GHOST", "SUCCESS", "ALTER TABLE t_big ADD c INT", null, 1);
+        g1.setTaskId(71L);
+        DmTicketDbStmtDO group = resumeGroup("FAILED", g1,
+            seg(2, "AUTOEXEC", "FAILED", null, List.of(2, 2), null));
+        when(asyncTaskMapper.queryById(71L)).thenReturn(taskWithStatus(AsyncTaskStatus.RUNNING));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException expected) {
+            // GOV_TICKET_V2_GHOST_TASK_ACTIVE
+        }
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), any());
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        verify(ghostService, never()).releaseSessionQuietly(anyString(), anyString());
+        verifyNoInteractions(autoExecService);
+        verifyNoInteractions(govTicketV2Service);
+    }
+
+    @Test
+    public void resume_inFlightJob_rejected_m3() {
+        DmTicketDbStmtDO group = resumeGroup("FAILED",
+            seg(1, "AUTOEXEC", "FAILED", null, List.of(1, 2), null));
+        DmExecAutoJobDO active = new DmExecAutoJobDO();
+        active.setStatus(AutoExecJobStatus.EXECUTING);
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(active);
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException expected) {
+            // GOV_RELEASE_STMT_JOB_ACTIVE
+        }
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), any());
+        verifyNoInteractions(autoExecService);
+    }
+
+    @Test
+    public void resume_finishJobOverAutoexecTarget_rejected_sweepOwnsTheLostWriteback_m3() {
+        // job FINISH + the segment still EXECUTING = a lost jobFinish writeback — the sweep
+        // advances it as SUCCESS; a retry replay would re-run landed statements (legacy :394-399 parity)
+        DmTicketDbStmtDO group = resumeGroup("EXECUTING",
+            seg(1, "AUTOEXEC", "EXECUTING", null, List.of(1, 2), null));
+        DmExecAutoJobDO finished = new DmExecAutoJobDO();
+        finished.setStatus(AutoExecJobStatus.FINISH);
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(finished);
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException expected) {
+            // GOV_RELEASE_STMT_JOB_ACTIVE
+        }
+        verifyNoInteractions(autoExecService);
+    }
+
+    @Test
+    public void resume_corruptRuntime_rejectedWithRevisionGuidance_m3() {
+        // a FAILED group whose per-segment history is unparsable cannot resume safely (a whole-text
+        // replay could re-run a landed ghost ALTER) → the return-revise loop is the recovery path
+        DmTicketDbStmtDO group = group("FAILED");
+        group.setPrecheckResult(planJson());
+        group.setExecSegments("{not json");
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group);
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException ex) {
+            assertTrue("the rejection must surface the revision guidance",
+                ex.getMessage().contains("退回修订") || ex.getMessage().contains("revision"));
+        }
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), any());
+        verifyNoInteractions(autoExecService);
+        verifyNoInteractions(govTicketV2Service);
+    }
+
+    @Test
+    public void resume_pendingNoRuntime_initsFromPlan_dispatchesFirstSegment_m3() {
+        // pre-first-dispatch shape (the first dispatch rolled back): nothing ever executed — the
+        // runtime is rebuilt from the plan and the FIRST segment dispatches (not a "resume")
+        DmTicketDbStmtDO group = group("PENDING");
+        group.setPrecheckResult(planJson());
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group);
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        assertFalse(service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op"));
+
+        ArgumentCaptor<String> jobBiz = ArgumentCaptor.forClass(String.class);
+        verify(autoExecService).createGroupJob(same(group), jobBiz.capture(), eq(false),
+            eq(ErrorStrategy.NONE), anyString(), eq("uid-op"));
+        verify(autoExecService).startJob(jobBiz.getValue(), "uid-op");
+        List<TicketSegment> saved = lastCapturedRuntime();
+        assertEquals(3, saved.size());
+        assertEquals(TicketSegment.STATUS_EXECUTING, saved.get(0).getStatus());
+        assertEquals(TicketSegment.STATUS_PENDING, saved.get(1).getStatus());
+        verify(schemaSnapshotService).captureIfMissing(group, TICKET_ID);
+    }
+
+    @Test
+    public void resume_allSegmentsSuccess_rejected_inconsistentCarrier_m3() {
+        DmTicketDbStmtDO group = resumeGroup("FAILED",
+            seg(1, "GHOST", "SUCCESS", "ALTER TABLE t_big ADD c INT", null, 1),
+            seg(2, "AUTOEXEC", "SUCCESS", null, List.of(2, 2), null));
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException expected) {
+            // GOV_TICKET_V2_GROUP_NOT_FAILED — nothing to resume (the sweep owns the group write)
+        }
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), any());
+        verifyNoInteractions(autoExecService);
+    }
+
+    @Test
+    public void resume_statusChangedUnderLock_rejected_freshReadDiscipline_m3() {
+        // the caller's pre-lock row said FAILED; a concurrent hook/sweep already wrote SUCCESS —
+        // the fresh under-lock read is the authority (dispatchFirstSegment/check-F1 discipline)
+        DmTicketDbStmtDO stale = group("FAILED");
+        stale.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        DmTicketDbStmtDO fresh = resumeGroup("SUCCESS",
+            seg(1, "GHOST", "SUCCESS", "ALTER TABLE t_big ADD c INT", null, 1));
+
+        try {
+            service.resumeGroupUnderLock(ticket(), GROUP_ID, "uid-op");
+            fail("Expected ErrorMessageException");
+        } catch (com.clougence.clouddm.api.common.exception.ErrorMessageException expected) {
+            // GOV_TICKET_V2_GROUP_NOT_FAILED
+        }
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), any());
+        verifyNoInteractions(autoExecService);
+        verifyNoInteractions(govTicketV2Service);
+        verifyNoInteractions(ghostService);
+    }
+
+    // ==================== B6 M3: sweep dead-judgement orphan-session convergence ====================
+
+    @Test
+    public void repair_ghostSegmentDeadJudgement_releasesOrphanSession_m3() {
+        // M2 check 裁决项 2: the dead judgement must return the sidecar GHOST slot (cap 2) — the
+        // release keys on the RUNTIME binding (survives a missing/terminal task row)
+        TicketSegment g = seg(1, "GHOST", "EXECUTING", "ALTER TABLE t_big ADD c INT", null, 1);
+        g.setSessionId("s-1");
+        g.setTaskId(77L);
+        DmTicketDbStmtDO group = resumeGroup("EXECUTING", g,
+            seg(2, "AUTOEXEC", "PENDING", null, List.of(2, 2), null));
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(ghostTask(AsyncTaskStatus.COMPLETE, "session-x", OWNER));
+
+        service.repairGroupUnderLock(ticket(), group);
+
+        verify(ghostService).releaseSessionQuietly(OWNER, "s-1");
+        verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("writeback lost"));
+    }
+
+    @Test
+    public void repair_ghostSessionLostJudgement_releaseStillAttempted_neverThrows_m3() {
+        TicketSegment g = seg(1, "GHOST", "EXECUTING", "ALTER TABLE t_big ADD c INT", null, 1);
+        g.setSessionId("s-1");
+        DmTicketDbStmtDO group = resumeGroup("EXECUTING", g);
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(ghostTask(AsyncTaskStatus.RUNNING, "session-x", OWNER));
+        when(ghostService.hasSession(OWNER, "session-x")).thenReturn(false);
+        doThrow(new RuntimeException("sidecar gone")).when(ghostService)
+            .releaseSessionQuietly(anyString(), anyString());
+
+        service.repairGroupUnderLock(ticket(), group); // must not throw
+
+        verify(ghostService).releaseSessionQuietly(OWNER, "s-1");
+        verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("session lost"));
+    }
+
+    @Test
+    public void repair_autoexecDeadJudgement_noSessionRelease_m3() {
+        DmTicketDbStmtDO group = resumeGroup("EXECUTING",
+            seg(1, "AUTOEXEC", "EXECUTING", null, List.of(1, 2), null));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        service.repairGroupUnderLock(ticket(), group);
+
+        verify(ghostService, never()).releaseSessionQuietly(anyString(), anyString());
+        verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), contains("record missing"));
+    }
+
     // ==================== helpers ====================
 
     private DmApprovalDO ticket() {
@@ -670,6 +1007,23 @@ public class TicketSegmentServiceTest {
         group.setExecSegments(JsonUtils.toJson(List.of(segments)));
         when(stmtMapper.queryById(GROUP_ID)).thenReturn(group); // the under-lock fresh re-read
         return group;
+    }
+
+    /** M3 resume shape: the given exec status + runtime segments + the canonical plan. */
+    private DmTicketDbStmtDO resumeGroup(String execStatus, TicketSegment... segments) {
+        DmTicketDbStmtDO group = group(execStatus);
+        group.setPrecheckResult(planJson());
+        group.setExecSegments(JsonUtils.toJson(List.of(segments)));
+        when(stmtMapper.queryById(GROUP_ID)).thenReturn(group); // the under-lock fresh re-read
+        return group;
+    }
+
+    private static DmExecAsyncTaskDO taskWithStatus(AsyncTaskStatus status) {
+        DmExecAsyncTaskDO task = new DmExecAsyncTaskDO();
+        task.setId(77L);
+        task.setBizType("GHOST");
+        task.setStatus(status);
+        return task;
     }
 
     private static TicketSegment seg(int segIdx, String type, String status, String sql,

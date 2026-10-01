@@ -452,6 +452,68 @@ public class ProdReleaseResubmitTest {
     }
 
     @Test
+    public void resubmit_ghostRoutedSource_gateResultHintSurvivesRewrite_m3() {
+        // B6 M3 过渡明示: the re-merge rewrites the whole gate_result snapshot — the additive
+        // ghost hint must survive it. The source here carries the M1 flags-only mark shape
+        // (ghostRoutes without a segment plan) — GhostRouteMarks reads the union of both carriers.
+        long releaseId = 409L;
+        DmProdReleaseDO release = buildReturnedRelease(releaseId);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        mockTicket(100L, 200L, "prod_db", 10L, 300L);
+
+        DmTicketDbStmtDO ghostStmt = buildSourceStmt(200L, 100L, "SUCCESS");
+        ghostStmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"ghostRoutes\":["
+            + "{\"stmtIndex\":1,\"route\":\"GHOST\",\"tableName\":\"t_big\"}]}");
+        when(ticketStmtMapper.queryByTicketId(100L)).thenReturn(List.of(ghostStmt));
+
+        ProdReleaseResubmitFO fo = new ProdReleaseResubmitFO();
+        fo.setReleaseId(releaseId);
+        fo.setTicketIds(List.of(100L));
+
+        service.resubmitRelease(PUID, UID, true, fo);
+
+        verify(releaseMapper).updateGateResult(eq(releaseId), argThat((String json) -> {
+            try {
+                Map<?, ?> gr = JsonUtils.toObj(json, Map.class);
+                if (!Integer.valueOf(1).equals(gr.get("ghostRoutedStmtCount"))) {
+                    return false;
+                }
+                List<?> stmts = (List<?>) gr.get("stmts");
+                return stmts.size() == 1
+                    && Boolean.TRUE.equals(((Map<?, ?>) stmts.get(0)).get("ghostRouted"));
+            } catch (Exception e) {
+                return false;
+            }
+        }));
+    }
+
+    @Test
+    public void resubmit_plainSource_gateResultHasNoHintKeys_m3() {
+        // byte-shape regression: no ghost route → the rewritten snapshot carries NO hint keys
+        long releaseId = 410L;
+        DmProdReleaseDO release = buildReturnedRelease(releaseId);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+        mockTicket(100L, 200L, "prod_db", 10L, 300L);
+
+        ProdReleaseResubmitFO fo = new ProdReleaseResubmitFO();
+        fo.setReleaseId(releaseId);
+        fo.setTicketIds(List.of(100L));
+
+        service.resubmitRelease(PUID, UID, true, fo);
+
+        verify(releaseMapper).updateGateResult(eq(releaseId), argThat((String json) -> {
+            try {
+                Map<?, ?> gr = JsonUtils.toObj(json, Map.class);
+                List<?> stmts = (List<?>) gr.get("stmts");
+                return !gr.containsKey("ghostRoutedStmtCount")
+                    && !((Map<?, ?>) stmts.get(0)).containsKey("ghostRouted");
+            } catch (Exception e) {
+                return false;
+            }
+        }));
+    }
+
+    @Test
     public void resubmit_finalListContainsInvalidTicket_throws_zeroObjects() {
         long releaseId = 408L;
         DmProdReleaseDO release = buildReturnedRelease(releaseId); // original: 100

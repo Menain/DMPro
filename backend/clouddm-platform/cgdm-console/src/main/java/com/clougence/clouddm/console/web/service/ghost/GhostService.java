@@ -128,6 +128,19 @@ public interface GhostService {
     GhostRouteProbe probeForRoute(String uid, DmDsDO dsDO, DataSourceConfig dsConfig, String dbName, String tableName);
 
     /**
+     * B6 M3 segment-retry target-effect probe (M1 check 前瞻①): true ONLY when the frozen
+     * statement is a decidable single-action {@code ADD [COLUMN] <col>} (v1 pragmatic scope —
+     * {@link GhostResumeProbe}) AND {@code <col>} already exists in the target table's
+     * {@code information_schema.COLUMNS} — i.e. the migration of a lost-writeback segment
+     * actually landed, so the retry must advance it as SUCCESS instead of replaying the ALTER
+     * over an already-altered table. Every other outcome — undecidable shape (MODIFY/DROP/
+     * multi-action), column absent, probe failure, timeout, non-MySQL — returns false and the
+     * caller conservatively REBUILDS (gh-ost's duplicate-column error is the safe backstop).
+     * NEVER-THROW (trusted ticket-chain surface; channel C one round trip).
+     */
+    boolean probeAddColumnLanded(String uid, long dsId, String dbName, String alterSql);
+
+    /**
      * Locate the NEWEST GHOST AsyncTask bound to a ticket group (configData ticketId/groupId);
      * null when the group never dispatched a ghost migration. Bounded scan (newest
      * {@code TASK_LIST_LIMIT} GHOST rows) — the group binding lives in the configData JSON.

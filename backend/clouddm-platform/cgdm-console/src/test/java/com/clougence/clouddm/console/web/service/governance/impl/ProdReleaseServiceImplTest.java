@@ -442,6 +442,123 @@ public class ProdReleaseServiceImplTest {
         verify(stmtMapper, never()).insert(any(DmProdReleaseStmtDO.class));
     }
 
+    // ==================== B6 M3 发布链过渡明示: gate_result additive ghost hint ====================
+
+    @Test
+    public void createRelease_ghostRoutedSource_gateResultCarriesAdditiveHint_m3() {
+        // the source group ran a lock-free (gh-ost) segment on pre — the frozen snapshot carries
+        // the additive display hint (PROD replay = DIRECT execution until M5); merge/replay logic
+        // never reads it
+        long ticketId = 130L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO stmt = buildTicketStmt(230L, ticketId, "SUCCESS");
+        stmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\",\"segments\":["
+            + "{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"table\":\"t_big\","
+            + "\"sql\":\"ALTER TABLE t_big ADD c INT\"}]}");
+        when(ticketStmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(stmt));
+        when(stmtMapper.queryBySourceStmtId(230L)).thenReturn(null);
+        when(pairMapper.selectById(300L)).thenReturn(buildPair(300L, 11L, "prod_db_a"));
+        when(releaseMapper.countActiveByProdDb(11L, "prod_db_a")).thenReturn(0);
+        when(releaseMapper.insert(any(DmProdReleaseDO.class))).thenAnswer(inv -> {
+            inv.getArgument(0, DmProdReleaseDO.class).setId(600L);
+            return 1;
+        });
+        when(stmtMapper.insert(any(DmProdReleaseStmtDO.class))).thenAnswer(inv -> {
+            inv.getArgument(0, DmProdReleaseStmtDO.class).setId(800L);
+            return 1;
+        });
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = new com.clougence.clouddm.platform.dal.model.datasource.DmDsDO();
+        prodDs.setDsEnvId(1L);
+        when(dsMapper.queryDsIdentityById(11L)).thenReturn(prodDs);
+        com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO ticketResult
+            = new com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO();
+        ticketResult.setTicketId(700L);
+        when(approvalControlService.createSqlTicket(any(), any(), any(),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_PROD_RELEASE)))
+            .thenReturn(ticketResult);
+        DmApprovalDO newApproval = new DmApprovalDO();
+        newApproval.setId(700L);
+        newApproval.setTicketInfo(com.clougence.utils.JsonUtils.toJson(new ApprovalMO()));
+        when(approvalMapper.queryById(700L)).thenReturn(newApproval);
+        ReflectionTestUtils.setField(service, "riskAssessmentService",
+            new com.clougence.clouddm.console.web.component.governance.RiskAssessmentService());
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+        service.createRelease(PUID, UID, fo);
+
+        org.mockito.ArgumentCaptor<DmProdReleaseDO> captor
+            = org.mockito.ArgumentCaptor.forClass(DmProdReleaseDO.class);
+        verify(releaseMapper).insert(captor.capture());
+        java.util.Map<?, ?> gr = com.clougence.utils.JsonUtils.toObj(
+            captor.getValue().getGateResult(), java.util.Map.class);
+        assertEquals("the additive top-level hint count", 1, gr.get("ghostRoutedStmtCount"));
+        java.util.List<?> stmts = (java.util.List<?>) gr.get("stmts");
+        assertEquals(1, stmts.size());
+        assertEquals("the per-stmt additive flag", Boolean.TRUE,
+            ((java.util.Map<?, ?>) stmts.get(0)).get("ghostRouted"));
+        // the frozen contract keys are untouched
+        assertEquals(1, gr.get("sourceTicketCount"));
+        assertEquals(1, gr.get("stmtCount"));
+    }
+
+    @Test
+    public void createRelease_plainSource_gateResultStaysByteShape_m3() {
+        // no ghost route → NO hint keys at all (a plain release keeps the legacy gate_result shape)
+        long ticketId = 131L;
+        DmApprovalDO ticket = buildTicket(ticketId, ApprovalStatus.FINISHED, "PRE_DDL");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+
+        DmTicketDbStmtDO stmt = buildTicketStmt(231L, ticketId, "SUCCESS");
+        stmt.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\"}");
+        when(ticketStmtMapper.queryByTicketId(ticketId)).thenReturn(List.of(stmt));
+        when(stmtMapper.queryBySourceStmtId(231L)).thenReturn(null);
+        when(pairMapper.selectById(300L)).thenReturn(buildPair(300L, 11L, "prod_db_a"));
+        when(releaseMapper.countActiveByProdDb(11L, "prod_db_a")).thenReturn(0);
+        when(releaseMapper.insert(any(DmProdReleaseDO.class))).thenAnswer(inv -> {
+            inv.getArgument(0, DmProdReleaseDO.class).setId(600L);
+            return 1;
+        });
+        when(stmtMapper.insert(any(DmProdReleaseStmtDO.class))).thenAnswer(inv -> {
+            inv.getArgument(0, DmProdReleaseStmtDO.class).setId(800L);
+            return 1;
+        });
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = new com.clougence.clouddm.platform.dal.model.datasource.DmDsDO();
+        prodDs.setDsEnvId(1L);
+        when(dsMapper.queryDsIdentityById(11L)).thenReturn(prodDs);
+        com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO ticketResult
+            = new com.clougence.clouddm.console.web.model.vo.ticket.DmTicketResultVO();
+        ticketResult.setTicketId(700L);
+        when(approvalControlService.createSqlTicket(any(), any(), any(),
+            eq(com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_PROD_RELEASE)))
+            .thenReturn(ticketResult);
+        DmApprovalDO newApproval = new DmApprovalDO();
+        newApproval.setId(700L);
+        newApproval.setTicketInfo(com.clougence.utils.JsonUtils.toJson(new ApprovalMO()));
+        when(approvalMapper.queryById(700L)).thenReturn(newApproval);
+        ReflectionTestUtils.setField(service, "riskAssessmentService",
+            new com.clougence.clouddm.console.web.component.governance.RiskAssessmentService());
+
+        ProdReleaseCreateFO fo = new ProdReleaseCreateFO();
+        fo.setTicketIds(List.of(ticketId));
+        service.createRelease(PUID, UID, fo);
+
+        org.mockito.ArgumentCaptor<DmProdReleaseDO> captor
+            = org.mockito.ArgumentCaptor.forClass(DmProdReleaseDO.class);
+        verify(releaseMapper).insert(captor.capture());
+        java.util.Map<?, ?> gr = com.clougence.utils.JsonUtils.toObj(
+            captor.getValue().getGateResult(), java.util.Map.class);
+        assertFalse(gr.containsKey("ghostRoutedStmtCount"));
+        java.util.List<?> stmts = (java.util.List<?>) gr.get("stmts");
+        assertFalse(((java.util.Map<?, ?>) stmts.get(0)).containsKey("ghostRouted"));
+    }
+
     // ==================== startExecution hash drift rejection ====================
 
     @Test

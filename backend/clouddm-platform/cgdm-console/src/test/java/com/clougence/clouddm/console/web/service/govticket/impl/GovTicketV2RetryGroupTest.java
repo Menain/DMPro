@@ -201,47 +201,162 @@ public class GovTicketV2RetryGroupTest {
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
 
-    // ==================== B6 M2 (R10 window guard): segmented groups reject the whole-group replay ====================
+    // ============ B6 M3: segmented groups resume from the failed segment (M2 window guard removed) ============
 
     @Test
-    public void retryGroup_segmentedPlanGroup_rejected_m2WindowGuard() {
-        // a segment PLAN in precheck_result is enough — replaying an already-SUCCESS ghost
-        // segment would necessarily fail (its ALTER landed: column exists); M3 restores the
-        // resume-from-failed-segment retry, until then the user is guided to return-revise
+    public void retryGroup_segmentedRuntimeGroup_delegatesToResumeUnderLock_m3() {
+        // the M2 tightening is GONE: a segmented group takes the ticket row lock and delegates to
+        // the orchestrator's resume (fresh-read / failed-segment location / ghost cleanup + probe
+        // are pinned in TicketSegmentServiceTest) — never the whole-group replay
         long groupId = 105L;
         DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setExecSegments("[{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2],\"status\":\"SUCCESS\"},"
+            + "{\"segIdx\":2,\"type\":\"GHOST\",\"stmtIndex\":3,\"status\":\"FAILED\",\"error\":\"boom\"}]");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+
+        service.retryGroup(PUID, UID, groupId);
+
+        // lock-order discipline: the ticket row lock precedes the resume (single lock, same order)
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(approvalMapper, segmentService);
+        inOrder.verify(approvalMapper).selectByIdForUpdate(group.getTicketId());
+        inOrder.verify(segmentService).resumeGroupUnderLock(org.mockito.ArgumentMatchers.same(ticket),
+            org.mockito.ArgumentMatchers.eq(groupId), org.mockito.ArgumentMatchers.eq(UID));
+        // step-times contract: the (re)dispatch closes PREPARATION at the real dispatch moment
+        verify(approvalStateService).markExecutionDispatched("biz-" + group.getTicketId());
+        // the legacy whole-group replay must never run for a segmented group
+        verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void retryGroup_segmentedPlanOnlyGroup_delegatesToResume_m3() {
+        // a segment PLAN without a runtime (pre-first-dispatch / corrupt carrier) also takes the
+        // resume path — the orchestrator owns the runtime-null decision matrix (dispatch-first vs
+        // return-revise guidance)
+        long groupId = 106L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "PENDING");
         group.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\",\"segments\":["
             + "{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"stmtRange\":[1,2]},"
             + "{\"segIdx\":2,\"type\":\"GHOST\",\"stmtIndex\":3,\"sql\":\"ALTER TABLE t_big ADD c INT\"}]}");
         when(stmtMapper.queryById(groupId)).thenReturn(group);
-        when(approvalMapper.queryById(group.getTicketId())).thenReturn(buildTicket(groupId + 100, PUID, "PRE_DDL"));
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        when(autoJobMapper.queryByDependOnGroupId(groupId)).thenReturn(null);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
 
-        try {
-            service.retryGroup(PUID, UID, groupId);
-            fail("Expected ErrorMessageException");
-        } catch (ErrorMessageException ex) {
-            assertTrue("the tightened rejection must surface the revision guidance",
-                ex.getMessage().contains("退回修订") || ex.getMessage().contains("revision"));
-        }
-        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        service.retryGroup(PUID, UID, groupId);
+
+        verify(segmentService).resumeGroupUnderLock(org.mockito.ArgumentMatchers.same(ticket),
+            org.mockito.ArgumentMatchers.eq(groupId), org.mockito.ArgumentMatchers.eq(UID));
         verify(autoExecService, never()).createGroupJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
     }
 
     @Test
-    public void retryGroup_segmentedRuntimeGroup_rejected_evenWithoutPlanParse_m2() {
-        long groupId = 106L;
+    public void retryGroup_resumeRejection_propagates_noDispatchMark_m3() {
+        // an orchestrator rejection (active body / corrupt runtime) surfaces to the caller and
+        // leaves the step-times hook untouched
+        long groupId = 108L;
         DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
         group.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
         when(stmtMapper.queryById(groupId)).thenReturn(group);
-        when(approvalMapper.queryById(group.getTicketId())).thenReturn(buildTicket(groupId + 100, PUID, "PRE_DDL"));
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        org.mockito.Mockito.doThrow(new ErrorMessageException("active"))
+            .when(segmentService).resumeGroupUnderLock(any(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
 
         try {
             service.retryGroup(PUID, UID, groupId);
             fail("Expected ErrorMessageException");
         } catch (ErrorMessageException ex) {
-            // GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED
+            // ok — the orchestrator's rejection propagates verbatim
         }
-        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        verify(approvalStateService, never()).markExecutionDispatched(anyString());
+    }
+
+    @Test
+    public void retryGroup_probeTerminalResume_runsAggregationTail_m3() {
+        // M3 check fix: a probe-success on the LAST segment writes the group terminal synchronously
+        // and dispatches NOTHING — no completion callback will ever fire and an EXEC_FAIL ticket is
+        // outside the WAIT_EXEC sweep IN set, so retryGroup itself must drive the shared
+        // "all groups terminal → ticket terminal" tail (the handleV2JobCompletion :833-846 mirror),
+        // or the ticket sticks at EXEC_FAIL over all-SUCCESS groups
+        long groupId = 109L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.resumeGroupUnderLock(any(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            .thenReturn(true);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+        when(stmtMapper.queryByTicketId(group.getTicketId()))
+            .thenReturn(List.of(buildGroup(groupId, "SUCCESS")));
+
+        service.retryGroup(PUID, UID, groupId);
+
+        verify(approvalStateService).markExecutionDispatched("biz-" + ticket.getId());
+        verify(approvalStateService).completeExecution("biz-" + ticket.getId());
+        verify(approvalStateService, never()).failExecution(anyString(), any());
+    }
+
+    @Test
+    public void retryGroup_probeTerminalResume_otherGroupFailed_failExecution_m3() {
+        // the tail mirrors the shared semantics: any FAILED group → failExecution (never a false
+        // FINISHED over a failed sibling group)
+        long groupId = 110L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        when(segmentService.resumeGroupUnderLock(any(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            .thenReturn(true);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+        DmTicketDbStmtDO sibling = buildGroup(groupId + 1, "FAILED");
+        sibling.setTicketId(group.getTicketId());
+        when(stmtMapper.queryByTicketId(group.getTicketId()))
+            .thenReturn(List.of(buildGroup(groupId, "SUCCESS"), sibling));
+
+        service.retryGroup(PUID, UID, groupId);
+
+        verify(approvalStateService).failExecution(eq("biz-" + ticket.getId()), anyString());
+        verify(approvalStateService, never()).completeExecution(anyString());
+    }
+
+    @Test
+    public void retryGroup_dispatchingResume_noAggregationTail_m3() {
+        // a resume that DISPATCHED (flag false) leaves the aggregation to the completion callback —
+        // running the tail there would race the in-flight body (group EXECUTING → no-op at best)
+        long groupId = 111L;
+        DmTicketDbStmtDO group = buildGroup(groupId, "FAILED");
+        group.setExecSegments("[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"status\":\"FAILED\"}]");
+        when(stmtMapper.queryById(groupId)).thenReturn(group);
+        DmApprovalDO ticket = buildTicket(groupId + 100, PUID, "PRE_DDL");
+        when(approvalMapper.queryById(group.getTicketId())).thenReturn(ticket);
+        com.clougence.clouddm.console.web.component.governance.TicketSegmentService segmentService
+            = mock(com.clougence.clouddm.console.web.component.governance.TicketSegmentService.class);
+        ReflectionTestUtils.setField(service, "ticketSegmentService", segmentService);
+
+        service.retryGroup(PUID, UID, groupId); // the unstubbed mock returns false
+
+        verify(approvalStateService).markExecutionDispatched("biz-" + ticket.getId());
+        verify(stmtMapper, never()).queryByTicketId(anyLong());
+        verify(approvalStateService, never()).completeExecution(anyString());
+        verify(approvalStateService, never()).failExecution(anyString(), any());
     }
 
     @Test

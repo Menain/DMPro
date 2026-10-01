@@ -39,4 +39,10 @@ public class GovLedgerTicketVO {
     private boolean promoted;
     private String releaseNo;
     private String releaseStatus;
+    /**
+     * B6 M3 发布链过渡明示 (additive, display-only): the ticket ran ≥1 lock-free (gh-ost) routed
+     * statement on pre — the release merge replays it as a DIRECT ALTER on prod (release-chain
+     * ghost routing is M5), so the merge-confirm surface warns about the large-table lock risk.
+     */
+    private boolean ghostRouted;
 }

@@ -37,6 +37,7 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalStateService
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
+import com.clougence.clouddm.console.web.component.governance.GhostRouteMarks;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
 import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
@@ -182,6 +183,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         gateResult.put("sourceTicketCount", ticketIds.size());
         gateResult.put("stmtCount", buildEntries.size());
         List<Map<String, Object>> stmtSnapshots = new ArrayList<>();
+        int ghostRoutedStmtCount = 0;
         for (StmtBuildEntry be : buildEntries) {
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("sourceTicketId", be.source.stmt.getTicketId());
@@ -189,9 +191,21 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             s.put("prodDbName", be.source.pair.getProdDbName());
             s.put("seq", be.seq);
             s.put("hash", be.hash);
+            // B6 M3 过渡明示 (design §6.5): PROD replay runs the frozen text through the DIRECT
+            // chain (release-chain ghost routing is M5) — a source group that ran lock-free (gh-ost)
+            // on pre carries an ADDITIVE display hint so the merge/detail surface can warn about
+            // the direct-ALTER lock risk on prod. Pure snapshot metadata: no merge/replay logic
+            // reads it, and releases without a ghost-routed source keep gate_result byte-identical.
+            if (GhostRouteMarks.hasGhostRoute(be.source.stmt.getPrecheckResult())) {
+                s.put("ghostRouted", true);
+                ghostRoutedStmtCount++;
+            }
             stmtSnapshots.add(s);
         }
         gateResult.put("stmts", stmtSnapshots);
+        if (ghostRoutedStmtCount > 0) {
+            gateResult.put("ghostRoutedStmtCount", ghostRoutedStmtCount);
+        }
         String gateResultJson = JsonUtils.toJson(gateResult);
 
         // Step 6: Insert release row (status = APPROVING — CREATED is transient)
@@ -766,6 +780,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         gateResult.put("sourceTicketCount", finalTicketIds.size());
         gateResult.put("stmtCount", buildEntries.size());
         List<Map<String, Object>> stmtSnapshots = new ArrayList<>();
+        int ghostRoutedStmtCount = 0;
         for (StmtBuildEntry be : buildEntries) {
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("sourceTicketId", be.source.stmt.getTicketId());
@@ -773,9 +788,18 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             s.put("prodDbName", be.source.pair.getProdDbName());
             s.put("seq", be.seq);
             s.put("hash", be.hash);
+            // B6 M3 过渡明示: same additive hint as createRelease Step 5 (re-merge rewrites the
+            // whole snapshot — the hint must survive the rewrite; display-only, logic never reads it)
+            if (GhostRouteMarks.hasGhostRoute(be.source.stmt.getPrecheckResult())) {
+                s.put("ghostRouted", true);
+                ghostRoutedStmtCount++;
+            }
             stmtSnapshots.add(s);
         }
         gateResult.put("stmts", stmtSnapshots);
+        if (ghostRoutedStmtCount > 0) {
+            gateResult.put("ghostRoutedStmtCount", ghostRoutedStmtCount);
+        }
         String gateResultJson = JsonUtils.toJson(gateResult);
         prodReleaseDal.releaseMapper().updateGateResult(releaseId, gateResultJson);
 

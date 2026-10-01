@@ -590,8 +590,12 @@ public enum I18nDmMsgKeys {
     GHOST_ROUTE_RISK_NO_UNIQUE_KEY,
     GHOST_ROUTE_RISK_TUNNEL,
     GOV_TICKET_V2_GHOST_TASK_ACTIVE,
-    // B6 M2 (R10 window guard): segmented-group retryGroup tightening — resume-from-failed-segment lands in M3
+    // B6 M2 (R10 window guard): segmented-group retryGroup tightening — REMOVED by M3 (resume from
+    // the failed segment); the key survives for the corrupt/missing segment-runtime edge only
+    // (a group whose per-segment history is unparsable cannot resume → return-revise guidance).
     GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED,
+    // B6 M3 dock guard (M2 check 裁决项 1): ticket-bound GHOST tasks reject dock pause/cancel
+    GHOST_TASK_DOCK_OP_FORBIDDEN,
 
     // B6 M1 (R15): AlertPushService scene message keys (GHOST_LARGE_TABLE_NO_PK family)
     ALERT_PUSH_GHOST_TITLE,

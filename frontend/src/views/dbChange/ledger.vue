@@ -87,6 +87,9 @@
         <div class="ledger-create-title-input">
           <Input v-model="createTitle" :placeholder="$t('gov-ledger-title-placeholder')" maxlength="255" />
         </div>
+        <Alert v-if="selectedHasGhostRouted" type="warning" show-icon>
+          {{ $t('gov-ledger-ghost-replay-hint') }}
+        </Alert>
       </div>
     </Modal>
   </div>
@@ -233,6 +236,10 @@ export default {
         }
       }
       return result;
+    },
+    // B6 M3 发布链过渡明示：选中工单含无锁(gh-ost)路由语句时，合并确认处提示生产重放为直接执行
+    selectedHasGhostRouted() {
+      return this.selectedTickets.some((t) => t.ghostRouted);
     }
   },
   mounted() {

@@ -185,26 +185,56 @@ public class GhostGroupCompletionService {
         }
         DmExecAsyncTaskDO task = this.ghostService.findTaskForTicketGroup(lockedTicket.getId(), group.getId());
         if (task == null) {
-            return failGroup(group.getId(), "ghost task record missing while the group is EXECUTING");
+            return failGroup(lockedTicket, group.getId(),
+                "ghost task record missing while the group is EXECUTING", null, null);
         }
         AsyncTaskStatus status = task.getStatus();
+        GhostAsyncTaskConfig cfg = parseTaskConfig(task);
+        String ownerUid = resolveOwnerUid(cfg, task, lockedTicket);
         if (isTerminalTaskStatus(status)) {
-            return failGroup(group.getId(), "ghost completion writeback lost (task " + status + ")");
+            // B6 M3 orphan-session convergence (M2 check 裁决项 2): the hook died between its
+            // commit and releaseTicketSession, or a pre-dock-guard raw pause left the task
+            // finished over a throttled-alive session — the sidecar GHOST slot (cap 2) is only
+            // returned on close, so the dead judgement releases it here (never-throw, no-op when
+            // the session is already gone).
+            return failGroup(lockedTicket, group.getId(),
+                "ghost completion writeback lost (task " + status + ")", task.getBizId(), ownerUid);
         }
         // active task → session liveness decides (host-affinity orphan / sidecar restart)
-        GhostAsyncTaskConfig cfg = parseTaskConfig(task);
-        String ownerUid = cfg != null && StringUtils.isNotBlank(cfg.getUserId()) ? cfg.getUserId() : task.getUid();
         String sessionId = task.getBizId();
         if (this.ghostService.hasSession(ownerUid, sessionId)) {
             return false; // healthy: the migration is still in flight
         }
-        return failGroup(group.getId(), "ghost session lost while the task is " + status + " (result unknown)");
+        // session already gone (hasSession false) — nothing left to release
+        return failGroup(lockedTicket, group.getId(),
+            "ghost session lost while the task is " + status + " (result unknown)", null, null);
     }
 
-    private boolean failGroup(long groupId, String detail) {
+    private boolean failGroup(DmApprovalDO lockedTicket, long groupId, String detail,
+                              String releaseSessionId, String ownerUid) {
         log.warn("[GhostCompletion] group {} judged dead by the sweep probe: {}", groupId, detail);
+        if (StringUtils.isNotBlank(releaseSessionId)) {
+            try {
+                this.ghostService.releaseSessionQuietly(
+                    StringUtils.isNotBlank(ownerUid) ? ownerUid : lockedTicket.getOwnerUid(), releaseSessionId);
+            } catch (RuntimeException e) {
+                log.warn("[GhostCompletion] orphan session release failed for group {} (the FAILED write proceeds)",
+                    groupId, e);
+            }
+        }
         this.ticketDbStmtDal.stmtMapper().updateExecStatus(groupId, EXEC_STATUS_FAILED, detail);
         return true;
+    }
+
+    /** session-owner resolution: the launch uid recorded in configData → the task uid → the submitter. */
+    private static String resolveOwnerUid(GhostAsyncTaskConfig cfg, DmExecAsyncTaskDO task, DmApprovalDO ticket) {
+        if (cfg != null && StringUtils.isNotBlank(cfg.getUserId())) {
+            return cfg.getUserId();
+        }
+        if (task != null && StringUtils.isNotBlank(task.getUid())) {
+            return task.getUid();
+        }
+        return ticket.getOwnerUid();
     }
 
     static boolean isTerminalTaskStatus(AsyncTaskStatus status) {

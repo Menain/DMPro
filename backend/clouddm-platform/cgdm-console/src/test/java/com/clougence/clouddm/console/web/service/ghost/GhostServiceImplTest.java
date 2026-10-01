@@ -136,6 +136,7 @@ public class GhostServiceImplTest {
     /** information_schema.TABLES projection columns (B4 M2 caliber). */
     private static final String[] STAT_COLS  = { "table_name", "row_estimate", "data_bytes", "index_bytes" };
     private static final String[] UK_COLS    = { "index_name" };
+    private static final String[] CNT_COLS   = { "cnt" };
 
     private GhostServiceImpl       service;
     private DataSourceDal          dsDal;
@@ -158,6 +159,8 @@ public class GhostServiceImplTest {
     private ResultList             tableStatResult;
     private ResultList             uniqueKeyResult;
     private ResultList             dropResult;
+    /** B6 M3 resume probe: the information_schema.columns COUNT(*) answer (swap per test) */
+    private ResultList             columnExistsResult;
 
     /** datasource row returned by the ownership query (swap for type/lifecycle variants) */
     private DmDsDO                 ownedDs;
@@ -222,6 +225,8 @@ public class GhostServiceImplTest {
         when(dsDal.dsMapper()).thenReturn(dsMapper);
         when(executionDal.asyncTaskMapper()).thenReturn(asyncTaskMapper);
         when(authDal.userMapper()).thenReturn(userMapper);
+        // B6 M3 resume probe: the trusted ds identity lookup (no tenant check on that surface)
+        when(dsMapper.queryDsIdentityById(DS_ID)).thenAnswer(inv -> ownedDs);
 
         ReflectionTestUtils.setField(diagnosticExecutor, "queryService", queryService);
         ReflectionTestUtils.setField(service, "dsDal", dsDal);
@@ -266,6 +271,7 @@ public class GhostServiceImplTest {
         tableStatResult = queryResult(STAT_COLS, new String[][] { { TABLE, "1000", "1048576", "0" } });
         uniqueKeyResult = queryResult(UK_COLS, new String[][] { { "PRIMARY" } });
         dropResult = messageResult(MessageLevel.Info, "ok");
+        columnExistsResult = queryResult(CNT_COLS, new String[][] { { "1" } });
 
         when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class))).thenAnswer(invocation -> {
             QueryRequest request = invocation.getArgument(2);
@@ -276,6 +282,9 @@ public class GhostServiceImplTest {
             }
             if (body.contains("information_schema.statistics")) {
                 return uniqueKeyResult;
+            }
+            if (body.contains("information_schema.columns")) {
+                return columnExistsResult;
             }
             if (body.contains("information_schema.tables")) {
                 return tableStatResult;
@@ -1702,6 +1711,104 @@ public class GhostServiceImplTest {
         assertEquals(cfg.getTimestampOldTable(), base.getTimestampOldTable());
         assertEquals(cfg.getInitiallyDropGhostTable(), base.getInitiallyDropGhostTable());
         assertEquals(cfg.getAssumeDsProxyInFront(), base.getAssumeDsProxyInFront());
+    }
+
+    // ==================================================================================
+    // group 9 (B6 M3): segment-retry target-effect probe (probeAddColumnLanded) —
+    //                  decidable ADD COLUMN shape only, NEVER-THROW, full-SQL contract
+    // ==================================================================================
+
+    @Test
+    public void resumeProbe_columnExists_true_fullSqlContract() {
+        boolean landed = service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)");
+
+        assertTrue(landed);
+        // B4 lesson: assert the COMPLETE statement (escaped string literals, never identifiers)
+        assertEquals(1, executedSqls.size());
+        assertEquals("SELECT COUNT(*) AS cnt FROM information_schema.columns "
+                + "WHERE table_schema = 'db1' AND table_name = 't_order' AND column_name = 'extra'",
+                executedSqls.get(0));
+    }
+
+    @Test
+    public void resumeProbe_columnAbsent_false() {
+        columnExistsResult = queryResult(CNT_COLS, new String[][] { { "0" } });
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+    }
+
+    @Test
+    public void resumeProbe_emptyResultSet_false() {
+        columnExistsResult = queryResult(CNT_COLS, new String[0][]);
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+    }
+
+    @Test
+    public void resumeProbe_undecidableShape_false_zeroRemoteCalls() {
+        // MODIFY/DROP/multi-action shapes are out of the v1 scope — the caller conservatively
+        // rebuilds; NO session is ever opened for an undecidable statement
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB, "ALTER TABLE t_order MODIFY extra BIGINT"));
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB, "ALTER TABLE t_order DROP COLUMN extra"));
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN a INT, ADD COLUMN b INT"));
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB, null));
+        assertTrue(executedSqls.isEmpty());
+        verify(queryService, never()).createSession(anyString(), any(), any());
+    }
+
+    @Test
+    public void resumeProbe_dbPrefixStatement_usesGroupSchemaLiteral() {
+        boolean landed = service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE db1.t_order ADD extra INT");
+
+        assertTrue(landed);
+        assertEquals("SELECT COUNT(*) AS cnt FROM information_schema.columns "
+                + "WHERE table_schema = 'db1' AND table_name = 't_order' AND column_name = 'extra'",
+                executedSqls.get(0));
+    }
+
+    @Test
+    public void resumeProbe_queryFailure_false_neverThrows() {
+        when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class)))
+                .thenThrow(new RuntimeException("worker unreachable"));
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+    }
+
+    @Test
+    public void resumeProbe_timeout_false_neverThrows() {
+        ReflectionTestUtils.setField(service, "queryTimeoutSeconds", 1L);
+        when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class)))
+                .thenAnswer(inv -> {
+                    Thread.sleep(1500);
+                    return columnExistsResult;
+                });
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+    }
+
+    @Test
+    public void resumeProbe_nonMySqlDs_false_zeroRemoteCalls() {
+        ownedDs = ds(DataSourceType.PostgreSQL, LifeCycleState.CREATED);
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+        assertTrue(executedSqls.isEmpty());
+    }
+
+    @Test
+    public void resumeProbe_dsMissing_false_zeroRemoteCalls() {
+        ownedDs = null;
+
+        assertFalse(service.probeAddColumnLanded(OWNER_UID, DS_ID, DB,
+                "ALTER TABLE t_order ADD COLUMN extra VARCHAR(64)"));
+        assertTrue(executedSqls.isEmpty());
     }
 
     // ==================================================================================

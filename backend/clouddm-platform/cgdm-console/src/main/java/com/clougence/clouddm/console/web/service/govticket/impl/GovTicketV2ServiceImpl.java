@@ -179,6 +179,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.alert.AlertPushService alertPushService;
+    // @Lazy: B6 M3 segment retry-resume — the orchestrator lazy-reaches this service back
+    //   (dispatchGhostSegment), safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
     @Resource
     private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
 
@@ -417,18 +422,33 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         String ticketType = mo != null ? mo.getTicketType() : null;
 
-        // B6 M2 (R10 window guard, design §6.5): a SEGMENTED group (plan segments ∨ runtime
-        // exec_segments) rejects the whole-group replay retry — replaying an already-SUCCESS
-        // ghost segment would necessarily fail (its ALTER already landed: column exists) and
-        // could trigger a second migration / old-table pile-up. M3 restores "resume from the
-        // failed segment"; until then the user is guided to the return-revise loop (whose
-        // authoritative precheck recomputes the plan and resets the runtime). M1-marked groups
-        // WITHOUT a segment plan (ghostRouteFlags only — the single-ALTER degenerate shape of
-        // existing tickets) keep the ghost retry variant below (backward compatibility pin).
+        // B6 M3 (design §6.5, replaces the M2 R10 window guard): a SEGMENTED group (plan segments
+        // ∨ runtime exec_segments) resumes FROM THE FAILED SEGMENT — whole-group replay would
+        // necessarily fail on an already-SUCCESS ghost segment (its ALTER landed: column exists)
+        // and could trigger a second migration / old-table pile-up. The orchestrator owns the
+        // resume semantics (fresh under-lock read, extended active check, ghost idempotent cleanup
+        // + ADD-COLUMN target-effect probe, success segments never re-played). Decision order
+        // segments → flags → legacy is the compatibility contract: M1-marked groups WITHOUT a
+        // segment plan (ghostRouteFlags only — the single-ALTER degenerate shape of existing
+        // tickets) keep the ghost retry variant below, and legacy groups keep the whole-group
+        // replay byte-for-byte (regression pins).
         if (StringUtils.isNotBlank(group.getExecSegments())
             || com.clougence.clouddm.console.web.component.governance.TicketSegment.isSegmentedPlan(group.getPrecheckResult())) {
-            throw new ErrorMessageException(DmI18nUtils.getMessage(
-                I18nDmMsgKeys.GOV_TICKET_V2_GHOST_SEGMENT_RETRY_UNSUPPORTED.name()));
+            // Lock-order discipline: the ticket row lock precedes ANY group-row write (the
+            // retryGhostGroup / handleV2JobCompletion single-lock contract — no AB-BA deadlock).
+            approvalDal.approvalMapper().selectByIdForUpdate(ticket.getId());
+            boolean groupTerminalByProbe = ticketSegmentService.resumeGroupUnderLock(ticket, group.getId(), uid);
+            // Step-times contract (:415): the v2 (re)dispatch closes PREPARATION at the real
+            // dispatch moment (legacy retryGroup shape below).
+            this.approvalStateService.markExecutionDispatched(ticket.getBizId());
+            if (groupTerminalByProbe) {
+                // the resume-probe advanced the LAST segment synchronously (group terminal written,
+                // NOTHING dispatched) — no completion callback will ever fire and the EXEC_FAIL
+                // ticket is outside the WAIT_EXEC sweep IN set, so THIS call must drive the shared
+                // aggregation tail or the ticket sticks at EXEC_FAIL over all-SUCCESS groups.
+                aggregateTicketAfterSegmentResume(ticket);
+            }
+            return;
         }
 
         // B6 M1: ghost-route variant — a group marked at precheck has NO autoexec job; its retry
@@ -463,6 +483,31 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // Step-times fix (2026-09-12): v2 group jobs carry no dependOnBizId, so the legacy
         // preparation hook never fires — close PREPARATION at the real (re)dispatch moment.
         this.approvalStateService.markExecutionDispatched(ticket.getBizId());
+    }
+
+    /**
+     * B6 M3 (check fix): the aggregation tail for a segment resume that wrote the GROUP TERMINAL
+     * synchronously (the probe-success-on-the-last-segment path — nothing dispatched, so no
+     * completion callback will fire and the EXEC_FAIL ticket is outside the WAIT_EXEC sweep IN
+     * set). Mirrors the handleV2JobCompletion tail (:833-846) byte-for-byte: all groups terminal →
+     * anyFailed ? failExecution : completeExecution. Runs UNDER the ticket row lock retryGroup just
+     * took, in its transaction — the same single-lock/single-writer discipline as every other
+     * aggregation caller (callback / hook / sweep).
+     */
+    private void aggregateTicketAfterSegmentResume(DmApprovalDO ticket) {
+        List<DmTicketDbStmtDO> allGroups = ticketDbStmtDal.stmtMapper().queryByTicketId(ticket.getId());
+        boolean allTerminal = allGroups.stream().allMatch(g ->
+            EXEC_STATUS_SUCCESS.equals(g.getExecStatus()) || EXEC_STATUS_FAILED.equals(g.getExecStatus()));
+        if (!allTerminal) {
+            return;
+        }
+        boolean anyFailed = allGroups.stream().anyMatch(g -> EXEC_STATUS_FAILED.equals(g.getExecStatus()));
+        if (anyFailed) {
+            this.approvalStateService.failExecution(ticket.getBizId(),
+                "One or more database groups failed execution");
+        } else {
+            this.approvalStateService.completeExecution(ticket.getBizId());
+        }
     }
 
     // ==================== B6 M1: ghost auto-route dispatch / retry / alerts ====================
@@ -557,6 +602,24 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
      * already passed under the same lock). The session launch binds (ticketId, groupId,
      * segmentIndex) into the AsyncTask configData; sessionId/taskId are recorded ON the passed
      * segment instance and the CALLER persists the runtime (single writer discipline).
+     * <p>
+     * <b>Post-commit dispatch evaluation (B6 M3, M2 check 裁决项 2 — ruling: NOT converted)</b>:
+     * the remote launch runs INSIDE this transaction, so "launch succeeded + transaction later
+     * rolled back" leaves an orphan session (untracked gh-ost + a burned sidecar cap-2 slot —
+     * the AsyncTask row rolls back with the transaction and the in-memory dispatcher only picks
+     * tasks from committed rows). Moving the launch to a TransactionSynchronization afterCommit
+     * was evaluated and REJECTED: it would break the documented under-lock atomicity the F1
+     * fresh-read invariants rely on ("job flip + segment advance commit atomically", contract
+     * :414), split the dispatch across 5 call sites into commit + post-launch runtime update
+     * transactions, and open a NEW race — the ~7s sweep probing "segment EXECUTING ∧ task
+     * missing" between the commit and the launch would falsely FAIL healthy dispatches without
+     * a grace-window mechanism (new sweep semantics + new tests). Accepted caliber instead: the
+     * post-launch window inside the transaction is one runtime persist + (for a mid-chain
+     * advance) one aggregation-tail SELECT — minimal by construction; orphans WITH a recorded
+     * sessionId converge through the sweep's failSegment closeQuietly (M3); the rare
+     * rollback-window orphan (sessionId never recorded) is reclaimed at sidecar restart, and its
+     * DB effect converges through the M3 resume probe (a landed ADD COLUMN is detected instead
+     * of replayed; other shapes hit gh-ost's duplicate-object safe failure).
      */
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
