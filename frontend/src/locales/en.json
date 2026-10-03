@@ -4838,5 +4838,12 @@
   "wu-suo-hui-fu-mo-ren-diu-qi": "Other unsaved changes on this page will be discarded as well.",
   "wu-suo-json-wu-xiao": "ghostDefaultOptions is not valid JSON (or contains invalid values); the form falls back to the plugin defaults. Saving or restoring defaults will repair it.",
   "wu-suo-bao-cun-shi-bai-xiang": "Failed to save {0}: {1}",
-  "wu-suo-wei-bao-cun-ti-shi": "Leaving this page discards unsaved changes."
+  "wu-suo-wei-bao-cun-ti-shi": "Leaving this page discards unsaved changes.",
+  "wu-suo-zhi-xing-duan": "Execution segments",
+  "wu-suo-seg-zhi-jie": "Direct execution",
+  "wu-suo-seg-yu-ju": "Statement {0}",
+  "wu-suo-seg-yu-ju-fan-wei": "Statements {0} - {1}",
+  "wu-suo-seg-biao-hang-shu": "Table {0} · ≈{1} rows",
+  "wu-suo-seg-zhan-kai": "Expand",
+  "wu-suo-seg-shou-qi": "Collapse"
 }

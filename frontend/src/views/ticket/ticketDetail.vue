@@ -586,8 +586,66 @@
               <div class="gov-v2-group-row__sql">
                 <read-only-editor :text="group.sqlContent" :ds-type="ticketDetail.dataSourceType" :max-height="200" />
               </div>
-              <ghost-group-panel v-if="group.ghostSessionId" :group="group" :can-exec="canGhostExec" @dropped="loadV2GroupList" />
-              <div v-else-if="ghostRoutesOf(group).length" class="gov-v2-group-row__ghost-routes">
+              <!-- B6 M4 (design §6.8): collapsible segment/statement list — rendered ONLY for
+                   segmented groups (exec_segments runtime ∨ precheck segments plan); pure-normal,
+                   legacy and M1 flags-only groups keep the exact M1 chain below. The inline panel
+                   of a GHOST segment is that group's SINGLE ghost surface — the M1 group-level
+                   panel is excluded for segmented groups, so progress/controls never render twice
+                   and exactly one tailStatus poller runs per group (continuous polling starts only
+                   for a live session; a released one degrades to one silent synthesized probe).
+                   ⚠ execSegments/plan rendering here rides the ghostRouteFlags dual-write coupling
+                   (backend pin: GovTicketV2ServiceImpl.groupList / TicketSegmentService.persistRuntime). -->
+              <div v-if="isSegmentedGroup(group)" class="gov-v2-segments">
+                <div class="gov-v2-segments__head" @click="toggleSegments(group)">
+                  <Icon :type="segmentsOpen(group) ? 'ios-arrow-down' : 'ios-arrow-forward'" />
+                  <span class="gov-v2-segments__title">{{ $t('wu-suo-zhi-xing-duan') }}</span>
+                  <span class="gov-v2-segments__count">{{ groupSegments(group).length }}</span>
+                  <span class="gov-v2-segments__action">
+                    {{ segmentsOpen(group) ? $t('wu-suo-seg-shou-qi') : $t('wu-suo-seg-zhan-kai') }}
+                  </span>
+                </div>
+                <div v-show="segmentsOpen(group)" class="gov-v2-segments__body">
+                  <div v-for="seg in groupSegments(group)" :key="seg.segIdx" class="gov-v2-segment">
+                    <div class="gov-v2-segment__head">
+                      <Tag size="small" :color="seg.type === 'GHOST' ? 'warning' : 'default'">
+                        {{ seg.type === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-seg-zhi-jie') }}
+                      </Tag>
+                      <span class="gov-v2-segment__range">{{ segmentRangeText(seg) }}</span>
+                      <span v-if="seg.type === 'GHOST' && seg.table" class="gov-v2-segment__table">
+                        {{ seg.rows == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, seg.rows]) }}
+                      </span>
+                      <span :class="['gov-v2-segment__status', `is-${segmentStatusOf(seg)}`]">
+                        {{ segmentStatusText(seg) }}
+                      </span>
+                    </div>
+                    <div v-if="segmentStatements(group, seg).length" class="gov-v2-segment__stmts">
+                      <div v-for="stmt in segmentStatements(group, seg)" :key="stmt.index" class="gov-v2-segment__stmt-row">
+                        <Tag size="small">{{ stmt.type }}</Tag>
+                        <span class="gov-v2-segment__stmt-sql">{{ stmt.sql }}</span>
+                      </div>
+                    </div>
+                    <div v-if="seg.error" class="gov-v2-segment__error">
+                      <span>{{ $t('wu-suo-shi-bai-yuan-yin') }}:</span>
+                      <span>{{ seg.error }}</span>
+                    </div>
+                    <ghost-group-panel
+                      v-if="seg.type === 'GHOST' && seg.sessionId"
+                      :group="segmentPanelGroup(group, seg)"
+                      :can-exec="canGhostExec"
+                      @dropped="loadV2GroupList"
+                    />
+                  </div>
+                </div>
+              </div>
+              <!-- M1 group-level panel: unsegmented flags-only groups ONLY (coexistence ruling —
+                   a segmented group's ghost surface lives inline in its GHOST segment rows) -->
+              <ghost-group-panel
+                v-if="!isSegmentedGroup(group) && group.ghostSessionId"
+                :group="group"
+                :can-exec="canGhostExec"
+                @dropped="loadV2GroupList"
+              />
+              <div v-if="showGhostRouteFlags(group)" class="gov-v2-group-row__ghost-routes">
                 <div
                   v-for="route in ghostRoutesOf(group)"
                   :key="route.stmtIndex"
@@ -897,6 +955,7 @@ import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
 import copyMixin from '@/mixins/copyMixin';
 import { isCk, isMongoDB, RULE_WARN_LEVEL } from '@/utils';
 import GhostGroupPanel from './components/GhostGroupPanel.vue';
+import { SEGMENT_STATUS_I18N, segmentRangeI18n } from '@/const/ghost';
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 5000;
 const TICKET_TERMINAL_STATUSES = new Set(['REJECTED', 'FINISHED', 'CLOSED', 'CANCELED', 'FAILED']);
@@ -1176,6 +1235,9 @@ export default {
       showResubmitModal: false,
       v2ResubmitGroupId: null,
       v2ResubmitSqlMap: {},
+      // B6 M4: per-group user overrides of the segment list collapse state (groupId → boolean);
+      // an absent entry falls back to the status-derived default in segmentsOpen()
+      segmentsExpanded: {},
       releaseSummary: null
     };
   },
@@ -2230,6 +2292,122 @@ export default {
     ghostRoutesOf(group) {
       const precheck = this.parsePrecheckResult(group.precheckResult);
       return precheck?.ghostRoutes || [];
+    },
+    // ==================== B6 M4: segment/statement list (design §6.8) ====================
+    // Segment carrier of a group: the RUNTIME (execSegments VO passthrough) when present, else
+    // the precheck PLAN (precheck_result.segments, rendered all-PENDING before the first
+    // dispatch). Never-throw; [] for unsegmented groups → the caller renders nothing at all
+    // (legacy / pure-normal / M1 flags-only groups keep their exact pre-M4 shape).
+    groupSegments(group) {
+      const runtime = this.parseSegmentList(group.execSegments);
+      if (runtime.length) {
+        return runtime;
+      }
+      const precheck = this.parsePrecheckResult(group.precheckResult);
+      if (precheck && Array.isArray(precheck.segments)) {
+        return precheck.segments.filter((seg) => seg && typeof seg === 'object');
+      }
+      return [];
+    },
+    parseSegmentList(json) {
+      if (!json) {
+        return [];
+      }
+      try {
+        const arr = JSON.parse(json);
+        if (!Array.isArray(arr)) {
+          return [];
+        }
+        return arr.filter((seg) => seg && typeof seg === 'object');
+      } catch (e) {
+        return [];
+      }
+    },
+    isSegmentedGroup(group) {
+      return this.groupSegments(group).length > 0;
+    },
+    // the user toggle wins; the default keeps in-flight/failed groups open (progress visibility,
+    // R6) and finished groups collapsed (the segment list stays one click away)
+    segmentsOpen(group) {
+      const overridden = this.segmentsExpanded[group.groupId];
+      if (overridden !== undefined) {
+        return overridden;
+      }
+      return group.execStatus !== 'SUCCESS';
+    },
+    toggleSegments(group) {
+      this.segmentsExpanded = { ...this.segmentsExpanded, [group.groupId]: !this.segmentsOpen(group) };
+    },
+    segmentStatusOf(seg) {
+      // the plan carrier has no status field — pre-dispatch every segment is PENDING by contract
+      return seg.status || 'PENDING';
+    },
+    segmentStatusText(seg) {
+      const key = SEGMENT_STATUS_I18N[this.segmentStatusOf(seg)];
+      if (!key) {
+        return this.segmentStatusOf(seg);
+      }
+      return this.$t(key);
+    },
+    segmentRangeText(seg) {
+      const range = segmentRangeI18n(seg);
+      if (!range) {
+        return '';
+      }
+      return this.$t(range.key, range.args);
+    },
+    // statements[].index is the 0-BASED precheck preview index while segment bounds are 1-BASED
+    // in the exec_order domain (R11) — the +1 bridge is the ONLY legal conversion between them
+    segmentStatements(group, seg) {
+      const precheck = this.parsePrecheckResult(group.precheckResult);
+      if (!precheck || !Array.isArray(precheck.statements)) {
+        return [];
+      }
+      if (seg.type === 'GHOST') {
+        return precheck.statements.filter((stmt) => stmt.index + 1 === seg.stmtIndex);
+      }
+      if (!Array.isArray(seg.stmtRange) || seg.stmtRange.length !== 2) {
+        return [];
+      }
+      const from = seg.stmtRange[0];
+      const to = seg.stmtRange[1];
+      return precheck.statements.filter((stmt) => stmt.index + 1 >= from && stmt.index + 1 <= to);
+    },
+    // GhostGroupPanel props for one GHOST segment (the panel keeps its M1 group-VO-shaped
+    // contract — zero component change). The group-level M1 projection carries the NEWEST bound
+    // ghost task's facts: they belong to THIS segment only when the task ids match; earlier ghost
+    // segments of a multi-ghost group fall back to their own per-sessionId tailStatus data (the
+    // backend synthesizes status/oldTableName from that segment's own task record after release).
+    segmentPanelGroup(group, seg) {
+      const panelGroup = {
+        ghostSessionId: seg.sessionId,
+        ghostTaskStatus: null,
+        ghostOldTableName: undefined,
+        ghostOldTableDropped: undefined
+      };
+      const projected = seg.taskId != null && group.ghostTaskId != null && seg.taskId === group.ghostTaskId;
+      if (projected) {
+        panelGroup.ghostTaskStatus = group.ghostTaskStatus || null;
+        panelGroup.ghostOldTableName = group.ghostOldTableName;
+        panelGroup.ghostOldTableDropped = group.ghostOldTableDropped;
+      } else if (seg.status === 'SUCCESS') {
+        panelGroup.ghostTaskStatus = 'COMPLETED';
+      } else if (seg.status === 'FAILED') {
+        panelGroup.ghostTaskStatus = 'FAILED';
+      }
+      return panelGroup;
+    },
+    // M1-exact for unsegmented groups (the panel replaces the flags once a session exists); a
+    // segmented group keeps its route announcements in every phase — they carry the ALERT_PASS
+    // marks and threshold numbers the segment badges do not
+    showGhostRouteFlags(group) {
+      if (!this.ghostRoutesOf(group).length) {
+        return false;
+      }
+      if (this.isSegmentedGroup(group)) {
+        return true;
+      }
+      return !group.ghostSessionId;
     },
     async loadReleaseSummary() {
       const releaseId = this.ticketDetail?.releaseId;
@@ -4441,6 +4619,124 @@ export default {
     &__actions {
       display: flex;
       gap: 8px;
+    }
+  }
+
+  // B6 M4: collapsible segment/statement list — flat style (soft surface + white segment rows,
+  // depth via contrast/spacing, no nested frames per ui-layout-consistency)
+  .gov-v2-segments {
+    background: var(--bg-secondary, #f8fafc);
+    border-radius: 6px;
+    padding: 8px 12px;
+
+    .gov-v2-segments__head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 13px;
+      color: #181d26;
+    }
+
+    .gov-v2-segments__title {
+      font-weight: 500;
+    }
+
+    .gov-v2-segments__count {
+      color: #707070;
+      font-size: 12px;
+    }
+
+    .gov-v2-segments__action {
+      margin-left: auto;
+      color: #707070;
+      font-size: 12px;
+    }
+
+    .gov-v2-segments__body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-top: 10px;
+    }
+  }
+
+  .gov-v2-segment {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--bg-primary, #ffffff);
+    border-radius: 6px;
+    padding: 8px 12px;
+
+    .gov-v2-segment__head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+
+    .gov-v2-segment__range {
+      color: #41454d;
+    }
+
+    .gov-v2-segment__table {
+      color: #707070;
+    }
+
+    .gov-v2-segment__status {
+      margin-left: auto;
+      font-size: 13px;
+      font-weight: 500;
+
+      &.is-SUCCESS {
+        color: #18b566;
+      }
+      &.is-FAILED {
+        color: #ed4014;
+      }
+      &.is-PENDING {
+        color: #707070;
+      }
+      &.is-EXECUTING {
+        color: #2d8cf0;
+      }
+    }
+
+    .gov-v2-segment__stmts {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    // statement rows reuse the GovTicketV2Create check-stmt-row shape (design §6.8)
+    .gov-v2-segment__stmt-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+
+      .gov-v2-segment__stmt-sql {
+        color: #41454d;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 600px;
+      }
+    }
+
+    .gov-v2-segment__error {
+      font-size: 12px;
+      color: #ed4014;
+      white-space: pre-wrap;
+      word-break: break-all;
+
+      span:first-child {
+        font-weight: 500;
+        margin-right: 4px;
+      }
     }
   }
 }

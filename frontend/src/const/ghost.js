@@ -30,3 +30,28 @@ export const GHOST_PHASE_I18N = {
 };
 
 export const GHOST_TERMINAL_TOOL_STATUS = ['COMPLETED', 'FAILED', 'ABORTED'];
+
+// B6 M4 segment view: TicketSegment status enum (PENDING/EXECUTING/SUCCESS/FAILED, shared by the
+// runtime carrier and the pre-dispatch plan fallback) → existing ticket-execution copy.
+export const SEGMENT_STATUS_I18N = {
+  PENDING: 'ticket-execution-waiting',
+  EXECUTING: 'ticket-execution-running',
+  SUCCESS: 'ticket-execution-complete',
+  FAILED: 'ticket-execution-failed'
+};
+
+// Segment statement bounds → i18n key/args. Bounds are 1-based in the exec_order domain (R11);
+// the precheck statements[].index preview domain is 0-based — callers bridge with index + 1.
+export function segmentRangeI18n(seg) {
+  if (seg.type === 'GHOST') {
+    return { key: 'wu-suo-seg-yu-ju', args: [seg.stmtIndex] };
+  }
+  const range = seg.stmtRange;
+  if (Array.isArray(range) && range.length === 2) {
+    if (range[0] === range[1]) {
+      return { key: 'wu-suo-seg-yu-ju', args: [range[0]] };
+    }
+    return { key: 'wu-suo-seg-yu-ju-fan-wei', args: [range[0], range[1]] };
+  }
+  return null;
+}

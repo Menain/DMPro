@@ -1263,6 +1263,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // B6 M1 (Step 7d D0): positional ghost-route flags = the execution-time authority
         // (GhostRouteFlags contract: index i ↔ i-th group of this id-ASC list). Cheap pre-filter —
         // legacy/unrouted tickets never touch the GHOST task mapper.
+        //
+        // ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6): this frontend projection AND the
+        // WAIT_EXEC sweep repair (ChangeApprovalHandler.probeGhostGroupsIfDue) both gate on
+        // GhostRouteFlags.anyRouted BEFORE ever looking at exec_segments — a segmented group only
+        // reaches TicketSegmentService.repairGroupUnderLock INSIDE that gate. The coupling holds
+        // today because submit/resubmit derive the flags and the segments plan from the SAME
+        // evaluateGhostRoute run. ANY future path that writes segments (plan or runtime) MUST
+        // write the flags in the same breath — or these pre-filters must be made segments-aware —
+        // otherwise the group silently loses both its ghost projection here and its sweep safety net.
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         boolean anyGhostRouted = com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo);
         List<GovTicketV2GroupVO> result = new ArrayList<>();
@@ -1277,6 +1286,9 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             vo.setPrecheckResult(g.getPrecheckResult());
             vo.setExecStatus(g.getExecStatus());
             vo.setExecDetail(g.getExecDetail());
+            // B6 M4: segment runtime passthrough (verbatim column, ungated — the frontend falls
+            // back to the precheck_result plan and renders nothing for unsegmented groups)
+            vo.setExecSegments(g.getExecSegments());
             if (anyGhostRouted
                 && com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
                 fillGhostTaskProjection(vo, ticketId, g.getId());

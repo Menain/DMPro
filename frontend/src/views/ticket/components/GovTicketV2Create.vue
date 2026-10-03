@@ -2,6 +2,7 @@
 import TicketEditor from '@/components/editor/TicketEditor';
 import dayjs from 'dayjs';
 import { mapState } from 'vuex';
+import { segmentRangeI18n } from '@/const/ghost';
 
 const PREFILL_KEY = 'cgdm.govTicketPrefill.v2';
 const PREFILL_TTL_MS = 10 * 60 * 1000;
@@ -261,6 +262,16 @@ export default {
       }
       return this.checkResult.groups.find((g) => g.pairId === pairId) || null;
     },
+    // B6 M4: the mixed-group segment PLAN (check VO GroupResult.segments, 1-based exec_order
+    // bounds) — shows the submitter how the group will be split and serially executed (the M1
+    // multi-statement intercept is gone since M2; the plan display is its successor)
+    segmentRangeText(seg) {
+      const range = segmentRangeI18n(seg);
+      if (!range) {
+        return '';
+      }
+      return this.$t(range.key, range.args);
+    },
     applyPrefill() {
       const query = this.$route.query;
       if (query.govV2 !== '1') {
@@ -389,6 +400,21 @@ export default {
                     {{ route.route === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-lu-you-alert-pass') }}
                   </Tag>
                   <span class="check-ghost-route-msg">{{ route.message }}</span>
+                </div>
+              </div>
+              <!-- B6 M4: mixed-group segment plan — per-segment badges make the serial split
+                   explicit at submit time (GHOST segment = yellow flag; replaces the M1
+                   multi-statement intercept lifted in M2) -->
+              <div v-if="checkGroupForPair(pair.id).segments?.length" class="check-segments">
+                <div class="check-segments__title">{{ $t('wu-suo-zhi-xing-duan') }}</div>
+                <div v-for="seg in checkGroupForPair(pair.id).segments" :key="seg.segIdx" class="check-segment-row">
+                  <Tag size="small" :color="seg.type === 'GHOST' ? 'warning' : 'default'">
+                    {{ seg.type === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-seg-zhi-jie') }}
+                  </Tag>
+                  <span class="check-segment-range">{{ segmentRangeText(seg) }}</span>
+                  <span v-if="seg.type === 'GHOST' && seg.table" class="check-segment-table">
+                    {{ seg.rows == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, seg.rows]) }}
+                  </span>
                 </div>
               </div>
               <div v-if="checkGroupForPair(pair.id).rulesCheck?.messages?.length" class="check-rules">
@@ -621,6 +647,34 @@ export default {
 
                 .check-ghost-route-msg {
                   color: #41454d;
+                }
+              }
+            }
+
+            // B6 M4: mixed-group segment plan rows (badge + range + ghost target facts)
+            .check-segments {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+
+              .check-segments__title {
+                font-size: 12px;
+                font-weight: 500;
+                color: #181d26;
+              }
+
+              .check-segment-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 12px;
+
+                .check-segment-range {
+                  color: #41454d;
+                }
+
+                .check-segment-table {
+                  color: #707070;
                 }
               }
             }

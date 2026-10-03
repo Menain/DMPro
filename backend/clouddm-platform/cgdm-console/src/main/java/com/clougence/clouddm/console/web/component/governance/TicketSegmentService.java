@@ -713,7 +713,20 @@ public class TicketSegmentService {
         return summary;
     }
 
-    /** Persist the runtime JSON and keep the in-memory group DO consistent (createGroupJob reads it back). */
+    /**
+     * Persist the runtime JSON and keep the in-memory group DO consistent (createGroupJob reads
+     * it back).
+     * <p>
+     * ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6): the ENTRY GATES that decide whether a
+     * group is ghost-managed read {@code ApprovalMO.ghostRouteFlags}, NOT this carrier — the
+     * WAIT_EXEC sweep pre-filter (ChangeApprovalHandler.probeGhostGroupsIfDue →
+     * GhostRouteFlags.anyRouted) skips a flagless ticket BEFORE ever inspecting exec_segments,
+     * and the groupList frontend projection (GovTicketV2ServiceImpl.fillGhostTaskProjection)
+     * uses the same positional gate. The coupling holds because flags and the segments plan are
+     * derived from the SAME authoritative precheck evaluation (submit/resubmit). ANY future path
+     * that writes segments (plan or runtime) MUST write the flags too — or those pre-filters must
+     * become segments-aware — else the group silently loses its sweep repair and ghost projection.
+     */
     private void persistRuntime(DmTicketDbStmtDO group, List<TicketSegment> runtime) {
         String json = JsonUtils.toJson(runtime);
         this.ticketDbStmtDal.stmtMapper().updateExecSegments(group.getId(), json);

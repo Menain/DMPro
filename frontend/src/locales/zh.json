@@ -4820,5 +4820,12 @@
   "wu-suo-hui-fu-mo-ren-diu-qi": "页面上其他尚未保存的修改将一并丢弃。",
   "wu-suo-json-wu-xiao": "ghostDefaultOptions 配置不是合法 JSON（或包含非法值），当前已回退显示插件默认参数；保存或恢复插件默认后将修复该配置。",
   "wu-suo-bao-cun-shi-bai-xiang": "{0} 保存失败：{1}",
-  "wu-suo-wei-bao-cun-ti-shi": "离开页面将丢弃尚未保存的修改。"
+  "wu-suo-wei-bao-cun-ti-shi": "离开页面将丢弃尚未保存的修改。",
+  "wu-suo-zhi-xing-duan": "执行段",
+  "wu-suo-seg-zhi-jie": "直接执行",
+  "wu-suo-seg-yu-ju": "语句 {0}",
+  "wu-suo-seg-yu-ju-fan-wei": "语句 {0} - {1}",
+  "wu-suo-seg-biao-hang-shu": "表 {0} · 约 {1} 行",
+  "wu-suo-seg-zhan-kai": "展开",
+  "wu-suo-seg-shou-qi": "收起"
 }

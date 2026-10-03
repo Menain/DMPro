@@ -55,4 +55,22 @@ public class GovTicketV2GroupVO {
      * captured yet (the frontend renders INIT and keeps polling).
      */
     private String  ghostTaskStatus;
+
+    // ---- B6 M4 (Step 10) segment runtime passthrough, additive ----
+
+    /**
+     * {@code dm_ticket_db_stmt.exec_segments} VERBATIM (the segment RUNTIME carrier — the
+     * TicketSegment JSON shape, same passthrough treatment as precheckResult above, zero new
+     * endpoints). Null for legacy tickets, pure-normal groups and segmented groups before their
+     * first dispatch — the frontend then falls back to the precheck_result "segments" PLAN (also
+     * passthrough) and renders the segment list all-PENDING. No trimming of the GHOST segments'
+     * full sql text: the same statement bytes already travel twice in this response (sqlContent +
+     * the precheck_result plan), so the marginal body growth is bounded by text the client
+     * already holds, and a trimmed copy would fork the carrier into a second JSON shape.
+     * <p>
+     * ⚠ DUAL-WRITE COUPLING (see the pin in groupList / TicketSegmentService.persistRuntime):
+     * the ghost projection above and the WAIT_EXEC sweep repair both gate on ghostRouteFlags,
+     * NOT on this field — consumers must not treat a non-null execSegments as self-sufficient.
+     */
+    private String  execSegments;
 }

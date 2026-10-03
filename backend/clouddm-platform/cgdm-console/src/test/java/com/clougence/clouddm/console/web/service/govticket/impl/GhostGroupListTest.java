@@ -163,6 +163,43 @@ public class GhostGroupListTest {
         assertEquals("EXECUTING", ghostVo.getExecStatus());
     }
 
+    // ==================== B6 M4: execSegments passthrough ====================
+
+    @Test
+    public void execSegments_passthroughByteIdentical_plainGroupNull() {
+        String runtime = "[{\"segIdx\":1,\"type\":\"AUTOEXEC\",\"status\":\"SUCCESS\",\"stmtRange\":[1,2]},"
+            + "{\"segIdx\":2,\"type\":\"GHOST\",\"status\":\"EXECUTING\",\"stmtIndex\":3,"
+            + "\"sessionId\":\"" + SESSION + "\",\"taskId\":" + TASK_ID + "}]";
+        DmTicketDbStmtDO segmented = group(GHOST_GROUP_ID);
+        segmented.setExecSegments(runtime);
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(segmented, group(PLAIN_GROUP_ID)));
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GHOST_GROUP_ID))
+            .thenReturn(ghostTask(AsyncTaskStatus.RUNNING, "RUNNING", null, null));
+
+        List<GovTicketV2GroupVO> list = service.groupList(PUID, UID, TICKET_ID);
+
+        // verbatim column passthrough — no re-serialization, no trimming (the frontend parses it)
+        assertEquals(runtime, list.get(0).getExecSegments());
+        assertNull("pure-normal groups never carry a runtime", list.get(1).getExecSegments());
+    }
+
+    @Test
+    public void execSegments_ungated_legacyTicketWithoutFlagsStillProjects() {
+        // the passthrough is NOT gated on ghostRouteFlags (only the ghost-task projection is) —
+        // the segment list renders from the runtime/plan even when the flag pre-filter skips
+        String runtime = "[{\"segIdx\":1,\"type\":\"GHOST\",\"status\":\"PENDING\",\"stmtIndex\":1}]";
+        DmTicketDbStmtDO segmented = group(GHOST_GROUP_ID);
+        segmented.setExecSegments(runtime);
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket(null));
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(segmented, group(PLAIN_GROUP_ID)));
+
+        List<GovTicketV2GroupVO> list = service.groupList(PUID, UID, TICKET_ID);
+
+        assertEquals(runtime, list.get(0).getExecSegments());
+        assertNull(list.get(0).getGhostSessionId()); // the ghost projection stays flag-gated
+        verify(ghostService, never()).findTaskForTicketGroup(anyLong(), anyLong());
+    }
+
     // ==================== effective-status semantics ====================
 
     @Test
