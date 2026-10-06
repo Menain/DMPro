@@ -38,6 +38,10 @@ public interface AutoExecService {
      * Mirrors {@link #createJob} but sets {@code depend_on_group_id} (not {@code depend_on_biz_id})
      * and splits the SQL from the group's {@code sql_content}. The job is created with PREPARING
      * status; the caller must call {@link #startJob} to transition to INIT for scheduler pickup.
+     * <p>
+     * Convenience form for SYSTEM-driven chains (auto-advance / segment chain / retryGroup /
+     * External resubmit): IMMEDIATE execution, no retry parameters — delegates to the extended
+     * overload with byte-identical defaults (N0 additive-extension regression pin).
      *
      * @param group           the statement group row (dsId, dbName, sqlContent, id)
      * @param jobBizId        generated job bizId (unique within dm_exec_auto_job)
@@ -47,6 +51,37 @@ public interface AutoExecService {
      * @param uid             operator uid (typically "SYSTEM")
      */
     void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional, ErrorStrategy errorStrategy, String languageTag, String uid);
+
+    /**
+     * V2 governance, extended form (B7 N0 — PROD_DML human-confirm chain migration): creates a
+     * per-DB execution job for a statement group with the FULL execution config projected from
+     * the confirm FO — the group-job analog of {@link #createJob}'s {@code AutoExecCreateMO}
+     * fields. Needed because the human confirm dialog carries execType/execTime (SPECIFY_TIME
+     * scheduled execution) and retryWaitTime/retryCount (RETRY error strategy) which the
+     * SYSTEM-driven chains never set (they are IMMEDIATE/NONE by construction).
+     * <p>
+     * Semantics mirror {@code createJob} verbatim: {@code execType == IMMEDIATE} → scheduleTime
+     * = now; otherwise scheduleTime = {@code new Date(execTime)} (the scheduler scan holds INIT
+     * jobs until {@code schedule_time} — SPECIFY_TIME group semantics preserved); RETRY strategy
+     * requires non-null, non-negative retryWaitTime/retryCount (same validation, same message).
+     * The 6-arg overload delegates here with (null, null, IMMEDIATE, null) — existing callers
+     * keep byte-identical job rows.
+     *
+     * @param group           the statement group row (dsId, dbName, sqlContent, id)
+     * @param jobBizId        generated job bizId (unique within dm_exec_auto_job)
+     * @param transactional   whether to wrap tasks in a transaction
+     * @param errorStrategy   error strategy for the job
+     * @param retryWaitTime   retry wait seconds (RETRY strategy only; null otherwise)
+     * @param retryCount      retry count (RETRY strategy only; null otherwise)
+     * @param execType        IMMEDIATE | SPECIFY_TIME (MANUAL_EXEC never reaches job creation)
+     * @param execTime        epoch millis for SPECIFY_TIME (null for IMMEDIATE)
+     * @param languageTag     locale language tag for worker messages
+     * @param uid             operator uid (human confirmer or "SYSTEM")
+     */
+    void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
+                        Long retryWaitTime, Long retryCount,
+                        com.clougence.clouddm.platform.dal.model.execution.AutoExecType execType, Long execTime,
+                        String languageTag, String uid);
 
     /**
      * V2 job completion handler: updates the group's exec_status and, when all groups for the
@@ -99,6 +134,24 @@ public interface AutoExecService {
     void startJob(String jobBizId, String operatorUid);
 
     void deleteJob(String jobBizId);
+
+    /**
+     * B7 N0 (strict confirm-cleanup, race-free variant of {@link #deleteJob}): deletes the job
+     * ONLY while it is still pre-dispatch ({@code PREPARING} or {@code INIT} — the scheduler
+     * claims {@code INIT → PACKAGING} by row-locked CAS, so the status check under
+     * {@code queryByIdForUpdate} is race-free against dispatch). A job already claimed
+     * ({@code PACKAGING} and beyond) is LEFT RUNNING: deleting it would orphan the live sidecar
+     * execution (its reportMessage callbacks no-op on the deleted rows) and — with the group row
+     * reset — cause a silent DOUBLE EXECUTION on re-confirm. The surviving job's completion
+     * writeback owns the group state; the SUCCESS-retained PENDING/FAILED re-confirm filter then
+     * prevents re-executing it.
+     *
+     * @param jobBizId the job bizId to delete
+     * @return {@code true} only when the job existed pre-dispatch and was deleted (the caller may
+     *         reset the group row); {@code false} when absent (nothing to do) or already
+     *         dispatched (left running — the caller MUST NOT reset the group row)
+     */
+    boolean deleteJobIfNotDispatched(String jobBizId);
 
     void dispatchJob(Long jobId);
 

@@ -258,6 +258,28 @@ public class AutoExecServiceImpl implements AutoExecService {
     @Override
     public void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional,
                                ErrorStrategy errorStrategy, String languageTag, String uid) {
+        // N0 additive extension: the SYSTEM-driven chains (auto-advance / segment chain /
+        // retryGroup / External resubmit) are IMMEDIATE/NONE by construction — delegate with the
+        // byte-identical defaults so their job rows never change (regression pin).
+        this.createGroupJob(group, jobBizId, transactional, errorStrategy, null, null,
+            AutoExecType.IMMEDIATE, null, languageTag, uid);
+    }
+
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void createGroupJob(DmTicketDbStmtDO group, String jobBizId, boolean transactional,
+                               ErrorStrategy errorStrategy, Long retryWaitTime, Long retryCount,
+                               AutoExecType execType, Long execTime, String languageTag, String uid) {
+        // B7 N0 (human-confirm chain migration): RETRY validation mirrors createJob verbatim —
+        // the human confirm dialog can carry RETRY/errorStrategy, which the SYSTEM chains never do.
+        if (errorStrategy == ErrorStrategy.RETRY) {
+            if (retryWaitTime == null || retryCount == null) {
+                throw new ErrorMessageException("retry wait time or retry count not should be null");
+            }
+            if (retryWaitTime < 0 || retryCount < 0) {
+                throw new ErrorMessageException("retry wait time or retry count should be greater than 0");
+            }
+        }
         // Idempotency: if a previous job exists for this group (e.g. from a failed attempt),
         // delete it first to free the uk_exec_auto_job_group unique constraint slot.
         DmExecAutoJobDO oldJob = this.execDal.autoJobMapper().queryByDependOnGroupId(group.getId());
@@ -284,15 +306,24 @@ public class AutoExecServiceImpl implements AutoExecService {
         job.setDependOnGroupId(group.getId()); // v2: link to statement group
         job.setBizId(jobBizId);
         job.setUid(uid);
-        job.setExecType(AutoExecType.IMMEDIATE);
+        job.setExecType(execType);
         job.setStatus(AutoExecJobStatus.PREPARING);
 
         RsExecAutoJobConfigObj jobConfig = new RsExecAutoJobConfigObj();
         jobConfig.setEnableTransactional(transactional);
         jobConfig.setErrorStrategy(errorStrategy);
+        jobConfig.setRetryWaitTime(retryWaitTime);
+        jobConfig.setRetryCount(retryCount);
         jobConfig.setLanguageTag(languageTag);
         job.setConfig(jobConfig);
-        job.setScheduleTime(new Date());
+        // N0: execType/scheduleTime projection mirrors createJob verbatim — IMMEDIATE (and the
+        // delegating 6-arg overload) keeps scheduleTime=now byte-identical; SPECIFY_TIME parks
+        // the INIT job until execTime (the scheduler scan filters on schedule_time).
+        if (execType == AutoExecType.IMMEDIATE) {
+            job.setScheduleTime(new Date());
+        } else {
+            job.setScheduleTime(new Date(execTime));
+        }
 
         this.execDal.autoJobMapper().insert(job);
 
@@ -869,6 +900,31 @@ public class AutoExecServiceImpl implements AutoExecService {
         if (job != null) {
             this.doDeleteJob(job.getId());
         }
+    }
+
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public boolean deleteJobIfNotDispatched(String jobBizId) {
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryByBizId(jobBizId);
+        if (job == null) {
+            return false; // already gone — nothing deleted
+        }
+        // Row lock BEFORE the status read: the scheduler's claimJobForPackaging (INIT→PACKAGING)
+        // is a row-locked CAS, so whoever takes the lock first wins deterministically — claim
+        // first ⇒ we see PACKAGING and skip; delete first ⇒ the claim matches 0 rows and the
+        // dispatch no-ops. Never delete a claimed job (it may already be running on the sidecar;
+        // see the interface javadoc — B7 N0 strict confirm-cleanup).
+        DmExecAutoJobDO locked = this.execDal.autoJobMapper().queryByIdForUpdate(job.getId());
+        if (locked == null) {
+            return false;
+        }
+        if (locked.getStatus() != AutoExecJobStatus.PREPARING && locked.getStatus() != AutoExecJobStatus.INIT) {
+            log.warn("Skip deleting dispatched auto execution job, jobBizId={}, status={} — left running; "
+                + "its completion writeback owns the group state", jobBizId, locked.getStatus());
+            return false;
+        }
+        this.doDeleteJob(locked.getId());
+        return true;
     }
 
     private void doDeleteJob(long jobId) {

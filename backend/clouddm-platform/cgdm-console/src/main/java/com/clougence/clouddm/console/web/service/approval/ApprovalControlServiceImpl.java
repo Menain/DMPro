@@ -118,6 +118,12 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
 
     private static final int            AUTO_EXEC_TASK_SQL_SUMMARY_LENGTH = 200;
     private static final String         SYSTEM_OPERATOR                    = "SYSTEM";
+    // B7 N0 (PROD_DML human-confirm chain → v2 per-group jobs): v2 ticket-type discriminator
+    // (per-class constant pattern, mirrors GovLedgerServiceImpl/ProdReleaseServiceImpl) and the
+    // group exec_status values used by the dispatch filter (mirrors systemAutoConfirmForV2).
+    private static final String         TICKET_TYPE_PROD_DML               = "PROD_DML";
+    private static final String         EXEC_STATUS_PENDING                = "PENDING";
+    private static final String         EXEC_STATUS_FAILED                 = "FAILED";
 
     @Resource
     private SystemDal                   systemDal;
@@ -172,6 +178,12 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.governance.ProdReleaseService prodReleaseService;
+    // @Lazy: B7 N0 — pre-before schema snapshot capture on the v2 per-group confirm dispatch
+    //   (mirrors systemAutoAdvance/retryGroup/resubmit loops); governance-component back-reach
+    //   in this hub service → safe-side proxy injection (iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
 
     //
     // ticket list
@@ -1141,12 +1153,26 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (guardConclusion.isDeny()) {
                 throw new ErrorMessageException(guardConclusion.getSummary());
             }
-            this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
-            this.updateAutoExecFlag(ticketId, true);
-            this.autoExecService.startJob(jobBizId, fo.getConfirmUid());
+            // B7 N0 (裁决 #4 / B6 债务 #2): v2 PROD_DML tickets dispatch PER-GROUP v2 jobs — the
+            // legacy single-job path below consumes dm_approval.rawSql (= first group only), so a
+            // multi-group PROD_DML ticket executed ONLY its first group and the group rows never
+            // advanced. Completion writeback for the group jobs lands on the EXISTING
+            // handleV2JobCompletion discriminator branch (dependOnGroupId), zero provider change.
+            // Legacy tickets (no/unparsable ticketInfo.ticketType) keep the original path
+            // byte-for-byte — the discrimination lives HERE, at this single entry point.
+            if (isV2ProdDmlTicket(dmTicketDO)) {
+                this.dispatchV2GroupsOnConfirm(dmTicketDO, fo, locale, fo.getConfirmUid());
+            } else {
+                this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
+                this.updateAutoExecFlag(ticketId, true);
+                this.autoExecService.startJob(jobBizId, fo.getConfirmUid());
+            }
         } catch (RuntimeException e) {
             log.error("Prepare ticket execution job failed, ticketId={}", ticketId, e);
             try {
+                // v2 branch: jobBizId was never used (per-group bizIds are generated inside and
+                // cleaned up there before the rethrow) — deleteJob is a safe no-op on the absent
+                // bizId. Legacy branch: deletes the PREPARING job exactly as before.
                 this.autoExecService.deleteJob(jobBizId);
             } catch (RuntimeException cleanupError) {
                 e.addSuppressed(cleanupError);
@@ -1388,12 +1414,23 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             if (guardConclusion.isDeny()) {
                 throw new ErrorMessageException(guardConclusion.getSummary());
             }
-            this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
-            this.updateAutoExecFlag(ticketId, true);
-            this.autoExecService.startJob(jobBizId, SYSTEM_OPERATOR);
+            // B7 N0 (SYSTEM copy — 双副本同改契约; open command execute reaches THIS copy via
+            // GovOpenApiServiceImpl.executeTicket → confirmTicketBySystem): identical v2
+            // per-group dispatch as prepareExecJobAsync, only the operator uid delta (the
+            // established "EXACTLY three deltas" copy contract, governance-contracts :180).
+            if (isV2ProdDmlTicket(dmTicketDO)) {
+                this.dispatchV2GroupsOnConfirm(dmTicketDO, fo, locale, SYSTEM_OPERATOR);
+            } else {
+                this.createExecJob(fo, rdpTicketDO, dmTicketDO, jobBizId, locale);
+                this.updateAutoExecFlag(ticketId, true);
+                this.autoExecService.startJob(jobBizId, SYSTEM_OPERATOR);
+            }
         } catch (RuntimeException e) {
             log.error("Prepare ticket execution job failed (SYSTEM), ticketId={}", ticketId, e);
             try {
+                // v2 branch: jobBizId was never used (per-group bizIds are generated inside and
+                // cleaned up there before the rethrow) — deleteJob is a safe no-op on the absent
+                // bizId. Legacy branch: deletes the PREPARING job exactly as before.
                 this.autoExecService.deleteJob(jobBizId);
             } catch (RuntimeException cleanupError) {
                 e.addSuppressed(cleanupError);
@@ -1442,6 +1479,152 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                 return null;
             }
         });
+    }
+
+    // ==================== B7 N0: PROD_DML human/SYSTEM confirm → v2 per-group dispatch ====================
+
+    /**
+     * B7 N0 discriminator (裁决 #4): a v2 PROD_DML ticket carries {@code ticketInfo.ticketType
+     * == "PROD_DML"} (machine-written by GovTicketV2ServiceImpl.submit — the ONLY writer of the
+     * field, PRE_DDL/PROD_DML whitelist). Tolerant parse: null/blank/unparsable ticketInfo →
+     * false → the caller keeps the legacy createExecJob path byte-for-byte (old tickets without
+     * ticketType, and non-DM_CHANGE approvals whose ticketInfo never carries the field).
+     * <p>
+     * PRE_DDL note: PRE_DDL tickets never reach the confirm-exec entries in practice (the
+     * auto-advance scheduler SYSTEM-confirms them via confirmTicketBySystemForV2 + its own
+     * per-group loop); should one ever land here, the discriminator keeps it on the legacy path
+     * = the status-quo behavior (N0 changes PROD_DML only — design §2.1).
+     */
+    private static boolean isV2ProdDmlTicket(DmApprovalDO dmTicket) {
+        if (dmTicket == null || StringUtils.isEmpty(dmTicket.getTicketInfo())) {
+            return false;
+        }
+        try {
+            ApprovalMO mo = JsonUtils.toObj(dmTicket.getTicketInfo(), ApprovalMO.class);
+            return mo != null && TICKET_TYPE_PROD_DML.equals(mo.getTicketType());
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception, not
+            // RuntimeException (B6 sweep-parse lesson). Unparsable → legacy path (status quo).
+            return false;
+        }
+    }
+
+    /**
+     * B7 N0 (design §2.2): dispatch per-group v2 jobs for a confirmed PROD_DML ticket — the
+     * mirror of GovAutoAdvanceServiceImpl.systemAutoConfirmForV2's per-group loop
+     * (PENDING/FAILED filter → captureIfMissing → nextExecJobBizId → createGroupJob → startJob),
+     * with the two deltas the human-confirm chain mandates:
+     * <ul>
+     *   <li><b>config projection from the confirm FO</b> — enableTransactional / errorStrategy /
+     *       retryWaitTime / retryCount / execType / execTime all pass through (auto-advance
+     *       builds its config server-side instead). MANUAL_EXEC never reaches here
+     *       (statusFromConfirmAction returns FINISHED — no control task is submitted);
+     *       SPECIFY_TIME keeps its scheduled semantics via the extended createGroupJob
+     *       (schedule_time = execTime; the INIT job is held by the scheduler scan).</li>
+     *   <li><b>strict failure semantics</b> — the current chain's contract is "失败即完整恢复"
+     *       (auto-advance log-continues; the human chain must not): any exception in the loop OR
+     *       in the trailing dispatch mark → best-effort REVERSE-order cleanup → rethrow into the
+     *       caller's existing catch (restoreExecutionConfirmation). The cleanup is RACE-FREE by
+     *       construction, not by timing: {@code deleteJobIfNotDispatched} deletes a created job
+     *       ONLY while it is still pre-dispatch (PREPARING/INIT, checked under the job row lock —
+     *       the scheduler's INIT→PACKAGING claim is a row-locked CAS) and ONLY a real deletion
+     *       resets the group row EXECUTING→PENDING (createGroupJob flips the group inside its own
+     *       committed transaction, and a stuck EXECUTING row would be skipped by the
+     *       PENDING/FAILED filter on re-confirm, stranding the ticket). A job the scheduler
+     *       already claimed survives the cleanup and keeps running — deleting it would orphan
+     *       the live sidecar execution (callbacks no-op on deleted rows) and, with the group
+     *       reset, silently DOUBLE-EXECUTE the group's DML on re-confirm; its completion
+     *       writeback owns the group state and the SUCCESS-retained filter keeps re-confirm
+     *       non-overlapping. (The 5s scheduler grace on schedule_time makes this the rare path —
+     *       the loop is normally milliseconds — but the guard, not the grace, is the contract.)</li>
+     * </ul>
+     * Step-times (:415 contract): v2 group jobs carry no dependOnBizId, so the legacy dispatch
+     * hook (AutoExecServiceImpl dispatchJob → markExecutionDispatched(dependOnBizId)) never
+     * fires for them — close PREPARATION explicitly after the loop, mirroring
+     * systemAutoConfirmForV2 / retryGroup / External-resubmit. The mark runs INSIDE the guarded
+     * region: if it fails, the just-created jobs are torn down by the same race-free cleanup
+     * (they are within the grace window) instead of running on against a restored ticket.
+     * <p>
+     * NO updateAutoExecFlag here: ticketInfo.autoExec gates the LEGACY execution card in
+     * ticketDetail.vue, which has no data for v2 tickets (no dependOnBizId job) — setting it
+     * would render an empty fake-INIT card. The v2 group section is the execution presentation,
+     * identical to the PRE_DDL status quo (裁决 #20 诚实呈现). The legacy branch keeps the
+     * updateAutoExecFlag call at its original position, byte-for-byte.
+     * <p>
+     * The confirmTicket-provided {@code jobBizId} parameter of the callers is deliberately NOT
+     * reused (per-group bizIds are generated here, mirroring the auto-advance loop); the
+     * callers' catch-block deleteJob(jobBizId) is a safe no-op on the absent bizId.
+     *
+     * @param dmTicket    the ticket row (id = the group rows' ticket_id key; ticketInfo parsed)
+     * @param fo          the confirm FO (autoExecConfig projection source)
+     * @param locale      request-captured locale (languageTag for worker messages)
+     * @param operatorUid human confirmer uid (manual copy) or SYSTEM_OPERATOR (SYSTEM copy)
+     */
+    private void dispatchV2GroupsOnConfirm(DmApprovalDO dmTicket, DmConfirmTicketFO fo, Locale locale, String operatorUid) {
+        long ticketId = dmTicket.getId();
+        DmAutoExecConfigFO config = fo.getAutoExecConfig();
+        String languageTag = locale.toLanguageTag();
+        List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+
+        // Cleanup tracking (strict failure path): created job bizIds + the group rows whose
+        // EXECUTING flip committed with the job insert — parallel lists, reverse-order teardown.
+        List<String> createdJobBizIds = new ArrayList<>();
+        List<Long> createdGroupIds = new ArrayList<>();
+        try {
+            for (DmTicketDbStmtDO group : groups) {
+                String execStatus = group.getExecStatus();
+                if (!EXEC_STATUS_PENDING.equals(execStatus) && !EXEC_STATUS_FAILED.equals(execStatus)) {
+                    continue; // skip non-eligible groups (SUCCESS retained — resubmit contract)
+                }
+                // Sub-task A parity with the auto-advance/retry/resubmit loops: pre-before schema
+                // snapshot BEFORE the group job is dispatched (best-effort inside, never blocks).
+                this.schemaSnapshotService.captureIfMissing(group, ticketId);
+                String groupJobBizId = DmTeamUtils.nextExecJobBizId();
+                this.autoExecService.createGroupJob(group, groupJobBizId,
+                    config.isEnableTransactional(), config.getErrorStrategy(),
+                    config.getRetryWaitTime(), config.getRetryCount(),
+                    config.getAutoExecType(), config.getExecTime(),
+                    languageTag, operatorUid);
+                createdJobBizIds.add(groupJobBizId);
+                createdGroupIds.add(group.getId());
+                this.autoExecService.startJob(groupJobBizId, operatorUid);
+            }
+
+            // Step-times fix mirror (systemAutoConfirmForV2 :242): close PREPARATION at the real
+            // dispatch moment — the legacy dependOnBizId-keyed hook never fires for v2 group jobs.
+            // Inside the guarded region: a failure here triggers the same race-free cleanup.
+            this.approvalStateService.markExecutionDispatched(dmTicket.getBizId());
+        } catch (RuntimeException e) {
+            // 失败即完整恢复: reverse-order best-effort teardown of everything created above,
+            // then rethrow — the caller's existing catch runs restoreExecutionConfirmation.
+            // deleteJobIfNotDispatched is the race-free guard: a job the scheduler already
+            // claimed (PACKAGING+) is LEFT RUNNING (deleting it would orphan the live sidecar
+            // execution and double-execute the group on re-confirm) and its group row is NOT
+            // reset — the job's completion writeback owns the group state, and the
+            // SUCCESS-retained PENDING/FAILED filter keeps a re-confirm non-overlapping.
+            for (int i = createdJobBizIds.size() - 1; i >= 0; i--) {
+                String createdBizId = createdJobBizIds.get(i);
+                Long createdGroupId = createdGroupIds.get(i);
+                boolean deleted;
+                try {
+                    deleted = this.autoExecService.deleteJobIfNotDispatched(createdBizId);
+                } catch (RuntimeException cleanupError) {
+                    deleted = false; // unknown state — conservatively treat as surviving
+                    e.addSuppressed(cleanupError);
+                    log.error("Cleanup v2 group job failed, ticketId={}, jobBizId={}", ticketId, createdBizId, cleanupError);
+                }
+                if (!deleted) {
+                    continue; // job absent or still dispatched: its writeback owns the group row
+                }
+                try {
+                    this.ticketDbStmtDal.stmtMapper().updateExecStatus(createdGroupId, EXEC_STATUS_PENDING, null);
+                } catch (RuntimeException cleanupError) {
+                    e.addSuppressed(cleanupError);
+                    log.error("Reset v2 group exec status failed, ticketId={}, groupId={}", ticketId, createdGroupId, cleanupError);
+                }
+            }
+            throw e;
+        }
     }
 
     @Override

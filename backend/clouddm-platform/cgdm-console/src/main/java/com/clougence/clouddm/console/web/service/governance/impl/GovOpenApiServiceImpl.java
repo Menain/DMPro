@@ -366,7 +366,10 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
 
         // Delegate to the SYSTEM confirm variant — skips checkJobOperationEnable (no user record for SYSTEM),
         // state-machine guards retained. Release tickets go through prepareExecJobAsSystemAsync →
-        // startExecution (release branch added below). v2 tickets go through createExecJob + startJob.
+        // startExecution (release branch added below). B7 N0: v2 PROD_DML tickets go through the
+        // per-group createGroupJob + startJob loop inside prepareExecJobAsSystemAsync (was:
+        // createExecJob single legacy job consuming rawSql = first group only); legacy tickets
+        // without ticketInfo.ticketType keep createExecJob + startJob byte-for-byte.
         approvalControlService.confirmTicketBySystem(ticketId, config);
 
         // Audit event: SYSTEM_CONFIRM, operator = service account uid (NOT SYSTEM — Q4 调和:
