@@ -328,6 +328,35 @@ public class RootUserConfig {
     private Boolean       alertPushEnable;
 
     /**
+     * Lock-free DML (B7, task 09-17-lockfree-dml): FLAT six-KV parameter plane (裁决 #19 — NO
+     * JSON dmlDefaultOptions layer: B7 has no plugin @ConfigDef compile-time fallback tier, so a
+     * JSON merge chain would only add tolerance surface). Effective-parameter SNAPSHOTS of these
+     * KVs are frozen into each batch task's configData at dispatch (auditability/reproduction,
+     * B6 effectiveOptions discipline). Defaults mirror the org spec §9.8.2 (单批 ≤5000 行,
+     * 主从延迟 >10s 暂停评估). Read discipline: fail-safe (null/exception → the defaultValue
+     * below) + defensive clamping into the WhiteList ranges at resolve time.
+     */
+    @UserConfigDef(name = "dmlRowThreshold", defaultValue = "1000000", valueRange = "1 ~ 1000000000 rows", descKey = I18nUserConfigMsgKeys.USER_DML_ROW_THRESHOLD, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Long          dmlRowThreshold;
+    @UserConfigDef(name = "dmlBatchSize", defaultValue = "5000", valueRange = "1000 ~ 50000 rows", descKey = I18nUserConfigMsgKeys.USER_DML_BATCH_SIZE, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       dmlBatchSize;
+    @UserConfigDef(name = "dmlBatchIntervalMs", defaultValue = "1000", valueRange = "0 ~ 60000 ms", descKey = I18nUserConfigMsgKeys.USER_DML_BATCH_INTERVAL_MS, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       dmlBatchIntervalMs;
+    @UserConfigDef(name = "dmlLagThresholdSec", defaultValue = "10", valueRange = "1 ~ 3600 s", descKey = I18nUserConfigMsgKeys.USER_DML_LAG_THRESHOLD_SEC, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       dmlLagThresholdSec;
+    @UserConfigDef(name = "dmlBatchTimeoutSec", defaultValue = "300", valueRange = "10 ~ 3600 s", descKey = I18nUserConfigMsgKeys.USER_DML_BATCH_TIMEOUT_SEC, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       dmlBatchTimeoutSec;
+
+    /**
+     * B7 auto-route kill switch (ghostAutoRoute semantics verbatim): {@code false} → the precheck
+     * performs NO DML batch evaluation / marking / segmentation / no-key rejection at all — every
+     * DML goes through the direct chain (status-quo behavior). In-flight dispatched batch tasks
+     * are NOT affected (they run to completion through the chain + sweep).
+     */
+    @UserConfigDef(name = "dmlBatchAutoRoute", defaultValue = "true", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_DML_BATCH_AUTO_ROUTE, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       dmlBatchAutoRoute;
+
+    /**
      * Tencent Cloud (DBbrain)
      */
 

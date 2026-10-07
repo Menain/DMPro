@@ -111,7 +111,16 @@ public enum AuditType {
     GHOST_PAUSE,
     GHOST_RESUME,
     GHOST_STOP,
-    GHOST_DROP_OLD_TABLE;
+    GHOST_DROP_OLD_TABLE,
+    //******* LOCK-FREE DML (B7 batched large-table UPDATE/DELETE) *******
+    /**
+     * B7 four-point registration (governance-contracts audit contract): enum + RdpOpAuditServiceImpl
+     * init whitelist + getResourceName DATASOURCE case (existing — resId = dsId) + label 3-language
+     * properties. Written at batch-segment dispatch (HIGH, subject = ticket submitter, obj annotated
+     * ticketId/groupId/segmentIndex/via — the GHOST_EXECUTE precedent). N2 reuses it for the
+     * window-crash manual resolution actions (obj carries resolution + seq).
+     */
+    DML_BATCH_EXECUTE;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

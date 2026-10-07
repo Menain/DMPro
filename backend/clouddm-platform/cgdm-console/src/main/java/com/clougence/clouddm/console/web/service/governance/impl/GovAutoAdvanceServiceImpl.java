@@ -190,46 +190,31 @@ public class GovAutoAdvanceServiceImpl implements GovAutoAdvanceService {
 
         int position = 0;
         for (DmTicketDbStmtDO group : groups) {
-            boolean ghostRouted = com.clougence.clouddm.console.web.component.governance.GhostRouteFlags
-                .isRouted(ticketMO, position);
-            position++;
+            final int groupPosition = position++;
             String execStatus = group.getExecStatus();
             if (!"PENDING".equals(execStatus) && !"FAILED".equals(execStatus)) {
                 continue; // skip non-eligible groups
             }
             try {
-                // B6 M2 decision order (dispatch authority): the segment PLAN in precheck_result
-                // wins over the M1 positional flags — new submissions carry segments (a single
-                // ALTER group = the single-GHOST-segment degenerate shape) and are orchestrated
-                // segment-wise; EXISTING M1 tickets (flags only, no plan) keep the M1
-                // single-session path byte-for-byte (backward compatibility pin); unmarked
-                // groups keep the legacy autoexec path (regression pin).
-                if (com.clougence.clouddm.console.web.component.governance.TicketSegment
-                        .isSegmentedPlan(group.getPrecheckResult())) {
-                    this.ticketSegmentService.dispatchFirstSegment(ticket, group,
-                        config.isEnableTransactional(), config.getErrorStrategy(), languageTag, SYSTEM_OPERATOR);
-                    continue;
-                }
-                if (ghostRouted) {
-                    // B6 M1 dispatch site #1 (design §6.3): the threshold-marked single-ALTER
-                    // group early-exits into the GHOST tool session — no autoexec job is built.
-                    this.govTicketV2Service.dispatchGhostGroup(ticket, group,
-                        com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
-                    continue;
-                }
-                // Sub-task A: capture pre-before schema snapshots BEFORE the group job is
-                // dispatched. Any failure is caught inside the service and never blocks
-                // the main flow — missing snapshots degrade to WARN at the diff gate.
-                schemaSnapshotService.captureIfMissing(group, ticketId);
-
-                String jobBizId = DmTeamUtils.nextExecJobBizId();
-                this.autoExecService.createGroupJob(
-                    group, jobBizId,
-                    config.isEnableTransactional(),
-                    config.getErrorStrategy(),
-                    languageTag,
-                    SYSTEM_OPERATOR);
-                this.autoExecService.startJob(jobBizId, SYSTEM_OPERATOR);
+                // B7 N1b (design §2.3): the per-group decision order (segments → flags → legacy)
+                // is SINGLE-POINTED in V2GroupDispatch — this loop, the human-confirm chain and
+                // its SYSTEM copy all converge there (B6 kept three mirrored copies; the
+                // DML_BATCH segment type on the confirm chain made the drift risk real).
+                // Semantics stay byte-identical here: the segment PLAN wins (the orchestrator
+                // owns the whole dispatch); EXISTING M1 tickets (flags only, no plan) keep the
+                // single-session ghost path; unmarked groups keep the legacy autoexec path with
+                // the SYSTEM-chain 6-arg createGroupJob projection (IMMEDIATE by construction —
+                // the pin-verified signature, carried by the launcher below).
+                com.clougence.clouddm.console.web.component.governance.V2GroupDispatch.dispatch(
+                    ticket, group, groupPosition, ticketMO,
+                    config.isEnableTransactional(), config.getErrorStrategy(), languageTag, SYSTEM_OPERATOR,
+                    com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.GHOST_VIA_AUTO_ROUTE,
+                    this.ticketSegmentService, this.govTicketV2Service, this.schemaSnapshotService,
+                    (g, jobBizId, uid) -> {
+                        this.autoExecService.createGroupJob(g, jobBizId,
+                            config.isEnableTransactional(), config.getErrorStrategy(), languageTag, uid);
+                        this.autoExecService.startJob(jobBizId, uid);
+                    });
             } catch (Exception e) {
                 log.error("[GovAutoAdvance] Failed to create group job for ticket {}, group {}", ticketId, group.getId(), e);
             }

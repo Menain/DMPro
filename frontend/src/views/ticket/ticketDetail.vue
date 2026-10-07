@@ -594,7 +594,9 @@
                    and exactly one tailStatus poller runs per group (continuous polling starts only
                    for a live session; a released one degrades to one silent synthesized probe).
                    ⚠ execSegments/plan rendering here rides the ghostRouteFlags dual-write coupling
-                   (backend pin: GovTicketV2ServiceImpl.groupList / TicketSegmentService.persistRuntime). -->
+                   — B7 semantic widening: the flags mean "has non-direct-execution segments"
+                   (GHOST ∨ DML_BATCH), wire shape unchanged
+                   (backend pins: GovTicketV2ServiceImpl.groupList / TicketSegmentService.persistRuntime). -->
               <div v-if="isSegmentedGroup(group)" class="gov-v2-segments">
                 <div class="gov-v2-segments__head" @click="toggleSegments(group)">
                   <Icon :type="segmentsOpen(group) ? 'ios-arrow-down' : 'ios-arrow-forward'" />

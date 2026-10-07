@@ -153,6 +153,23 @@ public interface AutoExecService {
      */
     boolean deleteJobIfNotDispatched(String jobBizId);
 
+    /**
+     * B7 N1b (shared-dispatcher strict confirm-cleanup): the GROUP-keyed variant of
+     * {@link #deleteJobIfNotDispatched} — resolves the group's v2 job via
+     * {@code depend_on_group_id} (uk single row) and applies the identical race-free guard.
+     * Needed because a SEGMENTED group's job bizId is generated INSIDE
+     * {@code TicketSegmentService.dispatchFirstSegment} (invisible to the confirm loop): when a
+     * later group fails the strict human-confirm cleanup, an AUTOEXEC-first-segment job that is
+     * still pre-dispatch must be deletable by group id. No job (GHOST/DML_BATCH first segment —
+     * a live execution body) or an already-claimed job → {@code false} → the caller MUST NOT
+     * reset the group row (the surviving body's writeback owns the group state — the N0
+     * survive principle).
+     *
+     * @param groupId the statement group id
+     * @return {@code true} only when a pre-dispatch job existed and was deleted
+     */
+    boolean deleteGroupJobIfNotDispatched(long groupId);
+
     void dispatchJob(Long jobId);
 
     boolean skipTask(String bizId, long taskId);

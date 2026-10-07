@@ -60,6 +60,14 @@ public class WhiteListServiceForBasic implements WhiteListService, DsFeatureIDs,
             this.userConfigRange.put(RootUserConfig.Fields.languageMaxRequestKiloByte, new Range(64, 16384));
             this.userConfigRange.put(RootUserConfig.Fields.ghostSizeThresholdMb, new Range(1, 1048576));
             this.userConfigRange.put(RootUserConfig.Fields.ghostRowThreshold, new Range(1, 100000000000L));
+            // B7 lock-free DML (design §11 — the boolean kill switch dmlBatchAutoRoute carries no
+            // Range, ghostAutoRoute/alertPushEnable precedent; the batch-size lower bound 1000
+            // guards the channel-C round-trip economy, R11)
+            this.userConfigRange.put(RootUserConfig.Fields.dmlRowThreshold, new Range(1, 1000000000L));
+            this.userConfigRange.put(RootUserConfig.Fields.dmlBatchSize, new Range(1000, 50000));
+            this.userConfigRange.put(RootUserConfig.Fields.dmlBatchIntervalMs, new Range(0, 60000));
+            this.userConfigRange.put(RootUserConfig.Fields.dmlLagThresholdSec, new Range(1, 3600));
+            this.userConfigRange.put(RootUserConfig.Fields.dmlBatchTimeoutSec, new Range(10, 3600));
 
             // commons
             this.addMenu(MENU_SEPARATOR, true, true, true);

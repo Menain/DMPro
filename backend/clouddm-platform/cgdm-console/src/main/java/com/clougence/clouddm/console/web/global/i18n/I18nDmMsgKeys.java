@@ -605,4 +605,33 @@ public enum I18nDmMsgKeys {
     ALERT_PUSH_GHOST_RISK_NO_UNIQUE_KEY,
     ALERT_PUSH_GHOST_RISK_TUNNEL,
     ALERT_PUSH_GHOST_LINK,
+
+    // -- for Lock-free DML (B7, task 09-17-lockfree-dml; design §15 error matrix) --
+    /** 超阈值 ∧ 形状门通过 ∧ 确认无可用主键/非空唯一键 → 组级 precheck FAIL(提交拒绝,裁决 #5) */
+    GOV_TICKET_V2_DML_NO_KEY_REJECT,
+    /** 路由公告黄旗:将以分批限流方式执行(键/批大小/预计批数) */
+    DML_BATCH_ROUTE_ANNOUNCE,
+    /** 形状门不支持灰提示(多表/CTE/注释/LIMIT…),直接执行 */
+    DML_BATCH_SHAPE_UNSUPPORTED,
+    /** 键型不支持黄旗(复合键/浮点/exotic),直接执行+长锁/超时风险 */
+    DML_BATCH_KEY_UNSUPPORTED,
+    /** 非幂等风险黄旗(自引用 SET / 非确定函数),窗口崩溃需人工核对 */
+    DML_BATCH_NONIDEMPOTENT_RISK,
+    /** 探测失败灰提示:无法评估无锁执行,直接执行(不拒绝——探测不可得≠违规) */
+    DML_BATCH_PROBE_DEGRADED,
+    /** 组内同表 DML 累计行数提示(R13 拆句博弈展示级对策) */
+    DML_BATCH_SAME_TABLE_ACCUMULATE,
+    /** 批执行 DB 错误(原始错误为 {0};两路径撇号纪律,ops-diagnostics §6) */
+    DML_BATCH_EXEC_FAILED,
+    /** 窗口崩溃:批结果未知,人工核对后续跑/跳过(裁决 #9 选项 C) */
+    DML_BATCH_UNRESOLVED,
+    /** 任务失联:sweep 心跳死判,断点已保留可续跑 */
+    DML_BATCH_TASK_LOST,
+    /** 用户终止:部分成功保留,无自动回滚(中性文案) */
+    DML_BATCH_ABORTED,
+    /** retryGroup 活跃检查:该组批任务仍在进行 */
+    GOV_TICKET_V2_DML_BATCH_TASK_ACTIVE,
+    /** dock 任务标题/描述(showInDock) */
+    DML_BATCH_ASYNC_TITLE_MESSAGE,
+    DML_BATCH_ASYNC_DESC_MESSAGE,
 }

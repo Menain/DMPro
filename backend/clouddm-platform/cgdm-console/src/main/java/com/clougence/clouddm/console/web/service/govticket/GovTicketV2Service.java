@@ -72,6 +72,29 @@ public interface GovTicketV2Service {
                               com.clougence.clouddm.console.web.component.governance.TicketSegment segment,
                               String via);
 
+    /**
+     * B7 N1b (design §5.3/§9 dispatch seam): dispatch ONE DML_BATCH segment — the structural
+     * mirror of {@link #dispatchGhostSegment} with the AsyncTask replacing the tool session.
+     * Caller contract identical: the ticket row lock is ALREADY held and the caller owns the
+     * segment state transitions (no group CAS here). Assembles the task configData (launch
+     * freeze: statement text + batch key + effectiveParams snapshot + binding triple + the
+     * inherited-or-fresh checkpoint), submits the AsyncTask (bizType=DML_BATCH,
+     * processType=PROGRESS, showInDock), records taskId ON the passed segment instance (the
+     * caller persists the runtime — the completion CAS taskId cross-check key, debt #5), writes
+     * the group row EXECUTING and audits DML_BATCH_EXECUTE (HIGH) in the submitter's name —
+     * audit failure never rolls back the already-submitted task (GHOST_EXECUTE discipline).
+     * <p>
+     * Failure contract: submitTask failure THROWS with no execution-body residue (a batch task
+     * has no session — the inverse direction of the ghost closeQuietly coupling); the dispatch
+     * transaction rolls back and the segment stays for the sweep's PENDING re-dispatch row.
+     *
+     * @param via audit annotation of the dispatch origin (the shared TICKET_* constants)
+     */
+    void dispatchBatchSegment(com.clougence.clouddm.platform.dal.model.approval.DmApprovalDO ticket,
+                              com.clougence.clouddm.platform.dal.model.govticket.DmTicketDbStmtDO group,
+                              com.clougence.clouddm.console.web.component.governance.TicketSegment segment,
+                              String via);
+
     /** List statement groups for a ticket (detail page). */
     List<GovTicketV2GroupVO> groupList(String puid, String uid, long ticketId);
 

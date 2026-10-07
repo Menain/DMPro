@@ -120,6 +120,9 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     /** B6 M1: requestUri marker of the system-side GHOST_EXECUTE audit row (no HTTP request exists) */
     private static final String GHOST_AUTO_DISPATCH_URI = "/system/dbChangeV2/ghost/auto-dispatch";
 
+    /** B7 N1b: requestUri marker of the system-side DML_BATCH_EXECUTE audit row (no HTTP request exists) */
+    private static final String DML_BATCH_AUTO_DISPATCH_URI = "/system/dbChangeV2/dmlBatch/auto-dispatch";
+
     private static final RuleLevel[] BLOCK_LEVELS = { RuleLevel.FAILURE, RuleLevel.TICKET };
 
     @Resource
@@ -184,6 +187,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
+    // @Lazy: B7 N1b lock-free DML engine (marking-seam probe + dispatch-seam task submission) —
+    //   the batch service lazy-reaches the governance components back through the AsyncTask
+    //   completion hook; safe-side proxy injection (iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchService dmlBatchService;
     @Resource
     private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
 
@@ -667,6 +676,91 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
     }
 
+    /**
+     * B7 N1b (design §5.3/§9 dispatch seam): dispatch ONE DML_BATCH segment — the structural
+     * mirror of {@link #dispatchGhostSegment} with the console-side AsyncTask replacing the
+     * gh-ost tool session. Caller contract IDENTICAL: the ticket row lock is ALREADY held and
+     * the caller (TicketSegmentService) owns the segment state transitions — no group CAS here;
+     * the taskId is recorded ON the passed segment instance and the CALLER persists the runtime
+     * (single-writer discipline).
+     * <p>
+     * The launch mechanism (configData assembly + effectiveParams snapshot + submitTask) lives in
+     * {@code DmlBatchService.submitForTicket}; a submitTask failure THROWS with no execution-body
+     * residue (a batch task has no session — the inverse direction of the ghost closeQuietly
+     * coupling), the dispatch transaction rolls back and the segment stays for the sweep's
+     * PENDING re-dispatch row. The retryGroup resume path rides the same method: the segment's
+     * {@code resumeCheckpoint} (done-side inheritance, design §7.4) seeds the fresh task's
+     * checkpoint — 已成功批永不重放 is physically guaranteed by the cursor inheritance.
+     * <p>
+     * Post-commit dispatch conversion: the same EVALUATED-AND-REJECTED ruling as
+     * dispatchGhostSegment applies verbatim (under-lock dispatch atomicity, single call surface,
+     * no sweep grace-window mechanism); the residual rollback window is even smaller here — an
+     * uncommitted AsyncTask row is invisible to the dispatcher (it reads committed rows only), so
+     * a rollback simply un-submits the task with ZERO side effects (no session, no binary).
+     */
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void dispatchBatchSegment(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                     com.clougence.clouddm.console.web.component.governance.TicketSegment segment,
+                                     String via) {
+        String submitterUid = ticket.getOwnerUid();
+        // pre-before baseline (first-capture-wins; never blocks — same contract as the other
+        // dispatch sites; mid-chain this is usually a no-op, the first dispatch already captured)
+        schemaSnapshotService.captureIfMissing(group, ticket.getId());
+
+        // the launch: configData assembly (frozen stmt/batchKey + effectiveParams snapshot +
+        // binding triple + inherited-or-fresh checkpoint) + submitTask — throws on failure with
+        // no residue (interface contract)
+        Long taskId = dmlBatchService.submitForTicket(ticket, group, segment, segment.getResumeCheckpoint());
+        segment.setTaskId(taskId); // the completion CAS taskId cross-check key (debt #5)
+
+        // group row → EXECUTING (first segment: PENDING→EXECUTING; mid-chain: idempotent rewrite)
+        ticketDbStmtDal.stmtMapper().updateExecStatus(group.getId(), EXEC_STATUS_EXECUTING, null);
+
+        // R13 audit: DML_BATCH_EXECUTE in the submitter's name, obj annotated with the ticket
+        // source + segment position + the frozen key facts. Audit failure must NOT roll back the
+        // already-submitted task (GHOST_EXECUTE discipline — the task exists regardless).
+        com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj auditObj
+            = buildDmlBatchAuditObj(ticket, group, segment, via);
+        try {
+            rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
+                DML_BATCH_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.DML_BATCH_EXECUTE,
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+        } catch (RuntimeException e) {
+            log.error("[GovTicketV2] DML_BATCH_EXECUTE audit failed for ticket {} group {} segment {} (dispatch kept)",
+                ticket.getId(), group.getId(), segment.getSegIdx(), e);
+        }
+    }
+
+    /** the DML_BATCH_EXECUTE audit payload (the frozen plan facts + dispatch origin). */
+    private static com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj buildDmlBatchAuditObj(
+            DmApprovalDO ticket, DmTicketDbStmtDO group,
+            com.clougence.clouddm.console.web.component.governance.TicketSegment segment, String via) {
+        com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj obj
+            = new com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj();
+        obj.setTicketId(ticket.getId());
+        obj.setGroupId(group.getId());
+        obj.setSegmentIndex(segment.getSegIdx());
+        obj.setVia(via);
+        obj.setDsId(group.getDsId());
+        obj.setDbName(group.getDbName());
+        obj.setTableName(segment.getTable());
+        if (segment.getBatchKey() != null) {
+            obj.setKeyColumn(segment.getBatchKey().getColumn());
+            obj.setKeyType(segment.getBatchKey().getKeyType());
+        }
+        obj.setEstimatedRows(segment.getEstimatedRows());
+        obj.setIdempotent(segment.getIdempotent());
+        String sql = segment.getSql();
+        obj.setSqlSummary(sql != null && sql.length()
+            > com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj.SQL_MAX_LENGTH
+                ? sql.substring(0, com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj.SQL_MAX_LENGTH)
+                : sql);
+        return obj;
+    }
+
     /** positional ghost-route lookup of one group (id-ASC index — see GhostRouteFlags contract). */
     private boolean isGhostRoutedGroup(ApprovalMO mo, DmTicketDbStmtDO group) {
         if (!com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo)) {
@@ -726,16 +820,37 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             || status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.CANCEL;
     }
 
-    /** null when NO group is routed (legacy ticketInfo shape kept byte-identical). */
+    /**
+     * null when NO group is routed (legacy ticketInfo shape kept byte-identical).
+     * <p>
+     * ⚠ DUAL-WRITE COUPLING PIN (B6 M4; B7 semantic widening, 裁决 #12): these flags are the
+     * sweep/projection ENTRY GATES — their semantics widened from "ghost-routed" to <b>"HAS
+     * NON-DIRECT-EXECUTION SEGMENTS" (GHOST ∨ DML_BATCH)</b>. Field name and wire shape are
+     * unchanged (in-flight ticket compatibility). A DML_BATCH-only ticket that did NOT set its
+     * flag would silently lose the WAIT_EXEC sweep repair (R2) — the marking seam and this
+     * builder derive from the SAME authoritative evaluation, so plan and flag can never diverge.
+     */
     private static List<Boolean> buildGhostRouteFlags(List<GroupPrecheck> prechecks) {
         List<Boolean> flags = new ArrayList<>(prechecks.size());
         boolean any = false;
         for (GroupPrecheck pc : prechecks) {
-            boolean routed = hasGhostRoute(pc.result);
+            boolean routed = hasRoutedMark(pc.result);
             flags.add(routed);
             any |= routed;
         }
         return any ? flags : null;
+    }
+
+    /**
+     * B7: a group counts as ROUTED when its evaluation produced a GHOST mark (the B6 display
+     * carrier — belt) OR its segment plan carries a DML_BATCH segment (the B7 addition —
+     * braces; a GHOST route always writes a plan too, so the plan check alone would suffice,
+     * keeping both preserves the exact B6 predicate for ghost groups).
+     */
+    private static boolean hasRoutedMark(GovTicketV2CheckVO.GroupResult gr) {
+        return hasGhostRoute(gr)
+            || (gr != null && com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .hasDmlBatchSegment(gr.getSegments()));
     }
 
     private static boolean hasGhostRoute(GovTicketV2CheckVO.GroupResult gr) {
@@ -748,7 +863,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
 
     /**
      * resubmit rebuild of the positional flags: fresh evaluations for the modified groups,
-     * retained flags for untouched (SUCCESS) groups at their positions.
+     * retained flags for untouched (SUCCESS) groups at their positions. B7: the fresh-evaluation
+     * predicate is the WIDENED hasRoutedMark (GHOST ∨ DML_BATCH — the dual-write coupling pin,
+     * a modified group whose new text routes a DML_BATCH segment must set its flag or lose the
+     * sweep repair, R2).
      */
     private static void rebuildGhostRouteFlags(ApprovalMO mo, List<DmTicketDbStmtDO> allGroups,
                                                Map<Long, GroupPrecheck> precheckByGroupId) {
@@ -759,7 +877,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             GroupPrecheck pc = precheckByGroupId.get(allGroups.get(i).getId());
             Boolean flag;
             if (pc != null) {
-                flag = hasGhostRoute(pc.result);
+                flag = hasRoutedMark(pc.result);
             } else {
                 flag = oldFlags != null && i < oldFlags.size() ? oldFlags.get(i) : Boolean.FALSE;
             }
@@ -1047,6 +1165,21 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             // dispatch time. Java-side write (not folded into updateSqlForRevision) so the
             // reset stays unit-testable at the mapper seam.
             ticketDbStmtDal.stmtMapper().updateExecSegments(pc.groupId, null);
+            // B7 N1b: keep the IN-MEMORY group DO consistent with the two writes above (the
+            // same-transaction DO list `allGroups` was loaded BEFORE the revision). The External
+            // direct-to-exec branch below dispatches from those DOs — without this sync its
+            // decision order would read the STALE precheck_result (a fresh DML_BATCH plan would
+            // fall through to the legacy branch) and createGroupJob would split the STALE
+            // sql_content (a pre-existing staleness bug this sync closes). Mirrors the
+            // persistRuntime in-memory consistency discipline of the orchestrator.
+            DmTicketDbStmtDO refreshed = groupMap.get(pc.groupId);
+            if (refreshed != null) {
+                refreshed.setSqlContent(pc.sqlContent);
+                refreshed.setPrecheckResult(pc.precheckResultJson);
+                refreshed.setExecStatus(EXEC_STATUS_PENDING);
+                refreshed.setExecDetail(null);
+                refreshed.setExecSegments(null);
+            }
         }
 
         // Step 4: update dm_approval ticket_status. VIA_RELEASE returns to the release ledger pool
@@ -1165,30 +1298,41 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 ApprovalProcessStatus.INIT, JsonUtils.toJson(execInitMO));
             approvalStateService.initializeExecutionProgress(ticketId);
 
-            // Per-group createGroupJob + startJob (mirrors GovAutoAdvanceServiceImpl L178-196)
-            // B6 M1 note (design §6.3): this branch carries NO ghost dispatch — it is unreachable
-            // for ghost-routed groups BY CONSTRUCTION: External-channel tickets are PROD_DML-only
-            // (submit rejects the External approval type for PRE_DDL — the template check above
-            // runs under the PROD_DML guard), and PROD_DML's type-purity rule (:953-959) excludes
-            // DDL, so no group here can ever carry a ghost route mark. A defensive ghost branch
-            // would be dead code; the M3 defensive-equivalence ruling keeps it out.
+            // Per-group dispatch through the SHARED decision order (mirrors
+            // GovAutoAdvanceServiceImpl — B7 N1b convergence, design §2.3).
+            // B6 M1 note (design §6.3) stays valid for the FLAGS branch: a ghost mark is
+            // unreachable here BY CONSTRUCTION (External-channel tickets are PROD_DML-only —
+            // submit rejects the External approval type for PRE_DDL — and PROD_DML's type-purity
+            // rule excludes DDL). The SEGMENTS branch, however, is LIVE for B7: a resubmitted
+            // PROD_DML group can carry a DML_BATCH plan (the marking gate includes PROD_DML) —
+            // without the decision order, createGroupJob over the reset (runtime-null) group
+            // would execute the FULL text directly, silently bypassing the batch route (the
+            // R18 绕行后门 this convergence closes). The legacy branch keeps the original
+            // 6-arg createGroupJob projection byte-for-byte (regression pin).
             com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO execConfig = buildAutoExecConfig(ticketChangeType);
             java.util.Locale locale = DmI18nUtils.getLocale();
             String languageTag = locale.toLanguageTag();
+            int position = 0;
             for (DmTicketDbStmtDO group : allGroups) {
+                final int groupPosition = position++;
                 String execStatus = group.getExecStatus();
                 if (!EXEC_STATUS_PENDING.equals(execStatus) && !EXEC_STATUS_FAILED.equals(execStatus)) {
                     continue; // skip non-eligible groups
                 }
                 try {
-                    schemaSnapshotService.captureIfMissing(group, ticketId);
-                    String jobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
-                    autoExecService.createGroupJob(group, jobBizId,
-                        execConfig.isEnableTransactional(), execConfig.getErrorStrategy(),
-                        languageTag, "SYSTEM");
-                    autoExecService.startJob(jobBizId, "SYSTEM");
+                    com.clougence.clouddm.console.web.component.governance.V2GroupDispatch.dispatch(
+                        ticket, group, groupPosition, mo,
+                        execConfig.isEnableTransactional(), execConfig.getErrorStrategy(), languageTag, "SYSTEM",
+                        GHOST_VIA_AUTO_ROUTE,
+                        ticketSegmentService, this, schemaSnapshotService,
+                        (g, jobBizId, opUid) -> {
+                            autoExecService.createGroupJob(g, jobBizId,
+                                execConfig.isEnableTransactional(), execConfig.getErrorStrategy(),
+                                languageTag, opUid);
+                            autoExecService.startJob(jobBizId, opUid);
+                        });
                 } catch (Exception e) {
-                    log.error("[GovTicketV2] Failed to create group job for ticket {}, group {} (External resubmit)",
+                    log.error("[GovTicketV2] Failed to dispatch group for ticket {}, group {} (External resubmit)",
                         ticketId, group.getId(), e);
                 }
             }
@@ -1260,18 +1404,22 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (CollectionUtils.isEmpty(groups)) {
             return Collections.emptyList();
         }
-        // B6 M1 (Step 7d D0): positional ghost-route flags = the execution-time authority
+        // B6 M1 (Step 7d D0): positional route flags = the execution-time authority
         // (GhostRouteFlags contract: index i ↔ i-th group of this id-ASC list). Cheap pre-filter —
         // legacy/unrouted tickets never touch the GHOST task mapper.
         //
-        // ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6): this frontend projection AND the
-        // WAIT_EXEC sweep repair (ChangeApprovalHandler.probeGhostGroupsIfDue) both gate on
-        // GhostRouteFlags.anyRouted BEFORE ever looking at exec_segments — a segmented group only
-        // reaches TicketSegmentService.repairGroupUnderLock INSIDE that gate. The coupling holds
-        // today because submit/resubmit derive the flags and the segments plan from the SAME
-        // evaluateGhostRoute run. ANY future path that writes segments (plan or runtime) MUST
-        // write the flags in the same breath — or these pre-filters must be made segments-aware —
-        // otherwise the group silently loses both its ghost projection here and its sweep safety net.
+        // ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6; B7 semantic widening, 裁决 #12): this
+        // frontend projection AND the WAIT_EXEC sweep repair (ChangeApprovalHandler.
+        // probeGhostGroupsIfDue) both gate on GhostRouteFlags.anyRouted BEFORE ever looking at
+        // exec_segments — a segmented group only reaches TicketSegmentService.repairGroupUnderLock
+        // INSIDE that gate. The flags' semantics B7 WIDENED from "ghost-routed" to "HAS
+        // NON-DIRECT-EXECUTION SEGMENTS" (GHOST ∨ DML_BATCH; field name / wire shape unchanged) —
+        // a DML_BATCH-only ticket that did not set its flag would silently lose its sweep repair
+        // (R2). The coupling holds because submit/resubmit derive the flags and the segments plan
+        // from the SAME authoritative evaluation run (evaluateGhostRoute ∨ evaluateDmlBatchRoute).
+        // ANY future path that writes segments (plan or runtime, ANY routed type) MUST write the
+        // flags in the same breath — or these pre-filters must be made segments-aware — otherwise
+        // the group silently loses both its projection here and its sweep safety net.
         ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
         boolean anyGhostRouted = com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo);
         List<GovTicketV2GroupVO> result = new ArrayList<>();
@@ -1546,9 +1694,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         }
 
         // Step 4: EXPLAIN row estimation (design D3) — degradation contract: never blocks submission.
+        // B7: the EstimationResult is kept as a local — Step 6 consumes the ADDITIVE per-statement
+        // exposure for its per-statement threshold attribution (the group total alone is unsound
+        // for multi-statement groups; the legacy estimatedRows/rowsEstimated contract is untouched).
+        com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult estResult = null;
         try {
-            com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult estResult
-                = sqlRowEstimator.estimate(sqlContent, dsConfig, dsLevels, uid, dsId);
+            estResult = sqlRowEstimator.estimate(sqlContent, dsConfig, dsLevels, uid, dsId);
             result.setEstimatedRows(estResult.estimatedRows());
             result.setRowsEstimated(estResult.rowsEstimated());
         } catch (Exception e) {
@@ -1562,17 +1713,58 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // every run (idempotent). Degradation contract like Step 4: an evaluation failure keeps
         // the status quo and never blocks submission — EXCEPT the M1-transition multi-statement
         // intercept which is a deliberate FAIL (design §6.10 boundary matrix).
+        // B7: the outcome (routed candidates) is RETURNED — the segment plan build moved to the
+        // combined builder below (ghost ∨ DML_BATCH), output for ghost-only groups unchanged.
+        GhostRouteOutcome ghostOutcome = GhostRouteOutcome.EMPTY;
         if (TICKET_TYPE_PRE_DDL.equals(ticketType)
                 && dsDO.getDataSourceType() == com.clougence.clouddm.base.metadata.ds.DataSourceType.MySQL
                 && isGhostAutoRouteEnabled()) {
             try {
-                evaluateGhostRoute(uid, dsDO, dsConfig, result, scripts, dbName);
+                ghostOutcome = evaluateGhostRoute(uid, dsDO, dsConfig, result, scripts, dbName);
             } catch (RuntimeException e) {
                 log.warn("[GovTicketV2] ghost route evaluation failed for pair {}, status quo kept", pairId, e);
+                ghostOutcome = GhostRouteOutcome.EMPTY;
             }
             if ("FAIL".equals(result.getCheckStatus())) {
                 return result;
             }
+        }
+
+        // Step 6 (B7 N1b, design §9 marking seam): DML batch auto-route evaluation —
+        // (PROD_DML ∨ PRE_DDL) ∧ {MySQL ≥ 8.0, PG ≥ 15} (the version gate is CONSOLE-side —
+        // N1a handover obligation #2: the rewrite SPI does not gate versions) ∧ dmlBatchAutoRoute
+        // kill switch (fail-safe read). Shared-path + idempotent-recompute discipline as Step 5;
+        // OUTER degradation contract as Step 5 (handover obligation #3: analyzeDmlForBatch only
+        // catches RuntimeException — Errors pierce; evaluation infrastructure failure = warn +
+        // status quo, NEVER a ticket FAIL). The ONLY deliberate FAIL is the DML_NO_KEY rejection
+        // (裁决 #5 — a normal evaluation RESULT, not an exception; alert + audit hooks are N2).
+        DmlBatchOutcome dmlOutcome = DmlBatchOutcome.EMPTY;
+        // the dmlBatchService null guard = engine-unwired degradation (the status-quo direct
+        // chain — same fail-safe direction as the kill switch; production Spring always injects,
+        // the legacy pin suites predate the field and must keep evaluating byte-identically)
+        if ((TICKET_TYPE_PROD_DML.equals(ticketType) || TICKET_TYPE_PRE_DDL.equals(ticketType))
+                && dmlBatchService != null
+                && dmlBatchService.isBatchRouteSupportedDs(dsDO)
+                && dmlBatchService.isAutoRouteEnabled()) {
+            try {
+                dmlOutcome = evaluateDmlBatchRoute(uid, dsDO, dsConfig, dsLevels, result, scripts, dbName, estResult);
+            } catch (RuntimeException e) {
+                log.warn("[GovTicketV2] DML batch route evaluation failed for pair {}, status quo kept", pairId, e);
+                dmlOutcome = DmlBatchOutcome.EMPTY;
+            }
+            if ("FAIL".equals(result.getCheckStatus())) {
+                return result;
+            }
+        }
+
+        // Combined segment plan (B7: the B6 write condition "≥1 GHOST segment" widens to
+        // "≥1 GHOST ∨ DML_BATCH segment" — a pure-normal group keeps the legacy precheck_result
+        // shape byte-identical, regression pin). 1-based exec_order domain, global-with-holes
+        // numbering (R11) — a routed statement consumes its number without a task row.
+        List<com.clougence.clouddm.console.web.component.governance.TicketSegment> plan
+            = buildSegmentPlan(scripts.size(), ghostOutcome, dmlOutcome);
+        if (plan != null) {
+            result.setSegments(plan);
         }
 
         result.setCheckStatus("PASS");
@@ -1592,10 +1784,13 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
      * <li>&lt; threshold / degraded probe / non-ALTER → status quo (no marks, no alerts).</li>
      * </ul>
      * Cost = one channel-C probe per ALTER statement (R6 ruling: 10s timeout, degrade, no cache).
-     * The segments plan is ONLY written when at least one GHOST segment exists — a pure-normal
-     * group keeps the legacy precheck_result shape byte-identical (zero overhead, regression pin).
+     * <p>
+     * B7 refactor: the routed candidates are RETURNED (GhostRouteOutcome) instead of building the
+     * segment plan in-place — the plan is now built ONCE by the combined builder (ghost ∨
+     * DML_BATCH, write condition "≥1 routed segment"). The ghost-only build output is unchanged
+     * byte-for-byte (the same segIdx assignment / autoexec merging / field freeze).
      */
-    private void evaluateGhostRoute(String uid, com.clougence.clouddm.platform.dal.model.datasource.DmDsDO dsDO,
+    private GhostRouteOutcome evaluateGhostRoute(String uid, com.clougence.clouddm.platform.dal.model.datasource.DmDsDO dsDO,
                                     DataSourceConfig dsConfig, GovTicketV2CheckVO.GroupResult result,
                                     List<SplitScript> scripts, String dbName) {
         // ALTER candidates in the 1-based exec_order domain (R11: SplitScript.index + 1 — the
@@ -1617,7 +1812,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             }
         }
         if (alters.isEmpty() || dsConfig == null) {
-            return;
+            return GhostRouteOutcome.EMPTY;
         }
 
         // ds-level hard check (in-memory, zero SQL): gh-ost speaks the plain MySQL wire protocol
@@ -1657,38 +1852,343 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         if (!routes.isEmpty()) {
             result.setGhostRoutes(routes);
         }
-        if (!ghostRouted.isEmpty()) {
-            result.setSegments(buildSegmentPlan(scripts.size(), ghostRouted, rowsByStmtIdx));
-        }
+        return new GhostRouteOutcome(ghostRouted, rowsByStmtIdx);
     }
 
     /**
-     * M2 segment plan (design §6.1): consecutive plain statements merge into ONE AUTOEXEC
-     * segment, every ghost-routed ALTER becomes its own GHOST segment — [普通×2, GHOST, 普通]
-     * yields 3 segments. All bounds are 1-based in the exec_order domain (R11). The GHOST
-     * segment carries the FULL frozen statement text so the execution-time dispatch is
-     * self-contained (sql_content is frozen between precheck and execution — same splitter +
-     * same text ⇒ the plan stays positionally valid after the execution-time re-split).
+     * M2 segment plan (design §6.1), B7-generalized (design §9): consecutive plain statements
+     * merge into ONE AUTOEXEC segment, every ROUTED statement (ghost ALTER ∨ DML_BATCH
+     * UPDATE/DELETE) becomes its own segment — [普通×2, GHOST, 普通] yields 3 segments,
+     * [大 DML, 普通, 大 ALTER] yields 4. All bounds are 1-based in the exec_order domain (R11);
+     * a routed statement consumes its global number WITHOUT a task row (the exec_order hole,
+     * stmt_index contract). The routed segment carries the FULL frozen statement text so the
+     * execution-time dispatch is self-contained (sql_content is frozen between precheck and
+     * execution — same splitter + same text ⇒ positional validity).
+     * <p>
+     * Returns null when NOTHING routed — the plan is written ONLY when ≥1 GHOST ∨ DML_BATCH
+     * segment exists (B6 write condition widened; a pure-normal group keeps the legacy
+     * precheck_result shape byte-identical, regression pin). The ghost-only build output is
+     * byte-identical to the pre-B7 builder (same segIdx assignment order, same field freeze).
      */
     private static List<com.clougence.clouddm.console.web.component.governance.TicketSegment> buildSegmentPlan(
-            int totalStmts, List<GhostAlterCandidate> ghostRouted, Map<Integer, Long> rowsByStmtIdx) {
+            int totalStmts, GhostRouteOutcome ghost, DmlBatchOutcome dml) {
+        // merge the routed prototypes by 1-based stmtIndex (an ALTER and an UPDATE/DELETE can
+        // never share a statement position — the TreeMap key is collision-free by construction)
+        java.util.TreeMap<Integer, com.clougence.clouddm.console.web.component.governance.TicketSegment> routedByStmt
+            = new java.util.TreeMap<>();
+        for (GhostAlterCandidate candidate : ghost.routed) {
+            routedByStmt.put(candidate.stmtIndex,
+                com.clougence.clouddm.console.web.component.governance.TicketSegment.ghostPlan(
+                    0, candidate.stmtIndex, candidate.tableName,
+                    ghost.rowsByStmtIdx.get(candidate.stmtIndex), candidate.sql));
+        }
+        for (DmlBatchCandidate candidate : dml.routed) {
+            routedByStmt.put(candidate.stmtIndex, candidate.prototype);
+        }
+        if (routedByStmt.isEmpty()) {
+            return null;
+        }
         List<com.clougence.clouddm.console.web.component.governance.TicketSegment> plan = new ArrayList<>();
         int segIdx = 1;
         int runStart = 1;
-        for (GhostAlterCandidate ghost : ghostRouted) {
-            if (ghost.stmtIndex > runStart) {
+        for (Map.Entry<Integer, com.clougence.clouddm.console.web.component.governance.TicketSegment> entry
+                : routedByStmt.entrySet()) {
+            int stmtIndex = entry.getKey();
+            if (stmtIndex > runStart) {
                 plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
-                    .autoexecPlan(segIdx++, runStart, ghost.stmtIndex - 1));
+                    .autoexecPlan(segIdx++, runStart, stmtIndex - 1));
             }
-            plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
-                .ghostPlan(segIdx++, ghost.stmtIndex, ghost.tableName, rowsByStmtIdx.get(ghost.stmtIndex), ghost.sql));
-            runStart = ghost.stmtIndex + 1;
+            com.clougence.clouddm.console.web.component.governance.TicketSegment prototype = entry.getValue();
+            prototype.setSegIdx(segIdx++);
+            plan.add(prototype);
+            runStart = stmtIndex + 1;
         }
         if (runStart <= totalStmts) {
             plan.add(com.clougence.clouddm.console.web.component.governance.TicketSegment
                 .autoexecPlan(segIdx, runStart, totalStmts));
         }
         return plan;
+    }
+
+    /**
+     * B7 N1b marking seam (design §9/§13 boundary matrix): evaluates every UPDATE/DELETE
+     * statement of the group for lock-free keyset batch routing. Per-candidate pipeline
+     * (design §0 order — shape gate FIRST, it is the cheap local AST step):
+     * <ol>
+     * <li><b>shape gate</b> ({@code RewriteSpi.analyzeDmlForBatch}, N1a whitelist — single-table
+     *     WHERE-carrying UPDATE/DELETE, no CTE/PARTITION/ORDER BY/LIMIT/SET-subquery/indexHint/
+     *     comment/multi-statement/session-variable, db prefix = group dbName): rejected → stays
+     *     direct; a grey hint rides along ONLY when the statement is confirmed over-threshold by
+     *     its own EXPLAIN estimate (an unestimated small statement stays silent — the direct
+     *     chain is today's behavior);</li>
+     * <li><b>threshold attribution</b> (裁决 #6 combined decision, PER STATEMENT): the additive
+     *     per-statement EXPLAIN estimate when available ({@code ≥ dmlRowThreshold} → exceeded);
+     *     an unestimated statement falls back to the probed table rows after the key probe.
+     *     Below threshold → status quo, ZERO remote calls (R6 cost discipline: probe only what
+     *     may route). Group pre-gate: every candidate estimated ∧ group total &lt; threshold →
+     *     the whole evaluation short-circuits (each statement's estimate ≤ the total);</li>
+     * <li><b>key probe</b> (channel C, never-throw): degraded/absent table → grey hint, NEVER a
+     *     rejection (探测不可得 ≠ 违规); confirmed NO usable key (no PK ∧ no single-column NOT
+     *     NULL UK — nullable-UK-only counts as no key, N1a handover obligation #1) ∧ exceeded →
+     *     <b>group FAIL DML_NO_KEY</b> (裁决 #5 — the step's ONLY deliberate FAIL; alert + audit
+     *     are N2 controller-boundary hooks); key exists but outside the whitelist (composite /
+     *     float / exotic) → yellow flag, direct execution;</li>
+     * <li><b>route</b>: freeze sql/batchKey/estimatedRows/idempotent into a DML_BATCH segment
+     *     prototype + the ROUTE_ANNOUNCE yellow flag (batch size / approx batches / the
+     *     partial-success &amp; no-auto-rollback &amp; snapshot semantics copy) + the
+     *     NONIDEMPOTENT risk line when the shape analysis found a self-referencing SET or a
+     *     non-deterministic function.</li>
+     * </ol>
+     * R13 display-level anti-gaming: same-table Σ of the estimated statements ≥ threshold with no
+     * statement individually routed → a group-level SAME_TABLE_ACCUMULATE hint (never a route).
+     * <p>
+     * Display carrier = {@code precheck_result.dmlBatchRoutes} (additive key, contract :404); the
+     * execution-time authority stays the segments plan + the positional flags (dual-write pin).
+     */
+    private DmlBatchOutcome evaluateDmlBatchRoute(String uid,
+            com.clougence.clouddm.platform.dal.model.datasource.DmDsDO dsDO, DataSourceConfig dsConfig,
+            com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels dsLevels,
+            GovTicketV2CheckVO.GroupResult result, List<SplitScript> scripts, String dbName,
+            com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.EstimationResult estResult) {
+        DmlBatchOutcome outcome = new DmlBatchOutcome();
+        long threshold = dmlBatchService.rowThreshold();
+
+        // candidates: UPDATE/DELETE statements, 1-based exec_order domain (R11 — SplitScript.index+1)
+        List<SplitScript> candidates = new ArrayList<>();
+        for (SplitScript script : scripts) {
+            Set<SplitQueryType> types = script.getType();
+            if (types != null && (types.contains(SplitQueryType.UPDATE) || types.contains(SplitQueryType.DELETE))) {
+                candidates.add(script);
+            }
+        }
+        if (candidates.isEmpty()) {
+            return outcome;
+        }
+
+        // per-statement EXPLAIN estimates (SqlRowEstimator additive exposure; null = unestimated)
+        Map<Integer, Long> perStmt = new HashMap<>();
+        if (estResult != null && estResult.perStatement() != null) {
+            for (com.clougence.clouddm.console.web.component.governance.SqlRowEstimator.StmtEstimation est
+                    : estResult.perStatement()) {
+                perStmt.put(est.stmtIndex(), est.rows());
+            }
+        }
+
+        // cheap group-level pre-gate (zero remote calls): every candidate estimated ∧ total <
+        // threshold → no statement can reach it (each estimate ≤ the total) → status quo
+        boolean allEstimated = true;
+        for (SplitScript script : candidates) {
+            if (perStmt.get((int) script.getIndex() + 1) == null) {
+                allEstimated = false;
+                break;
+            }
+        }
+        if (allEstimated && estResult != null && estResult.estimatedRows() != null
+                && estResult.estimatedRows() < threshold) {
+            return outcome; // 未超阈值 → 直接执行(现状不变)
+        }
+
+        // shape-gate SPI (the DmlExplainPreInitHandler acquisition precedent; the dialect gate
+        // passed — a null SPI here is defensive only)
+        com.clougence.clouddm.sdk.sql.SqlEngineSpi sqlEngine = dmDsConfigService.fetchSqlEngineSpi(dsConfig);
+        com.clougence.clouddm.sdk.sql.SqlParserParameters parameters
+            = dmDsConfigService.fetchSqlParserParameters(dsConfig, dsLevels.levelsParam());
+        com.clougence.clouddm.sdk.sql.editor.rewrite.RewriteSpi rewriteSpi
+            = sqlEngine == null ? null : sqlEngine.rewriteSpi(parameters);
+        if (rewriteSpi == null) {
+            return outcome; // dialect without batch-rewrite support — status quo (default SPI contract)
+        }
+        com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams params
+            = dmlBatchService.resolveEffectiveParams();
+
+        List<GovTicketV2CheckVO.DmlBatchRouteVO> routes = new ArrayList<>();
+        Map<String, Long> accumulateByTable = new java.util.LinkedHashMap<>();
+        Set<String> routedTables = new java.util.HashSet<>();
+
+        for (SplitScript script : candidates) {
+            int stmtIndex = (int) script.getIndex() + 1; // 1-based exec_order domain (R11)
+            Long stmtRows = perStmt.get(stmtIndex);
+
+            // 1. shape gate (local AST, zero remote cost) — fresh RewriteContext PER CALL with
+            //    schemaName = the group dbName (N1a handover obligation #6)
+            com.clougence.clouddm.sdk.sql.editor.rewrite.RewriteContext ctx
+                = new com.clougence.clouddm.sdk.sql.editor.rewrite.RewriteContext();
+            ctx.setParameters(parameters);
+            ctx.setSchemaName(dbName);
+            com.clougence.clouddm.sdk.sql.editor.rewrite.DmlBatchShapeMO shape
+                = rewriteSpi.analyzeDmlForBatch("precheck-" + stmtIndex, script.getScript(), ctx);
+            if (shape == null) {
+                continue; // dialect unsupported (defensive — the version gate already passed)
+            }
+            if (!shape.isSupported()) {
+                // grey hint ONLY for a confirmed over-threshold statement (its own estimate);
+                // unestimated/小 statements stay silent — 能力限制非违规, direct chain is today's behavior
+                if (stmtRows != null && stmtRows >= threshold) {
+                    GovTicketV2CheckVO.DmlBatchRouteVO shapeVO = buildDmlRouteVO(stmtIndex,
+                        GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_SHAPE_UNSUPPORTED, shape, stmtRows, null,
+                        threshold, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_SHAPE_UNSUPPORTED.name(),
+                            String.valueOf(shape.getRejectCode())));
+                    shapeVO.setRejectCode(shape.getRejectCode());
+                    routes.add(shapeVO);
+                }
+                continue;
+            }
+
+            String table = shape.getTableName();
+            if (stmtRows != null) {
+                accumulateByTable.merge(table, stmtRows, Long::sum); // R13 bookkeeping (estimated statements only)
+                if (stmtRows < threshold) {
+                    continue; // below threshold → status quo, no probe (R6 cost discipline)
+                }
+            }
+
+            // 2/3. shape passed ∧ (estimate ≥ threshold ∨ estimate unavailable) → the ONE channel-C
+            //      probe per statement (key + B4-caliber table rows; never-throw degradation)
+            com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchKeyProbe probe
+                = dmlBatchService.probeForKey(uid, dsDO, dsConfig, dbName, shape.getSchemaName(), table);
+            if (!probe.isProbed() || !probe.isTableFound()) {
+                routes.add(buildDmlRouteVO(stmtIndex,
+                    GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_PROBE_DEGRADED, shape, stmtRows, null, threshold,
+                    DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_PROBE_DEGRADED.name(), table)));
+                continue;
+            }
+
+            // threshold attribution: the estimate wins; fallback = the probed table rows (裁决 #6)
+            long signalRows;
+            if (stmtRows != null) {
+                signalRows = stmtRows;
+            } else {
+                Long tableRows = probe.getTableRows();
+                if (tableRows == null || tableRows < threshold) {
+                    continue; // below threshold under the fallback → status quo
+                }
+                signalRows = tableRows;
+            }
+
+            if (com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchKeyProbe.STATE_NO_KEY
+                    .equals(probe.getKeyState())) {
+                // 超阈值 ∧ 形状门通过 ∧ 确认无可用键 → 组级 FAIL (裁决 #5; the /check red error +
+                // submit whole-ticket rejection ride the existing precheck-FAIL machinery; the
+                // alert + DML_BATCH_REJECT audit hooks are N2 controller-boundary additions)
+                result.setCheckStatus("FAIL");
+                result.setErrorMessage(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_DML_NO_KEY_REJECT.name(),
+                    dbName + "." + table, display(signalRows), display(threshold),
+                    probe.getKeyDetail() == null ? "-" : probe.getKeyDetail()));
+                return outcome; // rejected — submit refuses the whole ticket; nothing else to evaluate
+            }
+            if (!com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchKeyProbe.STATE_OK
+                    .equals(probe.getKeyState())) {
+                // key exists but outside the v1 whitelist (composite/float/exotic) → yellow, direct
+                GovTicketV2CheckVO.DmlBatchRouteVO keyVO = buildDmlRouteVO(stmtIndex,
+                    GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_KEY_UNSUPPORTED, shape, signalRows,
+                    probe.getTableRows(), threshold,
+                    DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_KEY_UNSUPPORTED.name(), table,
+                        probe.getKeyDetail() == null ? "-" : probe.getKeyDetail()));
+                keyVO.setKeyDetail(probe.getKeyDetail());
+                routes.add(keyVO);
+                continue;
+            }
+
+            // 4. ROUTE — freeze the segment prototype (sql/batchKey/estimatedRows/idempotent)
+            boolean idempotent = !shape.isSelfReferencingSet()
+                && (shape.getNondeterministicFunctions() == null || shape.getNondeterministicFunctions().isEmpty());
+            com.clougence.clouddm.console.web.component.governance.TicketSegment.BatchKey batchKey
+                = new com.clougence.clouddm.console.web.component.governance.TicketSegment.BatchKey(
+                    probe.getKeyColumn(), probe.getKeyType());
+            com.clougence.clouddm.console.web.component.governance.TicketSegment prototype
+                = com.clougence.clouddm.console.web.component.governance.TicketSegment.dmlBatchPlan(
+                    0, stmtIndex, table, signalRows, script.getScript(), batchKey, idempotent);
+            outcome.routed.add(new DmlBatchCandidate(stmtIndex, prototype));
+            routedTables.add(table);
+
+            GovTicketV2CheckVO.DmlBatchRouteVO vo = buildDmlRouteVO(stmtIndex,
+                GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DML_BATCH, shape, signalRows, probe.getTableRows(),
+                threshold, null);
+            vo.setKeyColumn(probe.getKeyColumn());
+            vo.setKeyType(probe.getKeyType());
+            vo.setIdempotent(idempotent);
+            vo.setBatchSize(params.getBatchSize());
+            long batches = Math.max(1L, (signalRows + params.getBatchSize() - 1) / params.getBatchSize());
+            vo.setApproxBatches(batches);
+            StringBuilder announce = new StringBuilder(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.DML_BATCH_ROUTE_ANNOUNCE.name(), table, display(signalRows), display(threshold),
+                probe.getKeyColumn(), String.valueOf(params.getBatchSize()), String.valueOf(batches)));
+            if (!idempotent) {
+                announce.append('\n').append(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.DML_BATCH_NONIDEMPOTENT_RISK.name()));
+            }
+            vo.setMessage(announce.toString());
+            routes.add(vo);
+        }
+
+        // R13 display-level anti-gaming: same-table accumulation ≥ threshold, nothing routed on it
+        for (Map.Entry<String, Long> entry : accumulateByTable.entrySet()) {
+            if (!routedTables.contains(entry.getKey()) && entry.getValue() >= threshold) {
+                GovTicketV2CheckVO.DmlBatchRouteVO vo = buildDmlRouteVO(0,
+                    GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_SAME_TABLE_ACCUMULATE, null, entry.getValue(), null,
+                    threshold, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_SAME_TABLE_ACCUMULATE.name(),
+                        entry.getKey(), display(entry.getValue()), display(threshold)));
+                vo.setTableName(entry.getKey());
+                routes.add(vo);
+            }
+        }
+
+        if (!routes.isEmpty()) {
+            result.setDmlBatchRoutes(routes);
+        }
+        return outcome;
+    }
+
+    /** one DML_BATCH display mark (the GhostRouteVO builder pattern; shape embedded verbatim — obligation #7). */
+    private static GovTicketV2CheckVO.DmlBatchRouteVO buildDmlRouteVO(
+            int stmtIndex, String route,
+            com.clougence.clouddm.sdk.sql.editor.rewrite.DmlBatchShapeMO shape,
+            Long estimatedRows, Long tableRows, long threshold, String message) {
+        GovTicketV2CheckVO.DmlBatchRouteVO vo = new GovTicketV2CheckVO.DmlBatchRouteVO();
+        vo.setStmtIndex(stmtIndex);
+        vo.setRoute(route);
+        if (shape != null) {
+            vo.setTableName(shape.getTableName());
+            vo.setShape(shape);
+        }
+        vo.setEstimatedRows(estimatedRows);
+        vo.setTableRows(tableRows);
+        vo.setRowThreshold(threshold);
+        vo.setMessage(message);
+        return vo;
+    }
+
+    /** B7: the ghost evaluation's routed candidates (the combined plan builder's input). */
+    private static final class GhostRouteOutcome {
+        static final GhostRouteOutcome EMPTY = new GhostRouteOutcome(List.of(), Map.of());
+
+        final List<GhostAlterCandidate> routed;
+        final Map<Integer, Long>        rowsByStmtIdx;
+
+        GhostRouteOutcome(List<GhostAlterCandidate> routed, Map<Integer, Long> rowsByStmtIdx) {
+            this.routed = routed;
+            this.rowsByStmtIdx = rowsByStmtIdx;
+        }
+    }
+
+    /** B7: the DML batch evaluation's routed candidates (the combined plan builder's input). */
+    private static final class DmlBatchOutcome {
+        static final DmlBatchOutcome EMPTY = new DmlBatchOutcome();
+
+        final List<DmlBatchCandidate> routed = new ArrayList<>();
+    }
+
+    /** one DML_BATCH-routed statement: its 1-based position + the frozen segment prototype. */
+    private static final class DmlBatchCandidate {
+        final int stmtIndex;
+        final com.clougence.clouddm.console.web.component.governance.TicketSegment prototype;
+
+        DmlBatchCandidate(int stmtIndex,
+                          com.clougence.clouddm.console.web.component.governance.TicketSegment prototype) {
+            this.stmtIndex = stmtIndex;
+            this.prototype = prototype;
+        }
     }
 
     private static GovTicketV2CheckVO.GhostRouteVO buildGhostRouteVO(
@@ -1842,11 +2342,70 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             json.put("ghostRoutes", routes);
         }
 
+        // Additive (B7 N1b): the DML batch routing decision record (design §9 display carrier —
+        // the execution-time authority stays the segments plan + positional flags). One entry per
+        // evaluated statement + the optional group-level accumulate hint; the FULL shape analysis
+        // (DmlBatchShapeMO incl. the SplitQueryType enum, serialized as its name — N1a handover
+        // obligation #7) rides verbatim for auditability. Absent when no evaluation took place.
+        if (gr.getDmlBatchRoutes() != null && !gr.getDmlBatchRoutes().isEmpty()) {
+            List<Map<String, Object>> dmlRoutes = new ArrayList<>();
+            for (GovTicketV2CheckVO.DmlBatchRouteVO r : gr.getDmlBatchRoutes()) {
+                Map<String, Object> m = new HashMap<>();
+                m.put("stmtIndex", r.getStmtIndex());
+                m.put("route", r.getRoute());
+                if (r.getTableName() != null) {
+                    m.put("tableName", r.getTableName());
+                }
+                if (r.getEstimatedRows() != null) {
+                    m.put("estimatedRows", r.getEstimatedRows());
+                }
+                if (r.getTableRows() != null) {
+                    m.put("tableRows", r.getTableRows());
+                }
+                if (r.getRowThreshold() != null) {
+                    m.put("rowThreshold", r.getRowThreshold());
+                }
+                if (r.getKeyColumn() != null) {
+                    m.put("keyColumn", r.getKeyColumn());
+                }
+                if (r.getKeyType() != null) {
+                    m.put("keyType", r.getKeyType());
+                }
+                if (r.getIdempotent() != null) {
+                    m.put("idempotent", r.getIdempotent());
+                }
+                if (r.getBatchSize() != null) {
+                    m.put("batchSize", r.getBatchSize());
+                }
+                if (r.getApproxBatches() != null) {
+                    m.put("approxBatches", r.getApproxBatches());
+                }
+                if (r.getRejectCode() != null) {
+                    m.put("rejectCode", r.getRejectCode());
+                }
+                if (r.getKeyDetail() != null) {
+                    m.put("keyDetail", r.getKeyDetail());
+                }
+                if (r.getShape() != null) {
+                    // the whole MO embedded verbatim (additive contract; the open API passes the
+                    // carrier through untouched — SplitQueryType renders as its enum name)
+                    m.put("shape", r.getShape());
+                }
+                if (r.getMessage() != null) {
+                    m.put("message", r.getMessage());
+                }
+                dmlRoutes.add(m);
+            }
+            json.put("dmlBatchRoutes", dmlRoutes);
+        }
+
         // Additive (B6 M2): the segment PLAN (plan of record, contract :404) — written ONLY when
-        // at least one GHOST segment exists, so a pure-normal group keeps the legacy shape
-        // byte-identical. 1-based exec_order domain keys (R11): AUTOEXEC carries stmtRange
-        // [from,to] inclusive, GHOST carries stmtIndex + the probed table/rows + the FULL frozen
-        // statement text (self-contained execution-time dispatch).
+        // at least one routed segment exists (B7: GHOST ∨ DML_BATCH), so a pure-normal group keeps
+        // the legacy shape byte-identical. 1-based exec_order domain keys (R11): AUTOEXEC carries
+        // stmtRange [from,to] inclusive; GHOST / DML_BATCH carry stmtIndex + the probed table +
+        // the FULL frozen statement text (self-contained execution-time dispatch); DML_BATCH
+        // additionally freezes batchKey{column,keyType} + estimatedRows + idempotent (B7 plan
+        // freeze — the dispatch never re-probes).
         if (gr.getSegments() != null && !gr.getSegments().isEmpty()) {
             List<Map<String, Object>> segments = new ArrayList<>();
             for (com.clougence.clouddm.console.web.component.governance.TicketSegment seg : gr.getSegments()) {
@@ -1867,6 +2426,18 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 }
                 if (seg.getSql() != null) {
                     m.put("sql", seg.getSql());
+                }
+                if (seg.getBatchKey() != null) {
+                    Map<String, Object> key = new HashMap<>();
+                    key.put("column", seg.getBatchKey().getColumn());
+                    key.put("keyType", seg.getBatchKey().getKeyType());
+                    m.put("batchKey", key);
+                }
+                if (seg.getEstimatedRows() != null) {
+                    m.put("estimatedRows", seg.getEstimatedRows());
+                }
+                if (seg.getIdempotent() != null) {
+                    m.put("idempotent", seg.getIdempotent());
                 }
                 segments.add(m);
             }

@@ -160,9 +160,18 @@ public class SqlRowEstimator {
         // Create session for native EXPLAIN (lazy — only when needed)
         long totalRows = 0;
         boolean anyEstimated = false;
+        // B7 additive extension (design §9 marking seam): the per-statement estimates are exposed
+        // alongside the group total — the DML batch route evaluates a PER-STATEMENT threshold
+        // (裁决 #6 "语句级 EXPLAIN 预估影响行数"), and attributing the group total to individual
+        // statements is unsound for multi-statement groups. Zero extra remote cost (the EXPLAIN
+        // runs already happen here); the total/rowsEstimated contract above is untouched.
+        List<StmtEstimation> perStatement = new ArrayList<>(dmlScripts.size());
 
         for (SplitScript script : dmlScripts) {
             Long stmtRows = estimateOneStatement(script, dsConfig, dsLevels, options, explainSpi, rewriteSpi, parameters, ownerUid);
+            // 1-based exec_order domain (R11: SplitScript.index + 1) — the join key the DML batch
+            // marking seam uses; never the 0-based preview index
+            perStatement.add(new StmtEstimation((int) script.getIndex() + 1, stmtRows));
             if (stmtRows != null) {
                 totalRows += stmtRows;
                 anyEstimated = true;
@@ -172,7 +181,7 @@ public class SqlRowEstimator {
         if (!anyEstimated) {
             return EstimationResult.unknown();
         }
-        return new EstimationResult(totalRows, anyEstimated);
+        return new EstimationResult(totalRows, anyEstimated, perStatement);
     }
 
     private Long estimateOneStatement(
@@ -374,14 +383,32 @@ public class SqlRowEstimator {
 
     /**
      * Estimation result: total rows + whether any were estimated.
+     * <p>
+     * B7 additive third component: the PER-STATEMENT estimates (1-based exec_order domain, R11)
+     * consumed by the DML batch marking seam's per-statement threshold decision — null entry =
+     * that statement's EXPLAIN was unavailable (the seam falls back to the probed table rows).
+     * {@code perStatement} is null on {@link #unknown()} (no statement was estimated) and empty
+     * on {@link #empty()} (no DML at all); the legacy two-component contract
+     * ({@code estimatedRows}/{@code rowsEstimated}) is byte-identical for every existing consumer.
      */
-    public record EstimationResult(Long estimatedRows, boolean rowsEstimated) {
+    public record EstimationResult(Long estimatedRows, boolean rowsEstimated, List<StmtEstimation> perStatement) {
         public static EstimationResult unknown() {
-            return new EstimationResult(null, false);
+            return new EstimationResult(null, false, null);
         }
 
         public static EstimationResult empty() {
-            return new EstimationResult(0L, true);
+            return new EstimationResult(0L, true, java.util.Collections.emptyList());
         }
+    }
+
+    /**
+     * One DML statement's EXPLAIN estimate (B7 additive).
+     *
+     * @param stmtIndex 1-based position in the exec_order domain (SplitScript.index + 1 — R11;
+     *                  NEVER the 0-based precheck preview index)
+     * @param rows      estimated affected rows; null when this statement's estimation was
+     *                  unavailable (unsupported / failed / timed out — the degradation contract)
+     */
+    public record StmtEstimation(int stmtIndex, Long rows) {
     }
 }

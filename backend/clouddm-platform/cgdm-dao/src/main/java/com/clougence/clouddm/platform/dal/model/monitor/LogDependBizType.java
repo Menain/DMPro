@@ -17,5 +17,12 @@ package com.clougence.clouddm.platform.dal.model.monitor;
 
 public enum LogDependBizType {
     AUTO_EXEC_JOB,
-    AUTO_EXEC_TASK
+    AUTO_EXEC_TASK,
+    /**
+     * B7 lock-free DML: per-batch forensic trail of a DmlBatchAsyncTask (dm_mon_biz_log,
+     * dependOnBizId = the task bizId). The FIRST batch logs the full rewritten statement text,
+     * every batch logs its (seq, lo, hi, affectRows, costMs) — design §3.4 injection-surface
+     * forensics (magnitude = batch count, the B6 jobLog precedent). Additive enum value.
+     */
+    DML_BATCH_TASK
 }

@@ -53,7 +53,74 @@ public class GovTicketV2CheckVO {
         // B6 M2 segment PLAN (additive; null/empty = no GHOST segment → the group keeps the
         // legacy unsegmented shape byte-identical). Serialized into precheck_result "segments"
         // (plan of record, contract :404); 1-based exec_order domain keys (R11).
+        // B7: the write condition widens to "≥1 GHOST ∨ DML_BATCH segment" — a pure-normal group
+        // still keeps the legacy shape byte-identical (regression pin).
         private List<com.clougence.clouddm.console.web.component.governance.TicketSegment> segments;
+
+        // B7 N1b DML batch auto-route evaluation (additive; null/empty = no evaluation took
+        // place — kill switch off, unsupported dialect/version, or no UPDATE/DELETE candidate).
+        // Display carrier: serialized into the group's precheck_result JSON under the
+        // "dmlBatchRoutes" key (the execution-time authority stays the positional flags + plan).
+        private List<DmlBatchRouteVO> dmlBatchRoutes;
+    }
+
+    /**
+     * B7 N1b: one evaluated UPDATE/DELETE statement's batch-routing decision (design §13 boundary
+     * matrix), or the group-level same-table accumulation hint (R13 display-level anti-gaming).
+     * {@code stmtIndex} is 1-based in the exec_order domain (R11); the accumulation hint carries
+     * stmtIndex=0 (group-level, no single statement).
+     */
+    @Getter
+    @Setter
+    public static class DmlBatchRouteVO {
+
+        /** route: the statement WILL execute in throttled keyset batches (DML_BATCH segment). */
+        public static final String ROUTE_DML_BATCH              = "DML_BATCH";
+        /** route: shape gate rejected (multi-table/CTE/ORDER BY/LIMIT/comment/...) → direct execution + grey hint. */
+        public static final String ROUTE_DIRECT_SHAPE_UNSUPPORTED = "DIRECT_SHAPE_UNSUPPORTED";
+        /** route: a key exists but is outside the v1 whitelist (composite/float/exotic) → direct + yellow flag. */
+        public static final String ROUTE_DIRECT_KEY_UNSUPPORTED = "DIRECT_KEY_UNSUPPORTED";
+        /** route: the key probe degraded (timeout/failure) → direct + grey hint (not a rejection — unknown ≠ absent). */
+        public static final String ROUTE_DIRECT_PROBE_DEGRADED  = "DIRECT_PROBE_DEGRADED";
+        /** group-level hint: same-table DML statements accumulate ≥ threshold without per-statement routing (R13). */
+        public static final String ROUTE_SAME_TABLE_ACCUMULATE  = "SAME_TABLE_ACCUMULATE";
+
+        /** 1-based statement position in the exec_order domain; 0 for the group-level accumulate hint. */
+        private int     stmtIndex;
+        /** one of the ROUTE_* values above. */
+        private String  route;
+        private String  tableName;
+
+        /** the threshold signal that fired: per-statement EXPLAIN estimate, else the probed table rows. */
+        private Long    estimatedRows;
+        /** probed B4-caliber table rows (nullable when the probe degraded). */
+        private Long    tableRows;
+        /** the admin row threshold in effect (display copy). */
+        private Long    rowThreshold;
+
+        /** ROUTE_DML_BATCH: the frozen batch key. */
+        private String  keyColumn;
+        private String  keyType;
+        /** ROUTE_DML_BATCH: false = self-referencing SET / non-deterministic function (window-crash copy). */
+        private Boolean idempotent;
+        /** ROUTE_DML_BATCH: announce-copy parameters (预计 N 批). */
+        private Integer batchSize;
+        private Long    approxBatches;
+
+        /** ROUTE_DIRECT_SHAPE_UNSUPPORTED: the stable DmlBatchShapeMO rejectCode. */
+        private String  rejectCode;
+        /** ROUTE_DIRECT_KEY_UNSUPPORTED: the probe's human-copy reason (composite/float/nullable...). */
+        private String  keyDetail;
+
+        /**
+         * The FULL shape analysis record (N1a handover obligation #7: embedded verbatim under the
+         * precheck_result additive contract — SplitQueryType serializes as its enum name; the open
+         * API passes the carrier through untouched). Null for the accumulate hint.
+         */
+        private com.clougence.clouddm.sdk.sql.editor.rewrite.DmlBatchShapeMO shape;
+
+        /** already-translated display line (GHOST_ROUTE_ANNOUNCE precedent — the frontend renders verbatim). */
+        private String  message;
     }
 
     /**

@@ -45,11 +45,15 @@ import lombok.extern.slf4j.Slf4j;
  * Segment types: {@code AUTOEXEC} = a run of consecutive plain statements (the existing
  * "1 group 1 job = N tasks sequential" shape — zero regression for pure-normal groups),
  * {@code GHOST} = exactly ONE threshold-exceeding hard-pass ALTER (GhostAlterStmtChecker is
- * single-statement by construction) executed through the gh-ost tool session.
+ * single-statement by construction) executed through the gh-ost tool session,
+ * {@code DML_BATCH} (B7 lock-free DML) = exactly ONE threshold-exceeding shape-gated
+ * single-table UPDATE/DELETE executed through the console-side keyset batch loop
+ * (DmlBatchAsyncTask, channel C) — no job row, no task rows, no sidecar involvement.
  * <p>
- * exec_order semantics: GLOBAL numbering WITH HOLES — ghost statements consume their number
- * but never become task rows, so "exec_order = SplitScript.index + 1" keeps holding for every
- * task row that exists (governance-contracts stmt_index alignment, M2 revision).
+ * exec_order semantics: GLOBAL numbering WITH HOLES — ghost AND DML_BATCH statements consume
+ * their number but never become task rows, so "exec_order = SplitScript.index + 1" keeps
+ * holding for every task row that exists (governance-contracts stmt_index alignment, M2
+ * revision + B7 N1 addendum).
  * <p>
  * Parsing is NEVER-THROW (JsonUtils sneaky-throws the checked JsonProcessingException): a
  * corrupt carrier degrades to null/empty and the caller falls back defensively.
@@ -60,8 +64,10 @@ import lombok.extern.slf4j.Slf4j;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class TicketSegment {
 
-    public static final String TYPE_AUTOEXEC = "AUTOEXEC";
-    public static final String TYPE_GHOST    = "GHOST";
+    public static final String TYPE_AUTOEXEC  = "AUTOEXEC";
+    public static final String TYPE_GHOST     = "GHOST";
+    /** B7 lock-free DML (design §9): one threshold-exceeding shape-gated UPDATE/DELETE, keyset-batched. */
+    public static final String TYPE_DML_BATCH = "DML_BATCH";
 
     public static final String STATUS_PENDING   = "PENDING";
     public static final String STATUS_EXECUTING = "EXECUTING";
@@ -70,29 +76,84 @@ public class TicketSegment {
 
     /** 1-based segment position within the group plan (dense, 1..N) */
     private int               segIdx;
-    /** AUTOEXEC | GHOST */
+    /** AUTOEXEC | GHOST | DML_BATCH */
     private String            type;
 
     // ---- plan fields (both carriers) ----
     /** AUTOEXEC only: inclusive [from,to] statement bounds in the 1-based exec_order domain */
     private List<Integer>     stmtRange;
-    /** GHOST only: the single statement's 1-based exec_order position */
+    /** GHOST / DML_BATCH only: the single statement's 1-based exec_order position */
     private Integer           stmtIndex;
-    /** GHOST only: probed target table + B4-estimate row count (display/alert copy) */
+    /** GHOST / DML_BATCH only: probed target table + B4-estimate row count (display/alert copy) */
     private String            table;
     private Long              rows;
-    /** GHOST only: the FULL ALTER statement text (frozen at precheck; sql_content is frozen
+    /** GHOST / DML_BATCH only: the FULL statement text (frozen at precheck; sql_content is frozen
      *  between precheck and execution, so the plan text and the re-split execution text are
      *  byte-identical — the dispatch is self-contained without a remote re-split) */
     private String            sql;
+    /**
+     * DML_BATCH only (B7 plan freeze, design §9 marking seam): the probed batch key frozen at
+     * precheck — the execution-time dispatch NEVER re-probes (B6 "precheck is the main gate"
+     * heritage; a key dropped by a concurrent DDL fails the batch loudly instead).
+     */
+    private BatchKey          batchKey;
+    /**
+     * DML_BATCH only: the per-statement affected-rows signal that fired the routing (EXPLAIN
+     * estimate when available, else the probed table-row B4 estimate) — the progress display
+     * denominator ("约" semantics) and the audit trail of the threshold decision.
+     */
+    private Long              estimatedRows;
+    /**
+     * DML_BATCH only: false when the shape analysis found a self-referencing SET ({@code x=x+1})
+     * or a non-deterministic function in SET (NOW/RAND/UUID...) — replaying a batch of a
+     * NON-idempotent statement can double-apply silently, so the flag drives the precheck yellow
+     * flag and the window-crash manual-resolution copy (§7.3). Always true for DELETE.
+     */
+    private Boolean           idempotent;
+
+    /**
+     * DML_BATCH resume transport (B7 retryGroup checkpoint inheritance, design §7.4): the DONE-side
+     * checkpoint ({@code cursor/batchesDone/rowsDone/lastDone}) copied from the terminal old task's
+     * configData by {@code resumeGroupUnderLock}, consumed once by the re-dispatch (the fresh task's
+     * configData checkpoint is seeded from it — "已成功批永不重放" is physically guaranteed by the
+     * cursor inheritance; the old task is NEVER reused, B6 discipline). The intent side is
+     * deliberately NOT inherited (a manual retry is the human decision; N2 adds the RERUN/SKIP
+     * resolution guard). Stays on the runtime carrier as the forensic record of the inheritance.
+     */
+    private Map<String, Object> resumeCheckpoint;
+
+    /**
+     * DML_BATCH batch key (plan + runtime freeze). {@code column} is the BARE identifier already
+     * validated against the {@code [\w$]+} whitelist at probe time (never user text; the rewrite
+     * SPI re-checks and dialect-quotes it). {@code keyType} is one of the
+     * {@code DmlBatchRangeSpec.KEY_TYPE_*} wire values (INT / DECIMAL0 / DATETIME / STRING) —
+     * the console-side literal renderer picks the typed rendering off it (R18 single point).
+     */
+    @Getter
+    @Setter
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class BatchKey {
+        private String column;
+        private String keyType;
+
+        public BatchKey() {
+        }
+
+        public BatchKey(String column, String keyType) {
+            this.column = column;
+            this.keyType = keyType;
+        }
+    }
 
     // ---- runtime fields (exec_segments carrier only) ----
     /** PENDING | EXECUTING | SUCCESS | FAILED (null in the plan carrier) */
     private String            status;
     /** AUTOEXEC runtime: the segment job's biz id (recorded at dispatch) */
     private String            jobBizId;
-    /** GHOST runtime: tool session id + AsyncTask row id (recorded at launch) */
+    /** GHOST runtime: tool session id (recorded at launch; DML_BATCH has NO session — stays null) */
     private String            sessionId;
+    /** GHOST / DML_BATCH runtime: the AsyncTask row id (recorded at launch — the completion CAS
+     *  taskId cross-check key, B6 debt #5 discharged by the DML_BATCH seam) */
     private Long              taskId;
     /** failure detail of THIS segment (exec_detail keeps the pure-error group semantics) */
     private String            error;
@@ -102,6 +163,10 @@ public class TicketSegment {
      * AUTOEXEC completion summary frozen BEFORE the next segment's job creation physically
      * deletes this segment's job+task rows (uk_exec_auto_job_group single-row ruling (a)):
      * {status, taskCount, error?, startedAt, finishedAt}.
+     * DML_BATCH segments freeze their summary at every terminal write (B7 design §5.3):
+     * {status, batchesDone, rowsDone, cursor?, error?, unresolvedIntent?, startedAt, finishedAt}
+     * — the batch task's configData checkpoint survives on the task row, but the summary is the
+     * group-carrier forensic trail (uk ruling (a) heritage).
      */
     private Map<String, Object> summary;
 
@@ -145,17 +210,37 @@ public class TicketSegment {
         }
     }
 
-    /** true when the group's precheck_result carries a segment plan containing a GHOST segment. */
+    /**
+     * true when the group's precheck_result carries a segment plan containing a NON-DIRECT
+     * (routed) segment — GHOST (B6) or DML_BATCH (B7). This predicate is the decision-order
+     * "segments" branch gate at every dispatch point; B7 widened it from hasGhostSegment so a
+     * DML_BATCH-only plan is recognized as segmented (a pure AUTOEXEC plan is never written —
+     * the plan carrier only exists when ≥1 routed segment exists).
+     */
     public static boolean isSegmentedPlan(String precheckResultJson) {
-        return hasGhostSegment(parsePlan(precheckResultJson));
+        return hasRoutedSegment(parsePlan(precheckResultJson));
     }
 
     public static boolean hasGhostSegment(List<TicketSegment> segments) {
+        return hasType(segments, TYPE_GHOST);
+    }
+
+    /** B7: true when the plan/runtime contains at least one DML_BATCH segment. */
+    public static boolean hasDmlBatchSegment(List<TicketSegment> segments) {
+        return hasType(segments, TYPE_DML_BATCH);
+    }
+
+    /** B7: true when the plan/runtime contains at least one non-direct-execution segment. */
+    public static boolean hasRoutedSegment(List<TicketSegment> segments) {
+        return hasGhostSegment(segments) || hasDmlBatchSegment(segments);
+    }
+
+    private static boolean hasType(List<TicketSegment> segments, String type) {
         if (segments == null) {
             return false;
         }
         for (TicketSegment seg : segments) {
-            if (seg != null && TYPE_GHOST.equals(seg.getType())) {
+            if (seg != null && type.equals(seg.getType())) {
                 return true;
             }
         }
@@ -174,6 +259,11 @@ public class TicketSegment {
             r.setTable(p.getTable());
             r.setRows(p.getRows());
             r.setSql(p.getSql());
+            // B7 DML_BATCH plan freeze (additive — null on GHOST/AUTOEXEC segments)
+            r.setBatchKey(p.getBatchKey() == null ? null
+                : new BatchKey(p.getBatchKey().getColumn(), p.getBatchKey().getKeyType()));
+            r.setEstimatedRows(p.getEstimatedRows());
+            r.setIdempotent(p.getIdempotent());
             r.setStatus(STATUS_PENDING);
             runtime.add(r);
         }
@@ -276,6 +366,26 @@ public class TicketSegment {
         seg.setTable(table);
         seg.setRows(rows);
         seg.setSql(sql);
+        return seg;
+    }
+
+    /**
+     * B7 DML_BATCH plan segment factory (design §9 marking seam): ONE threshold-exceeding
+     * shape-gated UPDATE/DELETE with its frozen full text, probed batch key, routing row signal
+     * and the idempotence mark — the execution-time dispatch is self-contained (no re-probe,
+     * no re-analysis; sql_content is frozen between precheck and execution).
+     */
+    public static TicketSegment dmlBatchPlan(int segIdx, int stmtIndex, String table, Long estimatedRows,
+                                             String sql, BatchKey batchKey, boolean idempotent) {
+        TicketSegment seg = new TicketSegment();
+        seg.setSegIdx(segIdx);
+        seg.setType(TYPE_DML_BATCH);
+        seg.setStmtIndex(stmtIndex);
+        seg.setTable(table);
+        seg.setEstimatedRows(estimatedRows);
+        seg.setSql(sql);
+        seg.setBatchKey(batchKey);
+        seg.setIdempotent(idempotent);
         return seg;
     }
 }

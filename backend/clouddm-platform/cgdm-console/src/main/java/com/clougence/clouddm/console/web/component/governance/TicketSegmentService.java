@@ -105,6 +105,12 @@ public class TicketSegmentService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GhostService     ghostService;
+    // @Lazy: B7 DML_BATCH seam — the batch engine service lives in the service layer which
+    //   lazy-reaches the governance components back (completion service); safe-side proxy
+    //   injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchService dmlBatchService;
 
     // ==================================================================================
     // first-segment dispatch (main chain, GovAutoAdvanceServiceImpl.systemAutoConfirmForV2)
@@ -135,7 +141,9 @@ public class TicketSegmentService {
             return;
         }
         List<TicketSegment> plan = TicketSegment.parsePlan(fresh.getPrecheckResult());
-        if (!TicketSegment.hasGhostSegment(plan)) {
+        // B7: the guard widened from hasGhostSegment to hasRoutedSegment — a DML_BATCH-only plan
+        // is a valid segment plan (the decision-order "segments" branch gate, four-point contract)
+        if (!TicketSegment.hasRoutedSegment(plan)) {
             // defensive: the caller detected a segment plan on a pre-lock snapshot that is gone
             // under the lock (concurrent resubmit) — nothing to dispatch here
             log.warn("[TicketSegment] first-segment dispatch skipped for group {} — no segment plan under the lock",
@@ -153,6 +161,12 @@ public class TicketSegmentService {
             this.govTicketV2Service.dispatchGhostSegment(ticket, fresh, first,
                 GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
             persistRuntime(fresh, runtime); // the launch recorded sessionId/taskId on the segment
+        } else if (TicketSegment.TYPE_DML_BATCH.equals(first.getType())) {
+            // B7: the batch dispatch records taskId on the segment; the caller-side persist is the
+            // single-writer discipline (dispatchGhostSegment contract mirrored)
+            this.govTicketV2Service.dispatchBatchSegment(ticket, fresh, first,
+                GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
+            persistRuntime(fresh, runtime);
         } else {
             this.schemaSnapshotService.captureIfMissing(fresh, ticket.getId());
             String jobBizId = DmTeamUtils.nextExecJobBizId();
@@ -231,8 +245,14 @@ public class TicketSegmentService {
 
         List<TicketSegment> runtime = TicketSegment.parseRuntime(group.getExecSegments());
         if (runtime == null) {
+            // B7 check-fix: the gate widens with the plan's type domain (hasGhostSegment →
+            // hasRoutedSegment, the dispatchFirstSegment-guard parity). A DML_BATCH-only plan
+            // left PENDING by a rolled-back first dispatch has NO other recovery surface — the
+            // sweep only probes EXECUTING groups and returnTicket requires a FAILED group — so
+            // keeping the B6 ghost-only predicate here would dead-end the retry into
+            // RETRY_UNSUPPORTED over a trivially safe restart (nothing ever executed).
             if (TicketSegment.STATUS_PENDING.equals(status)
-                && TicketSegment.hasGhostSegment(TicketSegment.parsePlan(group.getPrecheckResult()))) {
+                && TicketSegment.hasRoutedSegment(TicketSegment.parsePlan(group.getPrecheckResult()))) {
                 // pre-first-dispatch (or its rollback): nothing ever executed — safe to start over
                 assertNoActiveJob(group);
                 initializeAndDispatchFirstSegment(ticket, group, uid);
@@ -258,6 +278,7 @@ public class TicketSegmentService {
         // already captured; mirrors the legacy retryGroup :455 and dispatchGhostSegment contracts)
         this.schemaSnapshotService.captureIfMissing(group, ticket.getId());
 
+        Map<String, Object> inheritedCheckpoint = null;
         if (TicketSegment.TYPE_GHOST.equals(target.getType())) {
             // idempotent pre-rebuild cleanup: release the old session (sidecar cap-2 slot). The old
             // AsyncTask needs no disposal — the active check above guaranteed it is terminal, and
@@ -275,16 +296,70 @@ public class TicketSegmentService {
                     buildProbeSummary(target, group.getDbName()), uid);
                 return groupTerminal;
             }
+        } else if (TicketSegment.TYPE_DML_BATCH.equals(target.getType())) {
+            // B7 checkpoint inheritance (design §7.4, the C16 non-reusable replacement — DML has
+            // NO generic target-effect probe, so the cursor IS the resume contract): the old
+            // task's DONE side (cursor/batchesDone/rowsDone/lastDone) seeds the fresh task's
+            // configData — "已成功批永不重放" is physically guaranteed by the cursor inheritance;
+            // the old task is NEVER reused (B6 discipline). The intent side is deliberately NOT
+            // inherited: a manual retry is the human decision (N1b basic resume = re-run the
+            // unresolved batch from the cursor; N2 adds the RERUN/SKIP resolution guard +
+            // RESOLUTION_REQUIRED rejection). No session exists → nothing to release.
+            inheritedCheckpoint = extractDmlBatchDoneCheckpoint(ticket, group, target);
         }
         // reset the failed segment → PENDING (+ clear error/timestamps/stale bindings), then the
         // advanceSegment-shaped re-mark + dispatch (one persist — the intermediate PENDING is
         // never observable outside this transaction)
         resetSegmentForRerun(target);
+        if (inheritedCheckpoint != null) {
+            target.setResumeCheckpoint(inheritedCheckpoint); // dispatchBatchSegment consumes it into the fresh configData
+        }
         target.setStatus(TicketSegment.STATUS_EXECUTING);
         target.setStartedAt(System.currentTimeMillis());
         persistRuntime(group, runtime);
         dispatchSegmentUnderLock(ticket, group, runtime, target, uid, GovTicketV2Service.GHOST_VIA_RETRY);
         return false; // a dispatch happened — its completion callback owns the aggregation
+    }
+
+    /**
+     * The terminal old task's DONE-side checkpoint as a plain map (never-throw: a missing task /
+     * unparsable carrier degrades to null = a FRESH cursor — which for a never-dispatched target
+     * is exactly right; for a lost carrier it is the conservative re-run-from-scratch shape whose
+     * double-apply risk the N2 resolution guard + the UNRESOLVED manual copy own). The intent /
+     * heartbeat / status parts are stripped here AND re-stripped by the submit-side seeder
+     * (defense in depth).
+     */
+    private Map<String, Object> extractDmlBatchDoneCheckpoint(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                                              TicketSegment target) {
+        try {
+            DmExecAsyncTaskDO oldTask = target.getTaskId() == null ? null
+                : this.execDal.asyncTaskMapper().queryById(target.getTaskId());
+            if (oldTask == null) {
+                oldTask = this.dmlBatchService.findTaskForTicketGroup(ticket.getId(), group.getId(), target.getSegIdx());
+            }
+            if (oldTask == null) {
+                return null;
+            }
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+                = com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl.parseTaskConfig(oldTask);
+            if (cfg == null || cfg.getCheckpoint() == null) {
+                return null;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> full = JsonUtils.toObj(JsonUtils.toJson(cfg.getCheckpoint()), Map.class);
+            if (full == null) {
+                return null;
+            }
+            full.remove("intent");
+            full.remove("lastTickAt");
+            full.remove("lastStatus");
+            full.remove("lagState");
+            return full.isEmpty() ? null : full;
+        } catch (Exception e) {
+            log.warn("[TicketSegment] DML_BATCH checkpoint extraction failed for group {} segment {} (fresh cursor)",
+                group.getId(), target.getSegIdx(), e);
+            return null;
+        }
     }
 
     /** the runtime-null PENDING shape: rebuild the runtime from the plan and dispatch segment 1. */
@@ -323,13 +398,23 @@ public class TicketSegmentService {
             }
         }
         for (TicketSegment seg : runtime) {
-            if (seg == null || !TicketSegment.TYPE_GHOST.equals(seg.getType()) || seg.getTaskId() == null) {
+            if (seg == null || seg.getTaskId() == null) {
+                continue;
+            }
+            // B7: the active-task check covers BOTH AsyncTask-bound segment types — GHOST (the
+            // M1 superset ruling: non-terminal = active, incl. INIT/PAUSING/CANCELING) and
+            // DML_BATCH (a live batch loop rejects the retry; the type-specific message keeps
+            // the guidance copy honest)
+            boolean ghost = TicketSegment.TYPE_GHOST.equals(seg.getType());
+            boolean batch = TicketSegment.TYPE_DML_BATCH.equals(seg.getType());
+            if (!ghost && !batch) {
                 continue;
             }
             DmExecAsyncTaskDO task = this.execDal.asyncTaskMapper().queryById(seg.getTaskId());
             if (task != null && !isTerminalTaskStatus(task.getStatus())) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_TICKET_V2_GHOST_TASK_ACTIVE.name()));
+                throw new ErrorMessageException(DmI18nUtils.getMessage(ghost
+                    ? I18nDmMsgKeys.GOV_TICKET_V2_GHOST_TASK_ACTIVE.name()
+                    : I18nDmMsgKeys.GOV_TICKET_V2_DML_BATCH_TASK_ACTIVE.name()));
             }
         }
     }
@@ -354,6 +439,7 @@ public class TicketSegmentService {
         seg.setSessionId(null);
         seg.setTaskId(null);
         seg.setSummary(null);
+        seg.setResumeCheckpoint(null); // B7: the caller re-sets the fresh inheritance right after
     }
 
     /**
@@ -471,6 +557,55 @@ public class TicketSegmentService {
     }
 
     /**
+     * DML_BATCH segment completion (B7, caller: DmlBatchCompletionService.onBatchTerminal, UNDER
+     * its ticket row lock). The ghost CAS shape (segmentIndex binding, EXECUTING+type check) PLUS
+     * the <b>taskId cross-check</b> — B6 debt #5 discharged at the first new task re-entry surface:
+     * the CAS also requires {@code segment.taskId ≡ firing-task}, so a stale terminal task of a
+     * REBUILT segment (retryGroup launched a fresh task over the same segmentIndex) can never
+     * write through the fresh dispatch's EXECUTING CAS. Both ids are present by construction
+     * (the dispatch records taskId atomically with the EXECUTING mark) — a mismatch OR a missing
+     * recorded id is a CAS skip.
+     *
+     * @param summary the checkpoint freeze {batchesDone, rowsDone, cursor?, error?,
+     *                unresolvedIntent?, intentSeq?} — the segment's forensic trail (uk ruling (a)
+     *                summary heritage; the task configData keeps the full checkpoint)
+     * @return true when this call wrote the segment terminal (the caller's aggregation tail must
+     *         run); false when the CAS skipped (replay/race/stale task — the first writer won)
+     */
+    public boolean completeDmlBatchSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                                    Integer segmentIndex, Long taskId,
+                                                    boolean success, String detail, Map<String, Object> summary) {
+        List<TicketSegment> runtime = TicketSegment.parseRuntime(group.getExecSegments());
+        if (runtime == null) {
+            return legacyFallbackWrite(group, success, detail);
+        }
+        TicketSegment seg;
+        if (segmentIndex != null) {
+            seg = TicketSegment.byIdx(runtime, segmentIndex); // exact binding — no shape fallback
+        } else {
+            seg = null;
+            for (TicketSegment one : runtime) {
+                if (one != null && TicketSegment.STATUS_EXECUTING.equals(one.getStatus())
+                    && TicketSegment.TYPE_DML_BATCH.equals(one.getType())) {
+                    seg = one;
+                    break;
+                }
+            }
+        }
+        if (seg == null || !TicketSegment.STATUS_EXECUTING.equals(seg.getStatus())
+            || !TicketSegment.TYPE_DML_BATCH.equals(seg.getType())) {
+            return false; // CAS: replayed hook / sweep already judged / rebuilt segment moved on
+        }
+        // debt #5 cross-check: the firing task must BE the segment's recorded task
+        if (seg.getTaskId() == null || taskId == null || !seg.getTaskId().equals(taskId)) {
+            log.warn("[TicketSegment] stale DML_BATCH task hook for group {} segment {} (task {} vs segment task {}) — skipped",
+                group.getId(), seg.getSegIdx(), taskId, seg.getTaskId());
+            return false;
+        }
+        return advanceUnderLock(ticket, group, runtime, seg, success, detail, summary, SYSTEM_OPERATOR);
+    }
+
+    /**
      * The advanceSegment core (design §6.3): segment terminal write (+ AUTOEXEC summary frozen
      * BEFORE the next job creation deletes the old job/task rows) → next segment dispatch, or
      * the GROUP terminal write when this was the last segment. NEVER aggregates the ticket —
@@ -513,7 +648,8 @@ public class TicketSegmentService {
 
     /**
      * Type-specific dispatch of an already-EXECUTING-marked segment (caller persists runtime after).
-     * {@code ghostVia} annotates the GHOST_EXECUTE audit row (segment chain vs M3 retry resume).
+     * {@code ghostVia} annotates the GHOST_EXECUTE / DML_BATCH_EXECUTE audit row (segment chain
+     * vs M3 retry resume — the via constants are shared, they annotate the dispatch ORIGIN).
      */
     private void dispatchSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
                                           List<TicketSegment> runtime, TicketSegment seg, String uid,
@@ -521,6 +657,15 @@ public class TicketSegmentService {
         if (TicketSegment.TYPE_GHOST.equals(seg.getType())) {
             this.govTicketV2Service.dispatchGhostSegment(ticket, group, seg, ghostVia);
             persistRuntime(group, runtime); // the launch recorded sessionId/taskId on the segment
+            return;
+        }
+        if (TicketSegment.TYPE_DML_BATCH.equals(seg.getType())) {
+            // B7: the batch task submission records taskId on the segment (the completion CAS
+            // cross-check key, debt #5); a submitTask failure throws — no execution body residue
+            // exists (no session in the B7 shape), the transaction rolls back and the segment
+            // stays for the sweep's PENDING re-dispatch row
+            this.govTicketV2Service.dispatchBatchSegment(ticket, group, seg, ghostVia);
+            persistRuntime(group, runtime);
             return;
         }
         String jobBizId = DmTeamUtils.nextExecJobBizId();
@@ -618,9 +763,118 @@ public class TicketSegmentService {
         // current EXECUTING → liveness probe by type
         if (TicketSegment.TYPE_GHOST.equals(current.getType())) {
             probeGhostSegmentUnderLock(ticket, group, runtime, current);
+        } else if (TicketSegment.TYPE_DML_BATCH.equals(current.getType())) {
+            probeDmlBatchSegmentUnderLock(ticket, group, runtime, current);
         } else {
             probeAutoexecSegmentUnderLock(ticket, group, runtime, current);
         }
+    }
+
+    /**
+     * B7 sweep liveness probe of a DML_BATCH segment (design §6.6 five-row decision table).
+     * Liveness = the AsyncTask state + the configData HEARTBEAT (there is no hasSession analog —
+     * the batch loop holds no session between ticks). The heartbeat stale threshold is DERIVED
+     * (no new KV): {@code timeoutSec + max(intervalMs,10s)×2 + 60s} — a healthy tick writes
+     * lastTickAt at most one batch duration + one interval ago, so the margin covers the worst
+     * legal cadence (a paused/throttled task keeps writing heartbeats — 暂停中心跳照写 — and is
+     * judged healthy). A missing lastTickAt falls back to the segment's dispatch time (a console
+     * that died between the dispatch commit and the first tick still converges).
+     * <p>
+     * The dead judgement preserves the checkpoint on the task configData (nothing to release —
+     * no session exists): retryGroup inherits the done-side cursor (已成功批永不重放 is
+     * physically guaranteed by the inheritance). An unresolved intent at dead-judgement time is
+     * frozen into the segment summary (unresolvedIntent — the N2 resolution guard consumes it;
+     * the alert hook is N2 as well).
+     */
+    private void probeDmlBatchSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                               List<TicketSegment> runtime, TicketSegment seg) {
+        com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO task
+            = this.dmlBatchService.findTaskForTicketGroup(ticket.getId(), group.getId(), seg.getSegIdx());
+        if (task == null) {
+            failSegmentUnderLock(ticket, group, runtime, seg,
+                "dml batch task record missing while the segment is EXECUTING — verify the target data manually",
+                null);
+            return;
+        }
+        com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+            = com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl.parseTaskConfig(task);
+        com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp
+            = cfg == null ? null : cfg.getCheckpoint();
+        AsyncTaskStatus status = task.getStatus();
+        if (isTerminalTaskStatus(status)) {
+            if (status == AsyncTaskStatus.COMPLETE) {
+                // the terminal hook's writeback was lost — replay the completion exactly like it
+                // would have (the AUTOEXEC job-FINISH replay semantics)
+                log.warn("[TicketSegment] sweep recovering the lost completion of DML_BATCH segment {} group {} (task COMPLETE)",
+                    seg.getSegIdx(), group.getId());
+                advanceUnderLock(ticket, group, runtime, seg, true, null,
+                    dmlBatchSummary(cp, null, false), SYSTEM_OPERATOR);
+                return;
+            }
+            // FAILURE / CANCEL: the hook either already ran (CAS skip upstream — unreachable here
+            // because the segment is still EXECUTING) or was lost — advance as FAILED
+            String detail = "dml batch task " + status + " (completion writeback lost)";
+            boolean unresolved = isUnresolvedIntent(cp);
+            advanceUnderLock(ticket, group, runtime, seg, false, detail,
+                dmlBatchSummary(cp, detail, unresolved), SYSTEM_OPERATOR);
+            return;
+        }
+        // active task → the heartbeat decides (host-affinity death / dispatcher stall)
+        Long heartbeat = cp == null ? null : cp.getLastTickAt();
+        long reference = heartbeat != null ? heartbeat
+            : (seg.getStartedAt() != null ? seg.getStartedAt() : System.currentTimeMillis());
+        long staleMillis = dmlBatchStaleThresholdMillis(cfg);
+        if (System.currentTimeMillis() - reference <= staleMillis) {
+            return; // healthy: running / paused / retry-waiting / throttled — every tick writes the heartbeat
+        }
+        String detail = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getMessage(
+            com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys.DML_BATCH_TASK_LOST.name());
+        failSegmentUnderLock(ticket, group, runtime, seg, detail,
+            dmlBatchSummary(cp, detail, isUnresolvedIntent(cp)));
+    }
+
+    /**
+     * The segment summary freeze of a DML_BATCH terminal (design §5.3):
+     * {batchesDone, rowsDone, cursor?, error?, unresolvedIntent?, intentSeq?} — built from the
+     * task's configData checkpoint (null-safe: a missing/corrupt carrier yields the bare shape).
+     */
+    static Map<String, Object> dmlBatchSummary(
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp,
+            String error, boolean unresolvedIntent) {
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("batchesDone", cp == null ? 0L : cp.getBatchesDone());
+        summary.put("rowsDone", cp == null ? 0L : cp.getRowsDone());
+        if (cp != null && cp.getCursor() != null) {
+            summary.put("cursor", cp.getCursor());
+        }
+        if (error != null) {
+            summary.put("error", error);
+        }
+        if (unresolvedIntent) {
+            summary.put("unresolvedIntent", Boolean.TRUE);
+            if (cp != null && cp.getIntent() != null) {
+                summary.put("intentSeq", cp.getIntent().getSeq());
+            }
+        }
+        return summary;
+    }
+
+    /** §7.3 window-crash shape: intent ∧ ¬retryPending (retryPending = zero effect proven). */
+    static boolean isUnresolvedIntent(
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp) {
+        return cp != null && cp.getIntent() != null
+            && !Boolean.TRUE.equals(cp.getIntent().getRetryPending());
+    }
+
+    /** derived heartbeat-stale threshold (design §6.6 — no new KV): timeout + 2×max(interval,10s) + 60s. */
+    static long dmlBatchStaleThresholdMillis(
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg) {
+        com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams params
+            = cfg == null || cfg.getEffectiveParams() == null
+                ? new com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams()
+                : cfg.getEffectiveParams();
+        long intervalFloor = Math.max(params.getIntervalMs(), 10_000L);
+        return params.getTimeoutSec() * 1000L + intervalFloor * 2 + 60_000L;
     }
 
     private void probeGhostSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
@@ -675,6 +929,18 @@ public class TicketSegmentService {
 
     private void failSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
                                       List<TicketSegment> runtime, TicketSegment seg, String detail) {
+        failSegmentUnderLock(ticket, group, runtime, seg, detail, null);
+    }
+
+    /**
+     * B7 overload: the DML_BATCH dead-judgement freezes the task checkpoint into the segment
+     * summary (batchesDone/rowsDone/cursor + the unresolvedIntent marker) so the N2 resolution
+     * guard and the retryGroup resume have the group-carrier trail. The GHOST branch semantics
+     * are unchanged (summary stays null there — its trail is the tool log + old table).
+     */
+    private void failSegmentUnderLock(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                      List<TicketSegment> runtime, TicketSegment seg, String detail,
+                                      Map<String, Object> summary) {
         log.warn("[TicketSegment] segment {} of group {} judged dead by the sweep probe: {}",
             seg.getSegIdx(), group.getId(), detail);
         // B6 M3 orphan-session convergence (M2 check 裁决项 2): a dead-judged GHOST segment may
@@ -683,10 +949,13 @@ public class TicketSegmentService {
         // returned on session close, so release it here or every future auto-route dispatch
         // starves after two such leaks. Never-throw, best effort (closeSession on a gone session
         // is a no-op; the segment FAILED write proceeds regardless).
+        // B7 DML_BATCH: NOTHING to release — the batch loop holds no session between ticks (R10
+        // per-tick session economy) and the checkpoint stays on the task configData for the
+        // retryGroup inheritance.
         if (TicketSegment.TYPE_GHOST.equals(seg.getType())) {
             releaseSegmentSessionQuietly(ticket, seg);
         }
-        advanceUnderLock(ticket, group, runtime, seg, false, detail, null, SYSTEM_OPERATOR);
+        advanceUnderLock(ticket, group, runtime, seg, false, detail, summary, SYSTEM_OPERATOR);
     }
 
     // ==================================================================================
@@ -717,15 +986,19 @@ public class TicketSegmentService {
      * Persist the runtime JSON and keep the in-memory group DO consistent (createGroupJob reads
      * it back).
      * <p>
-     * ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6): the ENTRY GATES that decide whether a
-     * group is ghost-managed read {@code ApprovalMO.ghostRouteFlags}, NOT this carrier — the
-     * WAIT_EXEC sweep pre-filter (ChangeApprovalHandler.probeGhostGroupsIfDue →
+     * ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6; B7 semantic rename, 裁决 #12): the ENTRY
+     * GATES that decide whether a ticket is segment-managed read {@code ApprovalMO.ghostRouteFlags}
+     * — whose semantics B7 WIDENED from "ghost-routed" to "HAS NON-DIRECT-EXECUTION SEGMENTS"
+     * (GHOST ∨ DML_BATCH; field name and wire shape unchanged for in-flight compatibility) — NOT
+     * this carrier: the WAIT_EXEC sweep pre-filter (ChangeApprovalHandler.probeGhostGroupsIfDue →
      * GhostRouteFlags.anyRouted) skips a flagless ticket BEFORE ever inspecting exec_segments,
      * and the groupList frontend projection (GovTicketV2ServiceImpl.fillGhostTaskProjection)
      * uses the same positional gate. The coupling holds because flags and the segments plan are
-     * derived from the SAME authoritative precheck evaluation (submit/resubmit). ANY future path
-     * that writes segments (plan or runtime) MUST write the flags too — or those pre-filters must
-     * become segments-aware — else the group silently loses its sweep repair and ghost projection.
+     * derived from the SAME authoritative precheck evaluation (submit/resubmit — the B7 marking
+     * seam sets a group's flag when its plan carries a GHOST **or DML_BATCH** segment). ANY
+     * future path that writes segments (plan or runtime, ANY routed type) MUST write the flags in
+     * the same breath — or those pre-filters must become segments-aware — else the group silently
+     * loses its sweep repair and projection (R2: a DML_BATCH-only ticket would never be swept).
      */
     private void persistRuntime(DmTicketDbStmtDO group, List<TicketSegment> runtime) {
         String json = JsonUtils.toJson(runtime);

@@ -58,10 +58,13 @@ public class ApprovalMO {
     // Human-readable impact-scope text for external approval form fields and detail-page display.
     private String  impactScopeText;
 
-    // B6 M1 ghost auto-route (execution-time authority; the display copy rides in each group's
-    // precheck_result JSON "ghostRoutes" key). POSITIONAL contract — index i ↔ the i-th group in
-    // dm_ticket_db_stmt ORDER BY id ASC (= submit insertion order = pairIds order); see
-    // GhostRouteFlags for the full contract. Written at submit, rebuilt at resubmit; null on
-    // legacy tickets and whenever no group is routed (zero-DDL additive field, ignoreUnknown).
+    // B6 M1 auto-route flags (execution-time authority; the display copy rides in each group's
+    // precheck_result JSON "ghostRoutes"/"dmlBatchRoutes" keys). B7 SEMANTIC WIDENING (裁决 #12):
+    // "has NON-DIRECT-EXECUTION segments" (GHOST ∨ DML_BATCH) — the field name and wire shape are
+    // deliberately unchanged for in-flight compatibility. POSITIONAL contract — index i ↔ the
+    // i-th group in dm_ticket_db_stmt ORDER BY id ASC (= submit insertion order = pairIds order);
+    // see GhostRouteFlags for the full contract + the dual-write coupling pin. Written at submit,
+    // rebuilt at resubmit; null on legacy tickets and whenever no group is routed (zero-DDL
+    // additive field, ignoreUnknown).
     private List<Boolean> ghostRouteFlags;
 }

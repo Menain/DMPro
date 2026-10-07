@@ -927,6 +927,20 @@ public class AutoExecServiceImpl implements AutoExecService {
         return true;
     }
 
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public boolean deleteGroupJobIfNotDispatched(long groupId) {
+        // B7 N1b: the group-keyed cleanup guard (interface javadoc) — a segmented group's job
+        // bizId lives inside the orchestrator's dispatch (invisible to the confirm loop), so the
+        // strict cleanup resolves it through the uk single row and delegates to the IDENTICAL
+        // bizId-keyed race-free guard (never a plain deleteJob — the N0 check lesson).
+        DmExecAutoJobDO job = this.execDal.autoJobMapper().queryByDependOnGroupId(groupId);
+        if (job == null) {
+            return false; // no job — a GHOST/DML_BATCH first segment (a live body owns the group) or nothing was created
+        }
+        return deleteJobIfNotDispatched(job.getBizId());
+    }
+
     private void doDeleteJob(long jobId) {
         DmExecAutoJobDO job = this.execDal.autoJobMapper().queryByIdForUpdate(jobId);
         if (job == null) {

@@ -184,6 +184,16 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.governance.SchemaSnapshotService schemaSnapshotService;
+    // @Lazy: B7 N1b — the shared V2GroupDispatch decision order (segments → flags → legacy) on
+    //   the confirm chain: a DML_BATCH-segmented PROD_DML group dispatches through the segment
+    //   orchestrator; the orchestrator lazy-reaches the service layer back → safe-side proxy
+    //   injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service govTicketV2Service;
 
     //
     // ticket list
@@ -1565,29 +1575,63 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         DmAutoExecConfigFO config = fo.getAutoExecConfig();
         String languageTag = locale.toLanguageTag();
         List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(ticketId);
+        // B7 N1b: the flags carrier for the shared dispatcher's positional lookup (tolerant parse
+        // — a PROD_DML ticket's flags are set only by the DML_BATCH marking seam; unparsable →
+        // null → the flags branch never fires and the decision falls through to legacy).
+        ApprovalMO ticketMO = parseTicketInfoTolerant(dmTicket.getTicketInfo());
 
-        // Cleanup tracking (strict failure path): created job bizIds + the group rows whose
-        // EXECUTING flip committed with the job insert — parallel lists, reverse-order teardown.
-        List<String> createdJobBizIds = new ArrayList<>();
-        List<Long> createdGroupIds = new ArrayList<>();
+        // Cleanup tracking (strict failure path): one parallel-list entry per DISPATCHED group in
+        // dispatch order (reverse-order teardown). LEGACY entries carry the created job bizId
+        // (deleteJobIfNotDispatched — the N0 race-free guard); SEGMENT entries carry null (the
+        // orchestrator generated the job bizId internally → the group-keyed guard variant).
+        List<Long> dispatchedGroupIds = new ArrayList<>();
+        List<String> dispatchedJobBizIds = new ArrayList<>();
         try {
+            int position = 0;
             for (DmTicketDbStmtDO group : groups) {
+                final int groupPosition = position++;
                 String execStatus = group.getExecStatus();
                 if (!EXEC_STATUS_PENDING.equals(execStatus) && !EXEC_STATUS_FAILED.equals(execStatus)) {
                     continue; // skip non-eligible groups (SUCCESS retained — resubmit contract)
                 }
-                // Sub-task A parity with the auto-advance/retry/resubmit loops: pre-before schema
-                // snapshot BEFORE the group job is dispatched (best-effort inside, never blocks).
-                this.schemaSnapshotService.captureIfMissing(group, ticketId);
-                String groupJobBizId = DmTeamUtils.nextExecJobBizId();
-                this.autoExecService.createGroupJob(group, groupJobBizId,
-                    config.isEnableTransactional(), config.getErrorStrategy(),
-                    config.getRetryWaitTime(), config.getRetryCount(),
-                    config.getAutoExecType(), config.getExecTime(),
-                    languageTag, operatorUid);
-                createdJobBizIds.add(groupJobBizId);
-                createdGroupIds.add(group.getId());
-                this.autoExecService.startJob(groupJobBizId, operatorUid);
+                // B7 N1b (design §2.3): the per-group decision order (segments → flags → legacy)
+                // is SINGLE-POINTED in V2GroupDispatch — a DML_BATCH-segmented PROD_DML group now
+                // routes into the segment orchestrator here exactly like the auto-advance chain
+                // (before N1b this loop created plain group jobs for EVERY eligible group, which
+                // a segmented group's createGroupJob would refuse — "no current AUTOEXEC segment").
+                // The legacy branch keeps the confirm-chain extended createGroupJob projection
+                // (execType/execTime/retry passthrough — the pin-verified 10-arg signature).
+                com.clougence.clouddm.console.web.component.governance.V2GroupDispatch.Outcome outcome
+                    = com.clougence.clouddm.console.web.component.governance.V2GroupDispatch.dispatch(
+                        dmTicket, group, groupPosition, ticketMO,
+                        config.isEnableTransactional(), config.getErrorStrategy(), languageTag, operatorUid,
+                        com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service.GHOST_VIA_AUTO_ROUTE,
+                        this.ticketSegmentService, this.govTicketV2Service, this.schemaSnapshotService,
+                        (g, jobBizId, uid) -> {
+                            // Sub-task A parity (captureIfMissing) runs INSIDE the shared
+                            // dispatcher's legacy branch, before this launcher. Track between
+                            // create and start: a startJob failure must still leave the created
+                            // job deletable (N0 reverse-order double-cleanup pin).
+                            this.autoExecService.createGroupJob(g, jobBizId,
+                                config.isEnableTransactional(), config.getErrorStrategy(),
+                                config.getRetryWaitTime(), config.getRetryCount(),
+                                config.getAutoExecType(), config.getExecTime(),
+                                languageTag, uid);
+                            dispatchedGroupIds.add(g.getId());
+                            dispatchedJobBizIds.add(jobBizId);
+                            this.autoExecService.startJob(jobBizId, uid);
+                        });
+                if (outcome.getPath() != com.clougence.clouddm.console.web.component.governance.V2GroupDispatch.Path.LEGACY) {
+                    // a segment/ghost dispatch owns its group through the orchestrator — track the
+                    // group for the guarded cleanup (its AUTOEXEC-first-segment job, if still
+                    // pre-dispatch, is deletable by the group-keyed guard; a launched GHOST
+                    // session / DML_BATCH task SURVIVES the cleanup by design — the N0 survive
+                    // principle: a live body's writeback owns the group state, and cancelling a
+                    // started batch task would discard its checkpoint and re-execute committed
+                    // batches on re-confirm)
+                    dispatchedGroupIds.add(group.getId());
+                    dispatchedJobBizIds.add(null);
+                }
             }
 
             // Step-times fix mirror (systemAutoConfirmForV2 :242): close PREPARATION at the real
@@ -1595,35 +1639,58 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             // Inside the guarded region: a failure here triggers the same race-free cleanup.
             this.approvalStateService.markExecutionDispatched(dmTicket.getBizId());
         } catch (RuntimeException e) {
-            // 失败即完整恢复: reverse-order best-effort teardown of everything created above,
+            // 失败即完整恢复: reverse-order best-effort teardown of everything dispatched above,
             // then rethrow — the caller's existing catch runs restoreExecutionConfirmation.
-            // deleteJobIfNotDispatched is the race-free guard: a job the scheduler already
-            // claimed (PACKAGING+) is LEFT RUNNING (deleting it would orphan the live sidecar
-            // execution and double-execute the group on re-confirm) and its group row is NOT
-            // reset — the job's completion writeback owns the group state, and the
-            // SUCCESS-retained PENDING/FAILED filter keeps a re-confirm non-overlapping.
-            for (int i = createdJobBizIds.size() - 1; i >= 0; i--) {
-                String createdBizId = createdJobBizIds.get(i);
-                Long createdGroupId = createdGroupIds.get(i);
+            // deleteJobIfNotDispatched / deleteGroupJobIfNotDispatched are the race-free guards:
+            // a job the scheduler already claimed (PACKAGING+) is LEFT RUNNING (deleting it would
+            // orphan the live sidecar execution and double-execute the group on re-confirm) and
+            // its group row is NOT reset — the job's completion writeback owns the group state,
+            // and the SUCCESS-retained PENDING/FAILED filter keeps a re-confirm non-overlapping.
+            for (int i = dispatchedGroupIds.size() - 1; i >= 0; i--) {
+                Long dispatchedGroupId = dispatchedGroupIds.get(i);
+                String dispatchedBizId = dispatchedJobBizIds.get(i);
                 boolean deleted;
                 try {
-                    deleted = this.autoExecService.deleteJobIfNotDispatched(createdBizId);
+                    deleted = dispatchedBizId != null
+                        ? this.autoExecService.deleteJobIfNotDispatched(dispatchedBizId)
+                        : this.autoExecService.deleteGroupJobIfNotDispatched(dispatchedGroupId);
                 } catch (RuntimeException cleanupError) {
                     deleted = false; // unknown state — conservatively treat as surviving
                     e.addSuppressed(cleanupError);
-                    log.error("Cleanup v2 group job failed, ticketId={}, jobBizId={}", ticketId, createdBizId, cleanupError);
+                    log.error("Cleanup v2 group dispatch failed, ticketId={}, groupId={}, jobBizId={}",
+                        ticketId, dispatchedGroupId, dispatchedBizId, cleanupError);
                 }
                 if (!deleted) {
-                    continue; // job absent or still dispatched: its writeback owns the group row
+                    continue; // job absent or still dispatched / live segment body: its writeback owns the group row
                 }
                 try {
-                    this.ticketDbStmtDal.stmtMapper().updateExecStatus(createdGroupId, EXEC_STATUS_PENDING, null);
+                    this.ticketDbStmtDal.stmtMapper().updateExecStatus(dispatchedGroupId, EXEC_STATUS_PENDING, null);
+                    if (dispatchedBizId == null) {
+                        // segment group whose AUTOEXEC first-segment job was deleted pre-dispatch:
+                        // restore the exact pre-dispatch shape (the runtime's EXECUTING segment
+                        // points at a dead job; dispatchFirstSegment rebuilds it anyway, and the
+                        // sweep only probes EXECUTING groups — the resubmit reset precedent)
+                        this.ticketDbStmtDal.stmtMapper().updateExecSegments(dispatchedGroupId, null);
+                    }
                 } catch (RuntimeException cleanupError) {
                     e.addSuppressed(cleanupError);
-                    log.error("Reset v2 group exec status failed, ticketId={}, groupId={}", ticketId, createdGroupId, cleanupError);
+                    log.error("Reset v2 group exec status failed, ticketId={}, groupId={}", ticketId, dispatchedGroupId, cleanupError);
                 }
             }
             throw e;
+        }
+    }
+
+    /** tolerant ticketInfo parse (the isV2ProdDmlTicket discipline): unparsable → null, never throws. */
+    private static ApprovalMO parseTicketInfoTolerant(String ticketInfo) {
+        if (StringUtils.isEmpty(ticketInfo)) {
+            return null;
+        }
+        try {
+            return JsonUtils.toObj(ticketInfo, ApprovalMO.class);
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception
+            return null;
         }
     }
 
