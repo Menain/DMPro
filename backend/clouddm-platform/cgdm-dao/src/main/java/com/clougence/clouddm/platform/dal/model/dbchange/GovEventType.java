@@ -70,5 +70,29 @@ public enum GovEventType {
      * IM alert push was triggered (operator_uid = submitter; eventData{scene,tables[],...}).
      * Records the alert FACT only — the send result is not persisted (platform status quo).
      */
-    GHOST_ALERT_TRIGGERED
+    GHOST_ALERT_TRIGGERED,
+    /**
+     * B7 N2 (裁决 #13, design §6.2): ticket-chain control-plane action on a DML_BATCH segment —
+     * batch-granularity pause (the in-flight batch always runs to completion; the heartbeat is
+     * written on the pause-yield tick and the sweep judges a DB-PAUSE task controlled-healthy).
+     * operator_uid = the real acting user; eventData{groupId,segmentIndex,taskId,taskBizId}.
+     * The ticket/group/segment statuses are NOT touched (B6 throttle = session-level discipline).
+     */
+    DML_BATCH_PAUSE,
+    /** B7 N2 (design §6.2): resume of a paused DML_BATCH task — same trail shape as DML_BATCH_PAUSE. */
+    DML_BATCH_RESUME,
+    /**
+     * B7 N2 (design §6.4): user termination of a DML_BATCH task — completed batches are KEPT
+     * (partial success, NO automatic rollback); the cancel drives segment FAILED → group FAILED
+     * → ticket EXEC_FAIL through the tick's isCancel branch or (a task cancelled while idle /
+     * paused) the sweep's terminal-task advance row.
+     */
+    DML_BATCH_ABORT,
+    /**
+     * B7 N2 (design §7.4, 裁决 #13): the window-crash manual resolution carried by retryGroup —
+     * dmlBatchResolution ∈ {RERUN_BATCH, SKIP_BATCH} over a segment whose summary froze
+     * unresolvedIntent. eventData{groupId,segmentIndex,resolution,intentSeq}; the audit twin is
+     * the DML_BATCH_EXECUTE row annotated with resolution+intentSeq (四点注册复用, §12).
+     */
+    DML_BATCH_RESOLUTION
 }

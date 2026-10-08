@@ -63,10 +63,18 @@ public class DmlBatchCheckpoint {
      */
     private Long     lastTickAt;
 
-    /** replica-lag throttle state (N2 fills it; null in N1b = fixed-interval throttling only). */
+    /** replica-lag throttle state (N2 lag throttling, design §6.3; null = no probe result yet). */
     private LagState lagState;
     /** RUNNING / PAUSED / RETRYING / THROTTLED... — statusMsg material (design §5.1). */
     private String   lastStatus;
+
+    /**
+     * N2 SKIP_BATCH evidence trail (design §7.4): one record per manually-skipped batch — the
+     * re-derived boundary {lo,hi} whose row set was advanced over WITHOUT executing the DML.
+     * Frozen into the segment summary at the terminal (the "evidence 入 summary" contract);
+     * append-only and bounded by the number of manual skips (a rare human action).
+     */
+    private java.util.List<SkipRecord> skips;
 
     /**
      * A batch in flight (or awaiting its retry). {@code seq} is idempotent under retry: the
@@ -90,7 +98,7 @@ public class DmlBatchCheckpoint {
         private String  lastBatchError;
     }
 
-    /** one committed batch. */
+    /** one committed batch (or one N2 SKIP_BATCH cursor advance — see {@link #resolution}). */
     @Getter
     @Setter
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -100,6 +108,27 @@ public class DmlBatchCheckpoint {
         private String hi;
         private long   affectRows;
         private Long   finishedAt;
+        /**
+         * N2 (design §7.4): {@code SKIP_BATCH} when this "done" is a manual skip — the cursor
+         * advanced over the re-derived (lo,hi] WITHOUT executing the DML (affectRows stays 0,
+         * the honest "not executed" value). Null on every normally-executed batch.
+         */
+        private String resolution;
+        /** the exclusive lower bound of this batch (the skip evidence pair with {@link #hi}). */
+        private String lo;
+    }
+
+    /** one manual SKIP_BATCH cursor advance (the segment-summary evidence record, design §7.4). */
+    @Getter
+    @Setter
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SkipRecord {
+        private long   seq;
+        /** the cursor the skip started from (raw string; null = the first batch was skipped). */
+        private String lo;
+        /** the re-derived boundary the cursor advanced to (raw string). */
+        private String hi;
+        private Long   at;
     }
 
     /** N2 lag-throttle visibility (design §6.3): visible=false → fixed-interval degradation + yellow flag. */

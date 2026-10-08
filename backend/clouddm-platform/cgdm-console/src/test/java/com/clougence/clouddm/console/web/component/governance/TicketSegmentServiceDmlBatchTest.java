@@ -567,6 +567,63 @@ public class TicketSegmentServiceDmlBatchTest {
         assertNull(summary.get("unresolvedIntent"));
     }
 
+    // ==================== N2 check fix: an unconsumed SKIP verdict re-freezes the marker ====================
+
+    /** the batchTask shape with a SKIP_BATCH verdict riding the carrier UNCONSUMED (died pre-skip). */
+    private DmExecAsyncTaskDO skipVerdictTask(AsyncTaskStatus status, DmlBatchCheckpoint checkpoint) {
+        DmExecAsyncTaskDO task = batchTask(status, checkpoint);
+        com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+            = com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl.parseTaskConfig(task);
+        cfg.setPendingResolution(TicketSegment.RESOLUTION_SKIP_BATCH);
+        task.setConfigData(JsonUtils.toJson(cfg));
+        return task;
+    }
+
+    @Test
+    public void repair_staleWithUnconsumedSkipVerdict_markerRefrozen_noSilentRerunDowngrade() {
+        // check fix: a SKIP-launched task that died BEFORE the skip-done persist carries no intent
+        // (stripped at the inheritance) — but the adjudicated batch was neither skipped nor proven,
+        // so the dead-judgement summary must re-freeze the marker (else the next retryGroup sees no
+        // marker and silently downgrades the human SKIP verdict to a RERUN of the unknown batch)
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(20);
+        cp.setLastTickAt(System.currentTimeMillis() - 400_000L); // stale → dead judgement
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(skipVerdictTask(AsyncTaskStatus.RUNNING, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(stmtMapper).updateExecSegments(eq(GROUP_ID), captor.capture());
+        Map<String, Object> summary = TicketSegment.parseRuntime(captor.getValue()).get(0).getSummary();
+        assertEquals(Boolean.TRUE, summary.get("unresolvedIntent"));
+        assertEquals(21, ((Number) summary.get("intentSeq")).intValue()); // batchesDone+1 = the adjudicated batch
+        assertEquals("99", summary.get("cursor"));                        // the cursor never advanced
+    }
+
+    @Test
+    public void repair_failureReplay_unconsumedSkipVerdict_markerRefrozen() {
+        // the same re-freeze on the FAILURE/CANCEL replay row (the hook writeback was lost)
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(20);
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(skipVerdictTask(AsyncTaskStatus.FAILURE, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(stmtMapper).updateExecSegments(eq(GROUP_ID), captor.capture());
+        Map<String, Object> summary = TicketSegment.parseRuntime(captor.getValue()).get(0).getSummary();
+        assertEquals(Boolean.TRUE, summary.get("unresolvedIntent"));
+        assertEquals(21, ((Number) summary.get("intentSeq")).intValue());
+    }
+
     @Test
     public void repair_noHeartbeatYet_fallsBackToSegmentStartTime() {
         // a console that died between the dispatch commit and the first tick still converges
@@ -721,6 +778,322 @@ public class TicketSegmentServiceDmlBatchTest {
         assertEquals(1, runtime.size());
         assertEquals(TicketSegment.TYPE_DML_BATCH, runtime.get(0).getType());
         assertEquals(TicketSegment.STATUS_EXECUTING, runtime.get(0).getStatus());
+    }
+
+    // ==================== N2: controlled pause (handover #2) ====================
+
+    @Test
+    public void repair_pausedTaskStaleHeartbeat_controlledHealthy_neverDeadJudged() {
+        // N1b check handover #2: the framework pause CANCELS the tick loop, so the heartbeat
+        // necessarily froze at the pause moment — a legitimate INDEFINITE pause (the N2 ticket-chain
+        // endpoint) must NOT be dead-judged by staleness. PAUSE is a DB state with no host
+        // affinity (any console can resume) → controlled-healthy REGARDLESS of heartbeat age
+        // (design §6.6 "healthy covers paused").
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("77");
+        cp.setLastTickAt(System.currentTimeMillis() - 3_600_000L); // paused for an HOUR — far beyond the ≈380s threshold
+        cp.setLastStatus("PAUSED");
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(batchTask(AsyncTaskStatus.PAUSE, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        verify(stmtMapper, never()).updateExecSegments(anyLong(), anyString());
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void repair_pausingTaskStaleHeartbeat_stillDeadJudged_uncontrolledTransient() {
+        // PAUSING (the transient in-memory settle state) STAYS on the heartbeat clock: a console
+        // that died mid-pause is uncontrolled and converges through the dead judgement
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setLastTickAt(System.currentTimeMillis() - 400_000L);
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(batchTask(AsyncTaskStatus.PAUSING, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(stmtMapper).updateExecSegments(eq(GROUP_ID), captor.capture());
+        assertEquals(TicketSegment.STATUS_FAILED, TicketSegment.parseRuntime(captor.getValue()).get(0).getStatus());
+    }
+
+    // ==================== N2: resolution guard (design §7.4) ====================
+
+    private TicketSegment unresolvedFailedSegment() {
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_FAILED, TASK_ID);
+        seg.setError("批 7 执行结果未知");
+        seg.setSummary(new java.util.HashMap<>(Map.of(
+            "unresolvedIntent", Boolean.TRUE, "intentSeq", 7, "batchesDone", 6, "rowsDone", 30000)));
+        return seg;
+    }
+
+    @Test
+    public void resume_unresolvedSummary_missingResolution_rejected_narrowingKey() {
+        TicketSegment seg = unresolvedFailedSegment();
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        try {
+            service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry", null);
+            fail("expected the RESOLUTION_REQUIRED rejection");
+        } catch (ErrorMessageException expected) {
+            assertNotNull(expected.getMessage());
+        }
+        verify(govTicketV2Service, never()).dispatchBatchSegment(any(), any(), any(), anyString());
+    }
+
+    @Test
+    public void resume_unresolvedSummary_invalidResolution_rejected() {
+        TicketSegment seg = unresolvedFailedSegment();
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        try {
+            service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry", "JUST_RUN_IT");
+            fail("expected the RESOLUTION_REQUIRED rejection for an invalid verdict");
+        } catch (ErrorMessageException expected) {
+            assertNotNull(expected.getMessage());
+        }
+        verify(govTicketV2Service, never()).dispatchBatchSegment(any(), any(), any(), anyString());
+    }
+
+    @Test
+    public void resume_unresolvedSummary_threeArgLegacyForm_alsoGuarded() {
+        // the 3-arg delegation passes a null resolution → the same rejection (no bypass surface)
+        TicketSegment seg = unresolvedFailedSegment();
+        group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        try {
+            service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry");
+            fail("expected the RESOLUTION_REQUIRED rejection through the 3-arg form");
+        } catch (ErrorMessageException expected) {
+            assertNotNull(expected.getMessage());
+        }
+    }
+
+    @Test
+    public void resume_unresolvedSummary_rerun_dispatches_noPendingResolutionMarker() {
+        TicketSegment seg = unresolvedFailedSegment();
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(6);
+        DmlBatchCheckpoint.Intent intent = new DmlBatchCheckpoint.Intent();
+        intent.setSeq(7L); // the unresolved intent on the OLD task (stripped from the inheritance)
+        cp.setIntent(intent);
+        when(asyncTaskMapper.queryById(TASK_ID)).thenReturn(batchTask(AsyncTaskStatus.FAILURE, cp));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        assertFalse(service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry",
+            TicketSegment.RESOLUTION_RERUN_BATCH));
+
+        ArgumentCaptor<TicketSegment> segCaptor = ArgumentCaptor.forClass(TicketSegment.class);
+        verify(govTicketV2Service).dispatchBatchSegment(same(ticket), same(group), segCaptor.capture(),
+            eq(GovTicketV2Service.GHOST_VIA_RETRY));
+        // RERUN = the normal continuation — no skip marker; the cursor inheritance re-runs batch 7
+        assertNull(segCaptor.getValue().getPendingResolution());
+        Map<String, Object> inherited = segCaptor.getValue().getResumeCheckpoint();
+        assertNotNull(inherited);
+        assertEquals("99", inherited.get("cursor"));
+        assertFalse(inherited.containsKey("intent"));
+    }
+
+    @Test
+    public void resume_unresolvedSummary_skip_pendingResolutionRidesTheSegment() {
+        TicketSegment seg = unresolvedFailedSegment();
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(6);
+        when(asyncTaskMapper.queryById(TASK_ID)).thenReturn(batchTask(AsyncTaskStatus.FAILURE, cp));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        assertFalse(service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry",
+            TicketSegment.RESOLUTION_SKIP_BATCH));
+
+        ArgumentCaptor<TicketSegment> segCaptor = ArgumentCaptor.forClass(TicketSegment.class);
+        verify(govTicketV2Service).dispatchBatchSegment(same(ticket), same(group), segCaptor.capture(),
+            eq(GovTicketV2Service.GHOST_VIA_RETRY));
+        assertEquals(TicketSegment.RESOLUTION_SKIP_BATCH, segCaptor.getValue().getPendingResolution());
+        // the persisted runtime carries the marker too (the dispatch's own persist)
+        ArgumentCaptor<String> runtimeCaptor = ArgumentCaptor.forClass(String.class);
+        verify(stmtMapper, org.mockito.Mockito.atLeastOnce())
+            .updateExecSegments(eq(GROUP_ID), runtimeCaptor.capture());
+        assertEquals(TicketSegment.RESOLUTION_SKIP_BATCH,
+            TicketSegment.parseRuntime(runtimeCaptor.getValue()).get(0).getPendingResolution());
+    }
+
+    @Test
+    public void resume_plainFailedSummary_noResolutionRequired_directContinuation() {
+        // 普通段 FAILED (批重试耗尽/终止/失联无 intent) → retryGroup needs NO resolution
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_FAILED, TASK_ID);
+        seg.setSummary(new java.util.HashMap<>(Map.of("batchesDone", 6, "rowsDone", 30000)));
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        when(asyncTaskMapper.queryById(TASK_ID)).thenReturn(batchTask(AsyncTaskStatus.FAILURE, new DmlBatchCheckpoint()));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        assertFalse(service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry", null));
+
+        verify(govTicketV2Service).dispatchBatchSegment(same(ticket), same(group),
+            any(TicketSegment.class), eq(GovTicketV2Service.GHOST_VIA_RETRY));
+    }
+
+    @Test
+    public void resume_retryPendingSummary_isNotUnresolved_noGuard() {
+        // 裁决 #21 narrowing: a summary WITHOUT unresolvedIntent (e.g. retries exhausted — the
+        // intent carried retryPending) resumes directly
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_FAILED, TASK_ID);
+        seg.setSummary(new java.util.HashMap<>(Map.of("batchesDone", 6, "error", "retries exhausted")));
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+        when(asyncTaskMapper.queryById(TASK_ID)).thenReturn(batchTask(AsyncTaskStatus.FAILURE, new DmlBatchCheckpoint()));
+        when(autoJobMapper.queryByDependOnGroupId(GROUP_ID)).thenReturn(null);
+
+        assertFalse(service.resumeGroupUnderLock(ticket, GROUP_ID, "uid-retry", null));
+        verify(govTicketV2Service).dispatchBatchSegment(any(), any(), any(), anyString());
+    }
+
+    // ==================== N2: DML_BATCH_UNRESOLVED alert registration (design §8.3) ====================
+
+    private com.clougence.clouddm.console.web.component.alert.AlertPushService wireAlertPush() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush
+            = mock(com.clougence.clouddm.console.web.component.alert.AlertPushService.class);
+        ReflectionTestUtils.setField(service, "alertPushService", alertPush);
+        return alertPush;
+    }
+
+    @Test
+    public void completeDmlBatch_unresolvedTerminal_alertRegistered_deepLinkContext() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        Map<String, Object> summary = new java.util.HashMap<>(
+            Map.of("unresolvedIntent", Boolean.TRUE, "intentSeq", 7, "batchesDone", 6, "rowsDone", 30000));
+
+        assertTrue(service.completeDmlBatchSegmentUnderLock(ticket, group, 1, TASK_ID, false,
+            "批 7 执行结果未知", summary));
+
+        ArgumentCaptor<com.clougence.clouddm.console.web.component.alert.AlertContext> ctxCaptor
+            = ArgumentCaptor.forClass(com.clougence.clouddm.console.web.component.alert.AlertContext.class);
+        verify(alertPush).pushAlert(eq(PUID),
+            eq(com.clougence.clouddm.console.web.component.alert.AlertScene.DML_BATCH_UNRESOLVED), ctxCaptor.capture());
+        assertEquals(TICKET_ID, ctxCaptor.getValue().getTicketId());
+        assertEquals(OWNER, ctxCaptor.getValue().getApplicantUid());
+        assertEquals(DB, ctxCaptor.getValue().getDbName());
+        assertEquals("t_order", ctxCaptor.getValue().getTableName());
+        assertEquals(Integer.valueOf(1), ctxCaptor.getValue().getSegmentIndex());
+        assertEquals(Long.valueOf(7L), ctxCaptor.getValue().getIntentSeq());
+    }
+
+    @Test
+    public void completeDmlBatch_successTerminal_noAlert() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+
+        assertTrue(service.completeDmlBatchSegmentUnderLock(ticket, group, 1, TASK_ID, true, null,
+            Map.of("batchesDone", 10L)));
+
+        verify(alertPush, never()).pushAlert(anyString(), any(), any());
+    }
+
+    @Test
+    public void completeDmlBatch_casSkip_noAlert_exactlyOnce() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        // the segment already moved on (replayed hook) — the CAS skip returns BEFORE the alert
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_FAILED, TASK_ID);
+        DmTicketDbStmtDO group = group("FAILED", dmlBatchPlanJson(), runtimeJson(seg));
+
+        assertFalse(service.completeDmlBatchSegmentUnderLock(ticket, group, 1, TASK_ID, false,
+            "批 7 执行结果未知", Map.of("unresolvedIntent", Boolean.TRUE)));
+
+        verify(alertPush, never()).pushAlert(anyString(), any(), any());
+    }
+
+    @Test
+    public void repair_staleUnresolvedDeadJudge_alertRegistered() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        DmlBatchCheckpoint.Intent intent = new DmlBatchCheckpoint.Intent();
+        intent.setSeq(6L); // intent ∧ ¬retryPending = the window crash
+        cp.setIntent(intent);
+        cp.setLastTickAt(System.currentTimeMillis() - 400_000L);
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(batchTask(AsyncTaskStatus.RUNNING, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        verify(alertPush).pushAlert(eq(PUID),
+            eq(com.clougence.clouddm.console.web.component.alert.AlertScene.DML_BATCH_UNRESOLVED), any());
+    }
+
+    @Test
+    public void repair_taskFailureReplay_unresolved_alertRegistered() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        DmlBatchCheckpoint.Intent intent = new DmlBatchCheckpoint.Intent();
+        intent.setSeq(9L);
+        cp.setIntent(intent);
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1))
+            .thenReturn(batchTask(AsyncTaskStatus.FAILURE, cp));
+
+        service.repairGroupUnderLock(ticket, group);
+
+        verify(alertPush).pushAlert(eq(PUID),
+            eq(com.clougence.clouddm.console.web.component.alert.AlertScene.DML_BATCH_UNRESOLVED), any());
+    }
+
+    @Test
+    public void repair_taskMissing_noSummary_noAlert() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+        when(dmlBatchService.findTaskForTicketGroup(TICKET_ID, GROUP_ID, 1)).thenReturn(null);
+
+        service.repairGroupUnderLock(ticket, group);
+
+        verify(alertPush, never()).pushAlert(anyString(), any(), any());
+    }
+
+    @Test
+    public void alertRegistrationFailure_neverBreaksTheTerminalWrite() {
+        com.clougence.clouddm.console.web.component.alert.AlertPushService alertPush = wireAlertPush();
+        when(alertPush.pushAlert(anyString(), any(), any())).thenThrow(new RuntimeException("im down"));
+        TicketSegment seg = batchSegment(1, TicketSegment.STATUS_EXECUTING, TASK_ID);
+        DmTicketDbStmtDO group = group("EXECUTING", dmlBatchPlanJson(), runtimeJson(seg));
+
+        assertTrue(service.completeDmlBatchSegmentUnderLock(ticket, group, 1, TASK_ID, false,
+            "批 7 执行结果未知", Map.of("unresolvedIntent", Boolean.TRUE, "intentSeq", 7)));
+
+        // the segment/group FAILED writes proceeded despite the alert failure
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "FAILED", "批 7 执行结果未知");
+    }
+
+    @Test
+    public void dmlBatchSummary_skipsFrozen_additiveKey() {
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setBatchesDone(3);
+        cp.setCursor("50");
+        DmlBatchCheckpoint.SkipRecord skip = new DmlBatchCheckpoint.SkipRecord();
+        skip.setSeq(3L);
+        skip.setLo("20");
+        skip.setHi("50");
+        cp.setSkips(List.of(skip));
+
+        Map<String, Object> summary = TicketSegmentService.dmlBatchSummary(cp, null, false);
+        assertNotNull(summary.get("skippedBatches"));
+        // the legacy shape without skips is untouched (additive key absent)
+        assertNull(TicketSegmentService.dmlBatchSummary(new DmlBatchCheckpoint(), null, false)
+            .get("skippedBatches"));
     }
 
     // ==================== static helpers ====================

@@ -51,6 +51,14 @@ public class DmlBatchOpAuditObj {
     /** the statement text, truncated to {@link #SQL_MAX_LENGTH}. */
     private String  sqlSummary;
 
+    /**
+     * N2 (design §7.4): the window-crash manual-resolution annotation — set ONLY on the
+     * retryGroup resolution row (RERUN_BATCH / SKIP_BATCH); null on every dispatch row.
+     */
+    private String  resolution;
+    /** N2: the unresolved batch seq the resolution adjudicated (summary.intentSeq); resolution rows only. */
+    private Long    intentSeq;
+
     /** max length of the statement text stored in the audit row (the §8.2 sqlSummary≤500 caliber). */
     public static final int SQL_MAX_LENGTH = 500;
 }

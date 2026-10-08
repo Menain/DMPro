@@ -62,6 +62,41 @@ public class GovTicketV2CheckVO {
         // Display carrier: serialized into the group's precheck_result JSON under the
         // "dmlBatchRoutes" key (the execution-time authority stays the positional flags + plan).
         private List<DmlBatchRouteVO> dmlBatchRoutes;
+
+        // B7 N2 (design §8.1/§8.2, additive — null for every PASS result and every pre-B7 FAIL
+        // shape): the stable FAIL discriminator + the no-key rejection payload. The submit
+        // boundary turns a DML_NO_KEY FAIL into the typed DmlNoKeyRejectException so the
+        // controller-boundary trail (alert + DML_BATCH_REJECT audit, both OUTSIDE the rolled-back
+        // transaction) can fire without message-text sniffing; /check renders the red error
+        // exactly as before (failCode is additive display material for the N3 frontend).
+        private String              failCode;          // v1 value domain: DML_NO_KEY
+        private DmlNoKeyRejectVO    dmlNoKeyReject;    // populated iff failCode == DML_NO_KEY
+    }
+
+    /** the stable failCode of the no-key large-DML rejection (裁决 #5, design §8.1). */
+    public static final String FAIL_CODE_DML_NO_KEY = "DML_NO_KEY";
+
+    /**
+     * B7 N2: the DML_NO_KEY rejection payload (design §8.2 ② — the audit/alert context that
+     * rides the typed exception OUT of the rolled-back submit transaction: no ticket row exists,
+     * so this carrier is the only source of dsId/table/rows/SQL-summary for the trail).
+     * {@code sqlSummary} is truncated to 500 chars at construction (the §8.2 caliber).
+     */
+    @Getter
+    @Setter
+    public static class DmlNoKeyRejectVO {
+        private Long   dsId;
+        private String dbName;
+        private String tableName;
+        /** the threshold signal that fired (EXPLAIN estimate, else the probed table rows). */
+        private Long   estimatedRows;
+        private Long   rowThreshold;
+        /** the probe's human-copy reason (no PK/UK, nullable-UK-only...). */
+        private String keyDetail;
+        /** the rejected statement's text, ≤500 chars. */
+        private String sqlSummary;
+        /** the statement's 1-based exec_order position (R11 domain). */
+        private Integer stmtIndex;
     }
 
     /**

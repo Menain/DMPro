@@ -71,6 +71,16 @@ public class DmlBatchAsyncTaskConfig {
     /** false = self-referencing SET / non-deterministic function (drives the resolution copy, §7.3). */
     private Boolean                     idempotent;
 
+    /**
+     * N2 window-crash resolution (design §7.4): {@code SKIP_BATCH} when this task was launched
+     * by a retryGroup carrying the SKIP verdict over an UNRESOLVED segment — the FIRST tick
+     * re-derives one boundary from the inherited cursor and advances it WITHOUT executing the
+     * DML (the skip evidence lands in the checkpoint + segment summary), then clears this marker
+     * and continues normally. {@code RERUN_BATCH} needs no marker (the normal continuation from
+     * the inherited cursor IS the re-run). Null on every first dispatch and every RERUN resume.
+     */
+    private String                      pendingResolution;
+
     // ---- mutable execution state ----
     private DmlBatchCheckpoint          checkpoint;
 }

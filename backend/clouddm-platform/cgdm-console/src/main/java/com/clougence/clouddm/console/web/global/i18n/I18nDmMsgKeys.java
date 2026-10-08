@@ -634,4 +634,34 @@ public enum I18nDmMsgKeys {
     /** dock 任务标题/描述(showInDock) */
     DML_BATCH_ASYNC_TITLE_MESSAGE,
     DML_BATCH_ASYNC_DESC_MESSAGE,
+
+    // -- Lock-free DML N2 (control plane / resolution / throttling / alerts; design §15) --
+    /** 控制端点:未找到该组绑定的批任务 */
+    DML_BATCH_TASK_NOT_FOUND,
+    /** 控制端点:任务当前状态不支持该操作({0}=状态) */
+    DML_BATCH_TASK_STATE_INVALID,
+    /** 控制端点:任务运行在其他控制台节点(主机亲和,暂停/终止需宿主节点发起) */
+    DML_BATCH_TASK_REMOTE_RUNNING,
+    /** 控制端点:该组批执行段不在 EXECUTING(归属/段状态校验,design §6.1) */
+    DML_BATCH_SEGMENT_NOT_EXECUTING,
+    /** dock guard:DML_BATCH ticket-bound 任务四操作全拒(design §6.5,比 B6 严:resume 亦拒) */
+    DML_BATCH_TASK_DOCK_OP_FORBIDDEN,
+    /** retryGroup resolution 守卫:UNRESOLVED 段缺 dmlBatchResolution → 拒绝(镜像 B6 RETRY_UNSUPPORTED 收窄) */
+    GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED,
+    /** 主从延迟不可见(探测失败/权限缺失)→ 限流退化固定间隔(design §6.3,never-throw 降级) */
+    DML_BATCH_LAG_UNKNOWN,
+
+    // N2 AlertScene 文案(DML_LARGE_TABLE_NO_KEY / DML_BATCH_UNRESOLVED,zh/en 双键,B6 先例)
+    ALERT_PUSH_DML_NO_KEY_TITLE,
+    ALERT_PUSH_DML_NO_KEY_APPLICANT,
+    ALERT_PUSH_DML_NO_KEY_TABLE,
+    ALERT_PUSH_DML_NO_KEY_STATS,
+    ALERT_PUSH_DML_NO_KEY_VIOLATION,
+    ALERT_PUSH_DML_NO_KEY_SQL,
+    ALERT_PUSH_DML_UNRESOLVED_TITLE,
+    ALERT_PUSH_DML_UNRESOLVED_APPLICANT,
+    ALERT_PUSH_DML_UNRESOLVED_TABLE,
+    ALERT_PUSH_DML_UNRESOLVED_BATCH,
+    ALERT_PUSH_DML_UNRESOLVED_ACTION,
+    ALERT_PUSH_DML_UNRESOLVED_LINK,
 }

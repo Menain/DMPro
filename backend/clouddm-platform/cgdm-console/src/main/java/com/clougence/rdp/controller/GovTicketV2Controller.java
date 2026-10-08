@@ -66,6 +66,10 @@ public class GovTicketV2Controller {
 
     @Resource
     private GovTicketV2Service govTicketV2Service;
+    // B7 N2: the no-key rejection trail (alert + DML_BATCH_REJECT audit) — fires at the
+    // transaction boundary only (design §8.2), never inside the rolled-back submit transaction.
+    @Resource
+    private com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchRejectTrailService dmlBatchRejectTrailService;
 
     @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
     @RequestMapping(value = "/dbChangeV2/availablePairs", method = RequestMethod.POST)
@@ -97,7 +101,27 @@ public class GovTicketV2Controller {
     public ResWebData<?> submit(@Valid @RequestBody GovTicketV2SubmitFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
-        GovTicketV2SubmitVO data = govTicketV2Service.submit(puid, uid, fo);
+        GovTicketV2SubmitVO data;
+        try {
+            data = govTicketV2Service.submit(puid, uid, fo);
+        } catch (com.clougence.clouddm.console.web.service.dmlbatch.DmlNoKeyRejectException e) {
+            // B7 N2 (裁决 #16, design §8.2): the no-key rejection trail fires HERE, at the
+            // controller boundary — the exception piercing the service proxy means the submit
+            // transaction's rollback is COMPLETE, so the IM alert (no-tx immediate send) and the
+            // DML_BATCH_REJECT audit row (autocommit insert) SURVIVE. The trail service is
+            // never-throw internally (①② each guarded); this outer guard is the boundary-level
+            // belt of the "绝不吞/换原拒绝异常" contract — the rejection semantics are the first
+            // priority, the trail is strictly secondary. /check previews never reach this catch
+            // (no submit act — 防轰炸纪律).
+            try {
+                dmlBatchRejectTrailService.trailNoKeyReject(puid, uid, request.getRequestURI(),
+                    request.getRemoteAddr(), e);
+            } catch (RuntimeException trailFailure) {
+                log.error("[GovTicketV2] the no-key rejection trail failed (the rejection itself is rethrown unchanged)",
+                    trailFailure);
+            }
+            throw e;
+        }
         return ResWebDataUtils.buildSuccess(data);
     }
 
@@ -106,7 +130,11 @@ public class GovTicketV2Controller {
     public ResWebData<?> retryGroup(@Valid @RequestBody GovTicketV2GroupIdFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
-        govTicketV2Service.retryGroup(puid, uid, fo.getGroupId());
+        // B7 N2 (design §7.4): the additive dmlBatchResolution rides the same endpoint — the
+        // service guards it (required iff the target segment froze unresolvedIntent) and the
+        // permission stays RefPrimaryOrMaintainer (the retry entry's existing gate; the frontend
+        // button VISIBILITY additionally keys on DM_GHOST_EXEC — N3, 裁决 #15).
+        govTicketV2Service.retryGroup(puid, uid, fo.getGroupId(), fo.getDmlBatchResolution());
         return ResWebDataUtils.buildSuccess();
     }
 

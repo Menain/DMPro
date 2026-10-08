@@ -50,4 +50,18 @@ public class AlertContext {
 
     public static final String RISK_NO_UNIQUE_KEY = "NO_UNIQUE_KEY";
     public static final String RISK_TUNNEL        = "TUNNEL_UNSUPPORTED";
+
+    // ---- B7 N2 DML scenes (additive — the GHOST copy builder never reads these) ----
+
+    /**
+     * DML_LARGE_TABLE_NO_KEY: the rejected statement's text, truncated to 500 chars by the
+     * caller (the §8.2 sqlSummary caliber). No deep link for this scene — the ticket never
+     * landed (ticketId stays 0 and the copy builder must not render a link).
+     */
+    private String  sqlSummary;
+
+    /** DML_BATCH_UNRESOLVED: the failing segment's 1-based segIdx (batch location copy). */
+    private Integer segmentIndex;
+    /** DML_BATCH_UNRESOLVED: the unresolved batch seq frozen in the segment summary (intentSeq). */
+    private Long    intentSeq;
 }

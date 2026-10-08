@@ -126,9 +126,56 @@ public class AlertPushService {
         switch (scene) {
             case GHOST_LARGE_TABLE_NO_PK:
                 return buildGhostLargeTableMessage(ctx);
+            case DML_LARGE_TABLE_NO_KEY:
+                return buildDmlNoKeyMessage(ctx);
+            case DML_BATCH_UNRESOLVED:
+                return buildDmlUnresolvedMessage(ctx);
             default:
                 return DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_GHOST_TITLE.name(), ctx.getTicketId());
         }
+    }
+
+    /**
+     * B7 N2 (裁决 #5/#16, design §8.2): the no-key rejection copy — applicant + table + rows +
+     * the §9.8.3 violation statement + the SQL summary (truncated to 500 by the caller). NO deep
+     * link: the submission was rejected and the ticket never landed (the copy says so).
+     */
+    private String buildDmlNoKeyMessage(AlertContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_TITLE.name()));
+        sb.append("\n").append(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_APPLICANT.name(), resolveUsername(ctx.getApplicantUid())));
+        String table = (StringUtils.isBlank(ctx.getDbName()) ? "" : ctx.getDbName() + ".")
+                       + StringUtils.trimToEmpty(ctx.getTableName());
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_TABLE.name(), table));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_STATS.name(),
+                display(ctx.getTableRows()), display(ctx.getRowThreshold())));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_VIOLATION.name()));
+        if (StringUtils.isNotBlank(ctx.getSqlSummary())) {
+            sb.append("\n").append(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.ALERT_PUSH_DML_NO_KEY_SQL.name(), ctx.getSqlSummary()));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * B7 N2 (design §8.3): the window-crash copy — deep link + the segment/batch location + the
+     * manual-verdict guidance (人工核对后重跑/跳过). The ticket exists here (unlike the NO_KEY scene).
+     */
+    private String buildDmlUnresolvedMessage(AlertContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_TITLE.name(), ctx.getTicketId()));
+        sb.append("\n").append(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_APPLICANT.name(), resolveUsername(ctx.getApplicantUid())));
+        String table = (StringUtils.isBlank(ctx.getDbName()) ? "" : ctx.getDbName() + ".")
+                       + StringUtils.trimToEmpty(ctx.getTableName());
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_TABLE.name(), table));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_BATCH.name(),
+                display(ctx.getSegmentIndex() == null ? null : ctx.getSegmentIndex().longValue()),
+                display(ctx.getIntentSeq())));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_ACTION.name()));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DML_UNRESOLVED_LINK.name(), ctx.getTicketId()));
+        return sb.toString();
     }
 
     private String buildGhostLargeTableMessage(AlertContext ctx) {

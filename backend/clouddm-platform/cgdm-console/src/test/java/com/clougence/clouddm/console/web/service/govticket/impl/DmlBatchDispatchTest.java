@@ -258,6 +258,75 @@ public class DmlBatchDispatchTest {
         verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
     }
 
+    // ==================== N2: audit task-fact decoration (N1b check handover #3) ====================
+
+    private com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper wireExecDal() {
+        com.clougence.clouddm.platform.dal.access.ExecutionDal execDal
+            = mock(com.clougence.clouddm.platform.dal.access.ExecutionDal.class);
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper taskMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper.class);
+        when(execDal.asyncTaskMapper()).thenReturn(taskMapper);
+        ReflectionTestUtils.setField(service, "execDal", execDal);
+        return taskMapper;
+    }
+
+    private static com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO submittedTaskRow() {
+        com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+            = new com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig();
+        cfg.setBizId("batch-biz-77");
+        com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams params
+            = new com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams();
+        params.setBatchSize(2000);
+        cfg.setEffectiveParams(params);
+        com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO row
+            = new com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO();
+        row.setId(TASK_ID);
+        row.setConfigData(com.clougence.utils.JsonUtils.toJson(cfg));
+        return row;
+    }
+
+    @Test
+    public void dispatch_auditObj_taskBizIdAndBatchSize_filledFromTaskRow() {
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper taskMapper = wireExecDal();
+        when(taskMapper.queryById(TASK_ID)).thenReturn(submittedTaskRow());
+
+        service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
+
+        ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
+        verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
+            isNull(), any(), captor.capture(), any(), any(), any());
+        assertEquals("batch-biz-77", captor.getValue().getTaskBizId());
+        assertEquals(Integer.valueOf(2000), captor.getValue().getBatchSize());
+    }
+
+    @Test
+    public void dispatch_auditDecoration_taskRowMissing_fieldsStayNull_auditProceeds() {
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper taskMapper = wireExecDal();
+        when(taskMapper.queryById(TASK_ID)).thenReturn(null);
+
+        service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
+
+        ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
+        verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
+            isNull(), any(), captor.capture(), any(), any(), any());
+        assertNull(captor.getValue().getTaskBizId());
+        assertNull(captor.getValue().getBatchSize());
+    }
+
+    @Test
+    public void dispatch_auditDecoration_lookupThrows_neverBreaksTheDispatch() {
+        com.clougence.clouddm.platform.dal.mapper.execution.DmExecAsyncTaskMapper taskMapper = wireExecDal();
+        when(taskMapper.queryById(TASK_ID)).thenThrow(new RuntimeException("task store down"));
+
+        service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
+
+        // the dispatch stands (taskId recorded, group EXECUTING) and the audit still fires
+        assertEquals(Long.valueOf(TASK_ID), segment.getTaskId());
+        verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
+        verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
+            isNull(), any(), any(DmlBatchOpAuditObj.class), any(), any(), any());
+    }
+
     @Test
     public void dispatch_multiBatchSegmentPlan_runtimeShapeIsAdditive() {
         // exec_segments carrier compatibility: a DML_BATCH runtime entry round-trips through the

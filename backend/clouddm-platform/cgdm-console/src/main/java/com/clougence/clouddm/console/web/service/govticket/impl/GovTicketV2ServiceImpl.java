@@ -122,6 +122,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
 
     /** B7 N1b: requestUri marker of the system-side DML_BATCH_EXECUTE audit row (no HTTP request exists) */
     private static final String DML_BATCH_AUTO_DISPATCH_URI = "/system/dbChangeV2/dmlBatch/auto-dispatch";
+    /** N2: the audit operationUri marker of the window-crash manual-resolution retry (design §7.4). */
+    private static final String DML_BATCH_RESOLUTION_URI = "/system/dbChangeV2/dmlBatch/resolution";
 
     private static final RuleLevel[] BLOCK_LEVELS = { RuleLevel.FAILURE, RuleLevel.TICKET };
 
@@ -232,8 +234,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         for (GovTicketV2SubmitFO.GroupInput gi : fo.getGroups()) {
             GovTicketV2CheckVO.GroupResult gr = runPrecheck(puid, uid, ticketType, gi.getPairId(), gi.getSqlContent());
             if ("FAIL".equals(gr.getCheckStatus())) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_TICKET_V2_PRECHECK_FAILED.name(), gr.getDbName(), gr.getErrorMessage()));
+                throwPrecheckFailure(gr);
             }
             prechecks.add(new GroupPrecheck(0L, gi.getPairId(), gi.getSqlContent(), gr, buildPrecheckResultJson(gr)));
         }
@@ -392,8 +393,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     // ==================== retryGroup ====================
 
     @Override
-    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void retryGroup(String puid, String uid, long groupId) {
+        // B7 N2: the legacy 3-arg form delegates with a null resolution — byte-identical behavior
+        // for every non-DML_BATCH group and every non-unresolved DML_BATCH failure (普通段续跑).
+        retryGroup(puid, uid, groupId, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public void retryGroup(String puid, String uid, long groupId, String dmlBatchResolution) {
         DmTicketDbStmtDO group = ticketDbStmtDal.stmtMapper().queryById(groupId);
         if (group == null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_TICKET_V2_GROUP_NOT_FOUND.name(), groupId));
@@ -443,10 +451,22 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // replay byte-for-byte (regression pins).
         if (StringUtils.isNotBlank(group.getExecSegments())
             || com.clougence.clouddm.console.web.component.governance.TicketSegment.isSegmentedPlan(group.getPrecheckResult())) {
+            // B7 N2 (design §7.4): capture the resolution trail material BEFORE the resume —
+            // resetSegmentForRerun inside the orchestrator clears the summary that carries the
+            // unresolvedIntent/intentSeq markers. Best-effort read of the pre-lock group row (the
+            // AUTHORITATIVE guard runs under the lock inside resumeGroupUnderLock; this capture
+            // only feeds the event+audit trail after a successful resume).
+            DmlResolutionTrail resolutionTrail = dmlBatchResolution == null ? null
+                : captureDmlResolutionTrail(group, dmlBatchResolution);
             // Lock-order discipline: the ticket row lock precedes ANY group-row write (the
             // retryGhostGroup / handleV2JobCompletion single-lock contract — no AB-BA deadlock).
             approvalDal.approvalMapper().selectByIdForUpdate(ticket.getId());
-            boolean groupTerminalByProbe = ticketSegmentService.resumeGroupUnderLock(ticket, group.getId(), uid);
+            // N2: the null-resolution path keeps the B6 3-arg call byte-identical (the frozen
+            // RetryGroup pins verify THAT signature on their orchestrator mock); only an explicit
+            // verdict reaches the 4-arg overload.
+            boolean groupTerminalByProbe = dmlBatchResolution == null
+                ? ticketSegmentService.resumeGroupUnderLock(ticket, group.getId(), uid)
+                : ticketSegmentService.resumeGroupUnderLock(ticket, group.getId(), uid, dmlBatchResolution);
             // Step-times contract (:415): the v2 (re)dispatch closes PREPARATION at the real
             // dispatch moment (legacy retryGroup shape below).
             this.approvalStateService.markExecutionDispatched(ticket.getBizId());
@@ -456,6 +476,12 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 // ticket is outside the WAIT_EXEC sweep IN set, so THIS call must drive the shared
                 // aggregation tail or the ticket sticks at EXEC_FAIL over all-SUCCESS groups.
                 aggregateTicketAfterSegmentResume(ticket);
+            }
+            if (resolutionTrail != null) {
+                // 人工裁决双留痕 (裁决 #13, design §7.4): event + audit AFTER the successful resume
+                // (a rejected resume — RESOLUTION_REQUIRED / active-body — leaves no trail).
+                appendDmlResolutionEvent(ticket.getId(), uid, resolutionTrail);
+                auditDmlResolution(ticket, uid, resolutionTrail);
             }
             return;
         }
@@ -722,6 +748,7 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // already-submitted task (GHOST_EXECUTE discipline — the task exists regardless).
         com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj auditObj
             = buildDmlBatchAuditObj(ticket, group, segment, via);
+        decorateDmlBatchAuditTaskFacts(auditObj, segment.getTaskId());
         try {
             rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
                 DML_BATCH_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
@@ -761,6 +788,36 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         return obj;
     }
 
+    /**
+     * N2 (N1b check handover #3): fill the audit obj's task facts — taskBizId (the dm_mon_biz_log
+     * forensics key) + the dispatch-frozen batchSize — via segment.taskId → the submitted task row
+     * → its configData. NEVER-THROW audit decoration (the audit try-catch below already keeps a
+     * failing audit from rolling the dispatch back; a failing DECORATION must not fail the audit
+     * either — an unresolvable row leaves the two fields null, which is exactly the pre-N2 shape).
+     */
+    private void decorateDmlBatchAuditTaskFacts(
+            com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj auditObj, Long taskId) {
+        if (auditObj == null || taskId == null) {
+            return;
+        }
+        try {
+            com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO taskRow
+                = this.execDal.asyncTaskMapper().queryById(taskId);
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+                = com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl.parseTaskConfig(taskRow);
+            if (cfg == null) {
+                return;
+            }
+            auditObj.setTaskBizId(cfg.getBizId());
+            if (cfg.getEffectiveParams() != null) {
+                auditObj.setBatchSize(cfg.getEffectiveParams().getBatchSize());
+            }
+        } catch (RuntimeException e) {
+            log.warn("[GovTicketV2] DML_BATCH audit task-fact decoration failed for taskId {} (audit proceeds without them)",
+                taskId, e);
+        }
+    }
+
     /** positional ghost-route lookup of one group (id-ASC index — see GhostRouteFlags contract). */
     private boolean isGhostRoutedGroup(ApprovalMO mo, DmTicketDbStmtDO group) {
         if (!com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.anyRouted(mo)) {
@@ -774,6 +831,101 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             }
         }
         return false;
+    }
+
+    /** the N2 resolution trail material (captured pre-resume; the reset clears the summary). */
+    private static final class DmlResolutionTrail {
+        long    groupId;
+        int     segmentIndex;
+        String  resolution;
+        Long    intentSeq;
+        String  table;
+        Long    dsId;
+        String  dbName;
+    }
+
+    /**
+     * Best-effort pre-resume capture of the resolution trail material (design §7.4 双留痕): the
+     * first resumable DML_BATCH segment whose frozen summary carries unresolvedIntent. Null when
+     * the shape does not match (a non-DML target / no unresolved marker — the authoritative guard
+     * lives under the lock inside resumeGroupUnderLock; a null trail simply writes no event/audit).
+     * Never-throw: an unparsable runtime degrades to no trail, never blocks the retry itself.
+     */
+    private static DmlResolutionTrail captureDmlResolutionTrail(DmTicketDbStmtDO group, String resolution) {
+        try {
+            List<com.clougence.clouddm.console.web.component.governance.TicketSegment> runtime
+                = com.clougence.clouddm.console.web.component.governance.TicketSegment.parseRuntime(group.getExecSegments());
+            if (runtime == null) {
+                return null;
+            }
+            com.clougence.clouddm.console.web.component.governance.TicketSegment target
+                = com.clougence.clouddm.console.web.component.governance.TicketSegment.firstResumable(runtime);
+            if (target == null
+                || !com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_DML_BATCH.equals(target.getType())
+                || !com.clougence.clouddm.console.web.component.governance.TicketSegmentService.isUnresolvedSummary(target.getSummary())) {
+                return null;
+            }
+            DmlResolutionTrail trail = new DmlResolutionTrail();
+            trail.groupId = group.getId();
+            trail.segmentIndex = target.getSegIdx();
+            trail.resolution = resolution;
+            Object seq = target.getSummary().get("intentSeq");
+            trail.intentSeq = seq instanceof Number ? ((Number) seq).longValue() : null;
+            trail.table = target.getTable();
+            trail.dsId = group.getDsId();
+            trail.dbName = group.getDbName();
+            return trail;
+        } catch (RuntimeException e) {
+            return null; // trail-only capture — the retry proceeds regardless
+        }
+    }
+
+    /** the resolution event trail (裁决 #13: 高风险人工干预 — event + audit 双留痕). */
+    private void appendDmlResolutionEvent(long ticketId, String uid, DmlResolutionTrail trail) {
+        DmDbChangeEventDO event = new DmDbChangeEventDO();
+        event.setTicketId(ticketId);
+        event.setEventType(GovEventType.DML_BATCH_RESOLUTION.name());
+        event.setFromStatus(null);
+        event.setToStatus(null);
+        event.setOperatorUid(uid);
+        Map<String, Object> data = new HashMap<>();
+        data.put("groupId", trail.groupId);
+        data.put("segmentIndex", trail.segmentIndex);
+        data.put("resolution", trail.resolution);
+        data.put("intentSeq", trail.intentSeq);
+        event.setEventData(JsonUtils.toJson(data));
+        dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    /**
+     * the resolution audit twin (design §7.4: RERUN/SKIP reuse AuditType.DML_BATCH_EXECUTE — obj
+     * annotated resolution+intentSeq; 四点注册成本为零). Subject = the RETRY OPERATOR (the human
+     * who adjudicated — unlike the dispatch row whose subject is the submitter, this is a manual
+     * high-risk intervention). Audit failure never rolls the resumed dispatch back (GHOST_EXECUTE
+     * discipline — the fresh task is already launched at this point).
+     */
+    private void auditDmlResolution(DmApprovalDO ticket, String uid, DmlResolutionTrail trail) {
+        try {
+            com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj obj
+                = new com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj();
+            obj.setTicketId(ticket.getId());
+            obj.setGroupId(trail.groupId);
+            obj.setSegmentIndex(trail.segmentIndex);
+            obj.setVia(GHOST_VIA_RETRY);
+            obj.setDsId(trail.dsId);
+            obj.setDbName(trail.dbName);
+            obj.setTableName(trail.table);
+            obj.setResolution(trail.resolution);
+            obj.setIntentSeq(trail.intentSeq);
+            rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), uid,
+                DML_BATCH_RESOLUTION_URI, null, trail.dsId, obj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.DML_BATCH_EXECUTE,
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+        } catch (RuntimeException e) {
+            log.error("[GovTicketV2] DML_BATCH resolution audit failed for ticket {} group {} (the resume is kept)",
+                ticket.getId(), trail.groupId, e);
+        }
     }
 
     /**
@@ -1134,8 +1286,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             // Resolve pairId from the group row (pair set is frozen during REVISION)
             GovTicketV2CheckVO.GroupResult gr = runPrecheck(puid, uid, ticketType, group.getPairId(), gi.getSqlContent());
             if ("FAIL".equals(gr.getCheckStatus())) {
-                throw new ErrorMessageException(DmI18nUtils.getMessage(
-                    I18nDmMsgKeys.GOV_TICKET_V2_PRECHECK_FAILED.name(), gr.getDbName(), gr.getErrorMessage()));
+                // N2: same typed shape as the submit loop (a resubmitted no-key group throws the
+                // typed DmlNoKeyRejectException too — the resubmit boundary trail is a documented
+                // leftover; the typed exception degrades to plain ErrorMessageException semantics
+                // at the handler, so the rejection itself is identical either way)
+                throwPrecheckFailure(gr);
             }
             prechecks.add(new GroupPrecheck(group.getId(), group.getPairId(), gi.getSqlContent(), gr, buildPrecheckResultJson(gr)));
         }
@@ -2068,13 +2223,33 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             if (com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchKeyProbe.STATE_NO_KEY
                     .equals(probe.getKeyState())) {
                 // 超阈值 ∧ 形状门通过 ∧ 确认无可用键 → 组级 FAIL (裁决 #5; the /check red error +
-                // submit whole-ticket rejection ride the existing precheck-FAIL machinery; the
-                // alert + DML_BATCH_REJECT audit hooks are N2 controller-boundary additions)
+                // submit whole-ticket rejection ride the existing precheck-FAIL machinery)
                 result.setCheckStatus("FAIL");
                 result.setErrorMessage(DmI18nUtils.getMessage(
                     I18nDmMsgKeys.GOV_TICKET_V2_DML_NO_KEY_REJECT.name(),
                     dbName + "." + table, display(signalRows), display(threshold),
                     probe.getKeyDetail() == null ? "-" : probe.getKeyDetail()));
+                // N2 (design §8.2, 未决⑦ 定形): the typed rejection payload — failCode +
+                // context ride the GroupResult so the SUBMIT boundary can throw the typed
+                // DmlNoKeyRejectException (the controller-boundary alert + DML_BATCH_REJECT
+                // audit fire OUTSIDE the rolled-back transaction off this carrier). /check
+                // exposes both keys additively (red error rendering unchanged).
+                result.setFailCode(GovTicketV2CheckVO.FAIL_CODE_DML_NO_KEY);
+                GovTicketV2CheckVO.DmlNoKeyRejectVO reject = new GovTicketV2CheckVO.DmlNoKeyRejectVO();
+                reject.setDsId(dsDO.getId());
+                reject.setDbName(dbName);
+                reject.setTableName(table);
+                reject.setEstimatedRows(signalRows);
+                reject.setRowThreshold(threshold);
+                reject.setKeyDetail(probe.getKeyDetail());
+                reject.setStmtIndex(stmtIndex);
+                String rejectedSql = script.getScript();
+                reject.setSqlSummary(rejectedSql != null && rejectedSql.length()
+                    > com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj.SQL_MAX_LENGTH
+                        ? rejectedSql.substring(0,
+                            com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj.SQL_MAX_LENGTH)
+                        : rejectedSql);
+                result.setDmlNoKeyReject(reject);
                 return outcome; // rejected — submit refuses the whole ticket; nothing else to evaluate
             }
             if (!com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchKeyProbe.STATE_OK
@@ -2269,6 +2444,25 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         });
         summary.setMessages(messages);
         return summary;
+    }
+
+    /**
+     * Precheck FAIL → the whole-ticket rejection exception (submit + resubmit loops share this
+     * single shape). N2 (design §8.2, 未决⑦ 定形): a DML_NO_KEY failure is thrown TYPED — the
+     * submit boundaries (GovTicketV2Controller + the open-API submitTicket) catch the type to
+     * fire the OUT-OF-TRANSACTION alert + DML_BATCH_REJECT audit trail after the rollback, then
+     * rethrow. The user-facing message is byte-identical to the generic shape (the
+     * GOV_TICKET_V2_PRECHECK_FAILED wrapper), and the typed exception IS-A ErrorMessageException,
+     * so the GlobalExceptionHandler semantics never change.
+     */
+    private static void throwPrecheckFailure(GovTicketV2CheckVO.GroupResult gr) {
+        String message = DmI18nUtils.getMessage(
+            I18nDmMsgKeys.GOV_TICKET_V2_PRECHECK_FAILED.name(), gr.getDbName(), gr.getErrorMessage());
+        if (GovTicketV2CheckVO.FAIL_CODE_DML_NO_KEY.equals(gr.getFailCode()) && gr.getDmlNoKeyReject() != null) {
+            throw new com.clougence.clouddm.console.web.service.dmlbatch.DmlNoKeyRejectException(
+                message, gr.getDmlNoKeyReject());
+        }
+        throw new ErrorMessageException(message);
     }
 
     private String buildPrecheckResultJson(GovTicketV2CheckVO.GroupResult gr) {

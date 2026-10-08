@@ -87,6 +87,12 @@ public class DockTaskController {
             // writeback + audit, while a raw dock cancel would kill the tracking task WITHOUT any
             // ticket writeback (the group stays EXECUTING until the sweep judges it dead).
             return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_TASK_DOCK_OP_FORBIDDEN.name()));
+        } else if (isTicketBoundDmlBatchTask(taskDO)) {
+            // B7 N2 dock guard (design §6.5): a raw dock cancel would flip the task CANCEL
+            // WITHOUT the ticket writeback ordering the stop endpoint guarantees (event trail +
+            // the isCancel-terminal ABORTED copy); the sweep would advance the segment as a plain
+            // lost-writeback failure. The ticket-chain stop endpoint is the single entry.
+            return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_TASK_DOCK_OP_FORBIDDEN.name()));
         } else {
             this.scheduleService.cancelTask(fo.getTaskId(), DmI18nUtils.getMessage(I18nDmMsgKeys.TASK_CANCEL_AT_CONSOLE_MESSAGE.name()));
             return ResWebDataUtils.buildSuccess();
@@ -108,6 +114,11 @@ public class DockTaskController {
             // over a live migration. Ticket-form pause/resume lives on the ticket detail page
             // (throttle flag, task keeps tracking). Standalone GHOST tasks are NOT affected.
             return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_TASK_DOCK_OP_FORBIDDEN.name()));
+        } else if (isTicketBoundDmlBatchTask(taskDO)) {
+            // B7 N2 dock guard (design §6.5): the ticket-chain pause endpoint owns the batch
+            // pause (batch-granularity semantics + the DML_BATCH_PAUSE event trail); a raw dock
+            // pause would settle the task into PAUSE with NO trail and no ticket-chain knowledge.
+            return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_TASK_DOCK_OP_FORBIDDEN.name()));
         } else {
             this.scheduleService.pauseTask(fo.getTaskId(), DmI18nUtils.getMessage(I18nDmMsgKeys.TASK_PAUSE_AT_CONSOLE_MESSAGE.name()));
             return ResWebDataUtils.buildSuccess();
@@ -130,6 +141,13 @@ public class DockTaskController {
             // falsely FAILing the live migration. The recovery entry of a ticket-bound task is the
             // ticket-chain retryGroup (which rebuilds session AND task), never a dock retry.
             return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.GHOST_TASK_DOCK_OP_FORBIDDEN.name()));
+        } else if (isTicketBoundDmlBatchTask(taskDO)) {
+            // B7 N2 dock guard (design §6.5): a raw dock retry of a terminal batch task would
+            // re-run its tick loop over the STALE checkpoint with the segment possibly already
+            // rebuilt by retryGroup (the taskId cross-check, debt #5, is the second line of
+            // defense — the guard is the first). Recovery entry = retryGroup (checkpoint
+            // inheritance + the resolution guard for UNRESOLVED shapes), never a dock retry.
+            return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_TASK_DOCK_OP_FORBIDDEN.name()));
         } else {
             this.scheduleService.retryTask(fo.getTaskId(), DmI18nUtils.getMessage(I18nDmMsgKeys.TASK_RETRY_AT_CONSOLE_MESSAGE.name()));
             return ResWebDataUtils.buildSuccess();
@@ -144,6 +162,16 @@ public class DockTaskController {
         DmExecAsyncTaskDO taskDO = this.executionDal.asyncTaskMapper().queryByIdAndOwnerUid(fo.getTaskId(), uid);
         if (taskDO == null) {
             return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.TASK_NOT_EXIST_ERROR.name(), fo.getTaskId()));
+        } else if (isTicketBoundDmlBatchTask(taskDO)) {
+            // B7 N2 dock guard (design §6.5 — STRICTER than B6: resume is rejected too). The B6
+            // ghost resume stays unguarded because its pause is a tool-level throttle with the
+            // tracker still polling; the B7 pause is the framework's isPause state machine whose
+            // SINGLE legitimate entry is the ticket-chain resume endpoint (with its
+            // DML_BATCH_RESUME event trail and segment-state validation). A dock/ticket-chain
+            // dual entry would interleave untrailed resumes with the trail-bearing ones.
+            // (GHOST tasks keep the legacy unguarded resume — the ghost predicate above does not
+            // match DML_BATCH and this one does not match GHOST.)
+            return ResWebDataUtils.buildError(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_TASK_DOCK_OP_FORBIDDEN.name()));
         } else {
             this.scheduleService.resumeTask(fo.getTaskId(), DmI18nUtils.getMessage(I18nDmMsgKeys.TASK_RESUME_AT_CONSOLE_MESSAGE.name()));
             return ResWebDataUtils.buildSuccess();
@@ -172,6 +200,34 @@ public class DockTaskController {
         }
         try {
             GhostAsyncTaskConfig cfg = JsonUtils.toObj(taskDO.getConfigData(), GhostAsyncTaskConfig.class);
+            return cfg != null && cfg.getTicketId() != null;
+        } catch (Exception e) {
+            // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception
+            return false;
+        }
+    }
+
+    /**
+     * B7 N2 dock guard predicate (design §6.5): bizType=DML_BATCH ∧ the configData ticket binding
+     * present (ticketId non-null — the B6 prompt caliber verbatim). Guards ALL FOUR operations
+     * (pause/cancel/retry AND resume — stricter than the ghost three: the batch isPause state
+     * machine keeps a SINGLE entry, the ticket-chain control endpoints; the ghost resume stays
+     * unguarded because its pause is a tool-level throttle with the tracker still polling).
+     * Standalone DML_BATCH tasks DO NOT EXIST in v1 (the B8 seam keeps the binding nullable —
+     * the fail-open direction is structural here); an unparsable configData fails OPEN to the
+     * legacy dock behavior (a batch-chain task always carries a machine-written binding — the
+     * B6 discipline verbatim).
+     */
+    static boolean isTicketBoundDmlBatchTask(DmExecAsyncTaskDO taskDO) {
+        if (taskDO == null
+            || !com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchService.BIZ_TYPE.equals(taskDO.getBizType())
+            || StringUtils.isBlank(taskDO.getConfigData())) {
+            return false;
+        }
+        try {
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+                = com.clougence.utils.JsonUtils.toObj(taskDO.getConfigData(),
+                    com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig.class);
             return cfg != null && cfg.getTicketId() != null;
         } catch (Exception e) {
             // JsonUtils sneaky-throws the CHECKED JsonProcessingException — catch Exception

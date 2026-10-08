@@ -120,7 +120,18 @@ public enum AuditType {
      * ticketId/groupId/segmentIndex/via — the GHOST_EXECUTE precedent). N2 reuses it for the
      * window-crash manual resolution actions (obj carries resolution + seq).
      */
-    DML_BATCH_EXECUTE;
+    DML_BATCH_EXECUTE,
+    /**
+     * B7 N2 (裁决 #16, design §8.2): the audit trail of a no-key large-table DML submission
+     * REJECTION. The submit transaction rolls back (no ticket row exists), so this row is written
+     * OUTSIDE the transaction at the controller boundary (a bare MyBatis insert with no active
+     * transaction = autocommit → survives the rollback) — the ONLY in-platform trail of the
+     * rejection. HIGH, subject = the submitter, resId = dsId (ResourceType.DATASOURCE),
+     * obj = {table, rows, reason:NO_KEY, sqlSummary≤500, alertPushed}. Four-point registration
+     * identical to DML_BATCH_EXECUTE. Written even when the alert push is disabled / has no
+     * messenger (alertPushed=false — 留痕与告警解耦).
+     */
+    DML_BATCH_REJECT;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

@@ -138,6 +138,15 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
     private DbChangeEventDal             dbChangeEventDal;
     @Resource
     private AuthDal                       authDal;
+    // B7 N2: the no-key rejection trail — the open submit channel hooks the SAME boundary
+    // mechanism as GovTicketV2Controller.submit (R18 三入口对等: the open API must not become a
+    // trail bypass; submitTicket carries no @Transactional, so the typed exception arriving here
+    // has already rolled the submit transaction back — the trail writes survive identically).
+    @Resource
+    private com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchRejectTrailService dmlBatchRejectTrailService;
+
+    /** the audit operationUri marker of the open submit boundary (no HttpServletRequest here). */
+    private static final String OPEN_SUBMIT_URI = "/open/dbChange/tickets/submit";
 
     // ==================== Interface A: listTickets ====================
 
@@ -723,7 +732,23 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         submitFO.setGroups(groups);
 
         // Delegate to GovTicketV2Service.submit (no owner identity check in submit — any tenant member can submit)
-        GovTicketV2SubmitVO submitResult = govTicketV2Service.submit(puid, ownerUid, submitFO);
+        GovTicketV2SubmitVO submitResult;
+        try {
+            submitResult = govTicketV2Service.submit(puid, ownerUid, submitFO);
+        } catch (com.clougence.clouddm.console.web.service.dmlbatch.DmlNoKeyRejectException e) {
+            // B7 N2 (design §8.2 + R18 parity): the open channel fires the SAME out-of-transaction
+            // trail as the web controller boundary (subject = the resolved ownerUid = submitter;
+            // no HttpServletRequest here — the URI marker identifies the channel), then rethrows
+            // unchanged for the open error envelope. The outer guard mirrors the controller's
+            // belt: the trail never preempts the rejection semantics.
+            try {
+                dmlBatchRejectTrailService.trailNoKeyReject(puid, ownerUid, OPEN_SUBMIT_URI, null, e);
+            } catch (RuntimeException trailFailure) {
+                log.error("[GovOpenApi] the no-key rejection trail failed (the rejection itself is rethrown unchanged)",
+                    trailFailure);
+            }
+            throw e;
+        }
 
         // Build response VO — query the created ticket to get bizId and status
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(submitResult.getTicketId());

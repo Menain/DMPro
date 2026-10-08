@@ -105,6 +105,15 @@ public class TicketSegmentService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GhostService     ghostService;
+    // B7 N2: the scene-based alert channel (design §8.3 — the DML_BATCH_UNRESOLVED registration
+    // rides the segment-terminal transactions; afterCommit fires on the sweep's REQUIRES_NEW
+    // inner commit / the completion hook commit). NULL-SAFE consumption (the != null guard at
+    // the register site): the frozen N1b pin suites predate this field and exercise the same
+    // branches — an unwired alert channel degrades to the pre-N2 behavior (no push), never an
+    // NPE inside the segment terminal write. No cycle: AlertPushService reaches only DALs +
+    // the IM sender, so no @Lazy needed.
+    @Resource
+    private com.clougence.clouddm.console.web.component.alert.AlertPushService alertPushService;
     // @Lazy: B7 DML_BATCH seam — the batch engine service lives in the service layer which
     //   lazy-reaches the governance components back (completion service); safe-side proxy
     //   injection (governance component iron rule).
@@ -230,6 +239,22 @@ public class TicketSegmentService {
      *         the dispatched body's callback owns the aggregation there.
      */
     public boolean resumeGroupUnderLock(DmApprovalDO ticket, long groupId, String uid) {
+        return resumeGroupUnderLock(ticket, groupId, uid, null);
+    }
+
+    /**
+     * B7 N2 overload (design §7.4): {@code dmlBatchResolution} is the human verdict over a
+     * DML_BATCH window crash — REQUIRED (RERUN_BATCH ∨ SKIP_BATCH) iff the resume target's
+     * frozen summary carries {@code unresolvedIntent}; missing/invalid → rejected with
+     * GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED (the B6 RETRY_UNSUPPORTED narrowing precedent:
+     * a manual verdict gate, never a silent default). RERUN = the normal continuation (the
+     * inherited cursor re-runs the unresolved batch — statement-level atomicity made the crash-
+     * recorded retryPending class safe, and the true window crash is exactly what the human just
+     * adjudicated); SKIP = the fresh task's first tick re-derives one boundary and advances the
+     * cursor without executing (pendingResolution transport). Every non-DML_BATCH target and
+     * every non-unresolved DML_BATCH failure ignores the parameter (普通段 FAILED 直接续跑).
+     */
+    public boolean resumeGroupUnderLock(DmApprovalDO ticket, long groupId, String uid, String dmlBatchResolution) {
         DmTicketDbStmtDO group = this.ticketDbStmtDal.stmtMapper().queryById(groupId); // fresh under-lock read
         if (group == null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(
@@ -279,6 +304,7 @@ public class TicketSegmentService {
         this.schemaSnapshotService.captureIfMissing(group, ticket.getId());
 
         Map<String, Object> inheritedCheckpoint = null;
+        String pendingResolution = null;
         if (TicketSegment.TYPE_GHOST.equals(target.getType())) {
             // idempotent pre-rebuild cleanup: release the old session (sidecar cap-2 slot). The old
             // AsyncTask needs no disposal — the active check above guaranteed it is terminal, and
@@ -297,14 +323,31 @@ public class TicketSegmentService {
                 return groupTerminal;
             }
         } else if (TicketSegment.TYPE_DML_BATCH.equals(target.getType())) {
+            // B7 N2 resolution guard (design §7.4, 裁决 #9 option C): a window crash frozen into
+            // the segment summary (unresolvedIntent — the batch outcome is UNKNOWN and a silent
+            // re-run could double-apply a non-idempotent UPDATE) demands an EXPLICIT human verdict
+            // before the resume; anything else (missing/blank/invalid) rejects with the narrowing
+            // key (the B6 RETRY_UNSUPPORTED precedent). The guard keys on the SEGMENT SUMMARY —
+            // the authoritative frozen marker every UNRESOLVED terminal writes (task tick /
+            // sweep dead-judge / sweep FAILURE-CANCEL replay). 普通段 FAILED (批重试耗尽/终止/
+            // 失联无 intent) needs no resolution — direct cursor continuation.
+            if (isUnresolvedSummary(target.getSummary())) {
+                if (!TicketSegment.RESOLUTION_RERUN_BATCH.equals(dmlBatchResolution)
+                    && !TicketSegment.RESOLUTION_SKIP_BATCH.equals(dmlBatchResolution)) {
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nDmMsgKeys.GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED.name()));
+                }
+                if (TicketSegment.RESOLUTION_SKIP_BATCH.equals(dmlBatchResolution)) {
+                    pendingResolution = TicketSegment.RESOLUTION_SKIP_BATCH; // the fresh task's first tick consumes it
+                }
+            }
             // B7 checkpoint inheritance (design §7.4, the C16 non-reusable replacement — DML has
             // NO generic target-effect probe, so the cursor IS the resume contract): the old
             // task's DONE side (cursor/batchesDone/rowsDone/lastDone) seeds the fresh task's
             // configData — "已成功批永不重放" is physically guaranteed by the cursor inheritance;
             // the old task is NEVER reused (B6 discipline). The intent side is deliberately NOT
-            // inherited: a manual retry is the human decision (N1b basic resume = re-run the
-            // unresolved batch from the cursor; N2 adds the RERUN/SKIP resolution guard +
-            // RESOLUTION_REQUIRED rejection). No session exists → nothing to release.
+            // inherited: a manual retry is the human decision (the resolution guard above is its
+            // gate). No session exists → nothing to release.
             inheritedCheckpoint = extractDmlBatchDoneCheckpoint(ticket, group, target);
         }
         // reset the failed segment → PENDING (+ clear error/timestamps/stale bindings), then the
@@ -313,6 +356,9 @@ public class TicketSegmentService {
         resetSegmentForRerun(target);
         if (inheritedCheckpoint != null) {
             target.setResumeCheckpoint(inheritedCheckpoint); // dispatchBatchSegment consumes it into the fresh configData
+        }
+        if (pendingResolution != null) {
+            target.setPendingResolution(pendingResolution); // SKIP verdict → the fresh task's first tick
         }
         target.setStatus(TicketSegment.STATUS_EXECUTING);
         target.setStartedAt(System.currentTimeMillis());
@@ -440,6 +486,17 @@ public class TicketSegmentService {
         seg.setTaskId(null);
         seg.setSummary(null);
         seg.setResumeCheckpoint(null); // B7: the caller re-sets the fresh inheritance right after
+        seg.setPendingResolution(null); // B7 N2: same re-set discipline for the SKIP verdict transport
+    }
+
+    /**
+     * B7 N2 (design §7.4): the segment summary's frozen window-crash marker — the resolution
+     * guard's ONLY key (the authoritative carrier every UNRESOLVED terminal writes: the task
+     * tick's writeBackTerminal, the sweep dead-judge and the sweep FAILURE/CANCEL replay all
+     * freeze {@code unresolvedIntent} + {@code intentSeq} through the summary builders).
+     */
+    public static boolean isUnresolvedSummary(Map<String, Object> summary) {
+        return summary != null && Boolean.TRUE.equals(summary.get("unresolvedIntent"));
     }
 
     /**
@@ -602,7 +659,13 @@ public class TicketSegmentService {
                 group.getId(), seg.getSegIdx(), taskId, seg.getTaskId());
             return false;
         }
-        return advanceUnderLock(ticket, group, runtime, seg, success, detail, summary, SYSTEM_OPERATOR);
+        boolean advanced = advanceUnderLock(ticket, group, runtime, seg, success, detail, summary, SYSTEM_OPERATOR);
+        if (advanced && !success) {
+            // N2 (design §8.3): the hook-side UNRESOLVED registration (the task tick detected the
+            // window crash itself — restart recovery / UNKNOWN failure class)
+            registerDmlUnresolvedAlert(ticket, group, seg, summary);
+        }
+        return advanced;
     }
 
     /**
@@ -814,10 +877,27 @@ public class TicketSegmentService {
             // FAILURE / CANCEL: the hook either already ran (CAS skip upstream — unreachable here
             // because the segment is still EXECUTING) or was lost — advance as FAILED
             String detail = "dml batch task " + status + " (completion writeback lost)";
-            boolean unresolved = isUnresolvedIntent(cp);
-            advanceUnderLock(ticket, group, runtime, seg, false, detail,
-                dmlBatchSummary(cp, detail, unresolved), SYSTEM_OPERATOR);
+            boolean unresolved = isUnresolvedIntent(cp) || isSkipVerdictPending(cfg);
+            Map<String, Object> summary = dmlBatchSummary(cp, detail, unresolved);
+            advanceUnderLock(ticket, group, runtime, seg, false, detail, summary, SYSTEM_OPERATOR);
+            if (unresolved) {
+                // N2 (design §8.3): the sweep-side registration of a window crash the lost hook
+                // never trailed (the task's terminal intent — or an unconsumed SKIP verdict — is
+                // the checkpoint/config carrier's own marker)
+                registerDmlUnresolvedAlert(ticket, group, seg, summary);
+            }
             return;
+        }
+        // N2 (design §6.6 "healthy covers paused", N1b check handover #2): a DB-PAUSE task is a
+        // CONTROLLED pause (the ticket-chain endpoint / framework pauseTask) — the pause cancels
+        // the tick loop, so the heartbeat necessarily froze at the pause moment and a legitimate
+        // INDEFINITE pause must never be dead-judged by staleness. PAUSE is a pure DB state with
+        // no host affinity (resumeTask rebinds console_ip — any console can resume), so there is
+        // no "dead host" hiding behind it. PAUSING (the transient in-memory settle state) stays
+        // on the heartbeat clock below: a console that died mid-pause is uncontrolled and
+        // converges through the dead judgement (+ the host's restart resetPausingAsyncTaskStatus).
+        if (status == AsyncTaskStatus.PAUSE) {
+            return; // controlled pause — healthy regardless of heartbeat age
         }
         // active task → the heartbeat decides (host-affinity death / dispatcher stall)
         Long heartbeat = cp == null ? null : cp.getLastTickAt();
@@ -825,18 +905,24 @@ public class TicketSegmentService {
             : (seg.getStartedAt() != null ? seg.getStartedAt() : System.currentTimeMillis());
         long staleMillis = dmlBatchStaleThresholdMillis(cfg);
         if (System.currentTimeMillis() - reference <= staleMillis) {
-            return; // healthy: running / paused / retry-waiting / throttled — every tick writes the heartbeat
+            return; // healthy: running / retry-waiting / throttled — every tick writes the heartbeat
         }
         String detail = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getMessage(
             com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys.DML_BATCH_TASK_LOST.name());
+        // N2 check fix: an unconsumed SKIP verdict on the dead task's carrier re-freezes the
+        // marker too — the adjudicated batch was neither skipped nor proven, so the next
+        // retryGroup must demand a fresh verdict (never a silent SKIP→RERUN downgrade)
         failSegmentUnderLock(ticket, group, runtime, seg, detail,
-            dmlBatchSummary(cp, detail, isUnresolvedIntent(cp)));
+            dmlBatchSummary(cp, detail, isUnresolvedIntent(cp) || isSkipVerdictPending(cfg)));
     }
 
     /**
      * The segment summary freeze of a DML_BATCH terminal (design §5.3):
-     * {batchesDone, rowsDone, cursor?, error?, unresolvedIntent?, intentSeq?} — built from the
-     * task's configData checkpoint (null-safe: a missing/corrupt carrier yields the bare shape).
+     * {batchesDone, rowsDone, cursor?, error?, unresolvedIntent?, intentSeq?, skippedBatches?} —
+     * built from the task's configData checkpoint (null-safe: a missing/corrupt carrier yields the
+     * bare shape). N2 addition: the SKIP_BATCH evidence list (design §7.4 "evidence 入 summary")
+     * rides along when the checkpoint carries manual skips — additive, absent in every pre-N2
+     * and skip-free shape.
      */
     static Map<String, Object> dmlBatchSummary(
             com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp,
@@ -854,7 +940,14 @@ public class TicketSegmentService {
             summary.put("unresolvedIntent", Boolean.TRUE);
             if (cp != null && cp.getIntent() != null) {
                 summary.put("intentSeq", cp.getIntent().getSeq());
+            } else if (cp != null) {
+                // N2 check fix: the re-frozen skip-verdict shape carries no intent (stripped at the
+                // resume inheritance) — the adjudicated batch's seq is batchesDone+1 by construction
+                summary.put("intentSeq", cp.getBatchesDone() + 1);
             }
+        }
+        if (cp != null && cp.getSkips() != null && !cp.getSkips().isEmpty()) {
+            summary.put("skippedBatches", cp.getSkips());
         }
         return summary;
     }
@@ -864,6 +957,55 @@ public class TicketSegmentService {
             com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp) {
         return cp != null && cp.getIntent() != null
             && !Boolean.TRUE.equals(cp.getIntent().getRetryPending());
+    }
+
+    /**
+     * N2 check fix: an UNCONSUMED SKIP_BATCH verdict on the task carrier (only the successful
+     * skip-done persist clears pendingResolution). A terminal in this state means the adjudicated
+     * batch was neither skipped nor proven — the summary marker must re-freeze so the resolution
+     * guard demands a fresh verdict (option C: a human SKIP verdict never silently downgrades to
+     * a RERUN of an unknown-outcome batch — the double-apply hazard for non-idempotent UPDATEs).
+     */
+    static boolean isSkipVerdictPending(
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg) {
+        return cfg != null
+            && TicketSegment.RESOLUTION_SKIP_BATCH.equals(cfg.getPendingResolution());
+    }
+
+    /**
+     * B7 N2 (design §8.3): the DML_BATCH_UNRESOLVED alert registration at a segment terminal
+     * whose summary froze {@code unresolvedIntent} — the window-crash / heartbeat-death verdict
+     * needs a human, and the IM push is how ops learns about it (copy: deep link + segment/batch
+     * location + 人工核对后重跑/跳过). Registered INSIDE the segment-terminal transaction:
+     * AlertPushService defers to afterCommit (the sweep's REQUIRES_NEW inner tx commits
+     * independently — the alert fires exactly when the FAILED verdict becomes visible; a
+     * rollback fires nothing). Never-throw + null-safe (an unwired channel = no push, the
+     * segment terminal write is never preempted). Exactly-once rides the segment CAS upstream
+     * (the first writer's terminal is the only one that reaches here).
+     */
+    private void registerDmlUnresolvedAlert(DmApprovalDO ticket, DmTicketDbStmtDO group,
+                                            TicketSegment seg, Map<String, Object> summary) {
+        if (this.alertPushService == null || !isUnresolvedSummary(summary)) {
+            return;
+        }
+        try {
+            com.clougence.clouddm.console.web.component.alert.AlertContext ctx
+                = new com.clougence.clouddm.console.web.component.alert.AlertContext();
+            ctx.setTicketId(ticket.getId());
+            ctx.setApplicantUid(ticket.getOwnerUid());
+            ctx.setDbName(group.getDbName());
+            ctx.setTableName(seg.getTable());
+            ctx.setSegmentIndex(seg.getSegIdx());
+            Object intentSeq = summary.get("intentSeq");
+            if (intentSeq instanceof Number) {
+                ctx.setIntentSeq(((Number) intentSeq).longValue());
+            }
+            this.alertPushService.pushAlert(ticket.getPrimaryUid(),
+                com.clougence.clouddm.console.web.component.alert.AlertScene.DML_BATCH_UNRESOLVED, ctx);
+        } catch (Exception e) {
+            log.warn("[TicketSegment] DML_BATCH_UNRESOLVED alert registration failed for ticket {} group {} segment {} (the terminal write proceeds)",
+                ticket.getId(), group.getId(), seg.getSegIdx(), e);
+        }
     }
 
     /** derived heartbeat-stale threshold (design §6.6 — no new KV): timeout + 2×max(interval,10s) + 60s. */
@@ -956,6 +1098,13 @@ public class TicketSegmentService {
             releaseSegmentSessionQuietly(ticket, seg);
         }
         advanceUnderLock(ticket, group, runtime, seg, false, detail, summary, SYSTEM_OPERATOR);
+        if (TicketSegment.TYPE_DML_BATCH.equals(seg.getType())) {
+            // N2 (design §8.3/§6.6): the heartbeat-dead-judgement registration — a dead task with
+            // an unresolved intent means the crashed batch's outcome died WITH it (人工裁决 needed);
+            // the task-missing row carries no summary → no marker → no alert (its error copy
+            // already tells the operator to verify the data manually)
+            registerDmlUnresolvedAlert(ticket, group, seg, summary);
+        }
     }
 
     // ==================================================================================

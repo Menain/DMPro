@@ -522,6 +522,9 @@ public class DmlBatchServiceImpl implements DmlBatchService {
         taskConfig.setEstimatedRows(segment.getEstimatedRows());
         taskConfig.setIdempotent(segment.getIdempotent());
         taskConfig.setCheckpoint(seedCheckpoint(inheritedCheckpoint));
+        // N2 window-crash resolution (design §7.4): the SKIP verdict rides the segment (set by
+        // resumeGroupUnderLock) into the fresh task's first tick; RERUN/first-dispatch stay null
+        taskConfig.setPendingResolution(segment.getPendingResolution());
 
         AsyncTaskConfig config = new AsyncTaskConfig();
         config.setTitle(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_ASYNC_TITLE_MESSAGE.name(), segment.getTable()));

@@ -39,6 +39,7 @@ import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.service.asyntask.AsyncTaskServiceService;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams;
+import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLagProbe;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
@@ -124,7 +125,9 @@ public class DmlBatchAsyncTask extends AsyncTask {
     private com.clougence.clouddm.console.web.component.governance.DmlBatchCompletionService dmlBatchCompletionService;
 
     /** the batch tick's outcome classification (the framework transitions ride on it). */
-    private enum TickOutcome { BATCH_DONE, RETRY_WAIT, RETRY_EXHAUSTED, COMPLETED, SAFE_FAILED, UNKNOWN_FAILED }
+    private enum TickOutcome { BATCH_DONE, RETRY_WAIT, RETRY_EXHAUSTED, COMPLETED, SAFE_FAILED, UNKNOWN_FAILED,
+            /** N2 lag throttle (design §5.2-2a): the tick yielded WITHOUT writing an intent. */
+            LAG_THROTTLED }
 
     @Override
     protected void executeTask(int doCnt, String configData) {
@@ -151,8 +154,13 @@ public class DmlBatchAsyncTask extends AsyncTask {
         // ---- 1. cancel / pause (batch granularity — an in-flight batch is never interrupted) ----
         if (this.isCancel()) {
             String progress = progressSummary(cp);
+            // N2 check fix: a user stop BEFORE the skip tick consumed the SKIP verdict leaves the
+            // adjudicated batch STILL unresolved (the skip never happened) — the marker re-freezes
+            // so the next retryGroup demands a fresh verdict (option C hard contract; a silent
+            // RERUN downgrade of an unknown-outcome batch could double-apply a non-idempotent UPDATE)
             this.writeBackTerminal(cfg, task, false, DmI18nUtils.getMessage(
-                I18nDmMsgKeys.DML_BATCH_ABORTED.name(), "user stop"), summary(cp, "user stop", false));
+                I18nDmMsgKeys.DML_BATCH_ABORTED.name(), "user stop"),
+                summary(cp, "user stop", skipVerdictPending(cfg)));
             this.updateMessage("aborted by user (" + progress + ")");
             this.notifyAsyncEvent();
             return; // the framework's cancel path already completed the future → CANCEL status
@@ -202,13 +210,18 @@ public class DmlBatchAsyncTask extends AsyncTask {
                 return;
             }
             case SAFE_FAILED: {
-                // zero write effect proven (rewrite/boundary/render class) — retryGroup resumes from the cursor
+                // zero write effect proven (rewrite/boundary/render class) — retryGroup resumes from the cursor.
+                // N2 check fix: a SKIP-verdict task whose skip tick failed safely did NOT consume the
+                // verdict, so the adjudicated batch is STILL unresolved — re-freeze the marker (else
+                // the next retryGroup sees no marker and silently downgrades SKIP→RERUN, re-executing
+                // an unknown-outcome batch = the double-apply hazard the guard exists to prevent).
+                boolean skipPending = skipVerdictPending(cfg);
                 cp.setLastTickAt(System.currentTimeMillis());
-                cp.setLastStatus("FAILED");
+                cp.setLastStatus(skipPending ? "UNRESOLVED" : "FAILED");
                 cp.setIntent(null); // the intent side is proven side-effect-free — clean forensics
                 this.persistConfigQuietly(task, cfg);
                 this.updateProcessAndMessage(cp);
-                this.writeBackTerminal(cfg, task, false, result.detail, summary(cp, result.detail, false));
+                this.writeBackTerminal(cfg, task, false, result.detail, summary(cp, result.detail, skipPending));
                 this.notifyAsyncEvent();
                 this.failedTaskDoNotPause(new IllegalStateException(result.detail));
                 return;
@@ -240,6 +253,16 @@ public class DmlBatchAsyncTask extends AsyncTask {
                 this.updateProcessAndMessage(cp);
                 this.notifyAsyncEvent();
                 this.delayTask(backoffMillis(cfg), TimeUnit.MILLISECONDS);
+                return;
+            }
+            case LAG_THROTTLED: {
+                // design §5.2-2a: replica lag over the threshold — yield WITHOUT an intent write
+                // (零假警报窗口); the throttle poll cadence floors at 5s (max(intervalMs,5000));
+                // the hysteresis (resume below threshold/2) rides checkpoint.lagState.throttledAt
+                this.updateProcessAndMessage(cp);
+                this.notifyAsyncEvent();
+                long throttleDelay = Math.max(effective(cfg).getIntervalMs(), 5000L);
+                this.delayTask((int) Math.min(throttleDelay, Integer.MAX_VALUE), TimeUnit.MILLISECONDS);
                 return;
             }
             case BATCH_DONE:
@@ -275,6 +298,7 @@ public class DmlBatchAsyncTask extends AsyncTask {
         static TickResult completed() { return new TickResult(TickOutcome.COMPLETED, null, 0, 0); }
         static TickResult safe(String detail) { return new TickResult(TickOutcome.SAFE_FAILED, detail, 0, 0); }
         static TickResult unknown(String detail) { return new TickResult(TickOutcome.UNKNOWN_FAILED, detail, 0, 0); }
+        static TickResult lagThrottled() { return new TickResult(TickOutcome.LAG_THROTTLED, null, 0, 0); }
     }
 
     /** typed tick failure carrying the side-effect classification (safe vs unknown). */
@@ -369,6 +393,23 @@ public class DmlBatchAsyncTask extends AsyncTask {
         final boolean[] intentInFlight = { false }; // batch DML may have executed → UNKNOWN class
         try {
             return diagnosticExecutor.runInSession(cfg.getUserId(), dsDO, dsConfig, opts, session -> {
+                // ---- step 2a (N2): replica-lag probe on the SAME session, BEFORE the intent
+                //      write (a throttled tick writes NO intent — 零假警报窗口, design §5.2-2a).
+                //      NEVER-THROW: a probe failure/permission gap degrades to the fixed-interval
+                //      throttle + lagState.visible=false (DML_BATCH_LAG_UNKNOWN copy, §6.3). ----
+                if (probeLagAndMaybeThrottle(cfg, cp, task, session, postgres, params)) {
+                    return TickResult.lagThrottled();
+                }
+
+                // ---- N2 SKIP_BATCH resolution (design §7.4): the first tick of a task launched
+                //      by a SKIP verdict re-derives ONE boundary and advances the cursor WITHOUT
+                //      executing the DML, then continues normally. Read-only → no intent write
+                //      (a crash before the skip-done persist simply re-skips: zero write effect,
+                //      idempotent by construction). ----
+                if (TicketSegment.RESOLUTION_SKIP_BATCH.equals(cfg.getPendingResolution())) {
+                    return runSkipTick(cfg, cp, task, session, boundarySql, key.getKeyType(), postgres);
+                }
+
                 // ---- intent write (BEFORE anything else inside the session — the window contract) ----
                 DmlBatchCheckpoint.Intent intent = cp.getIntent();
                 if (intent == null) {
@@ -450,6 +491,18 @@ public class DmlBatchAsyncTask extends AsyncTask {
                         + " (connection lost during the batch statement: " + rootMessage(e) + ")");
                 }
                 String dbError = DiagResultUtils.firstFailureMessage(resultList);
+                if (dbError != null && isCommLinkError(dbError)) {
+                    // N1b check handover #1: a sidecar↔DB COMMUNICATION failure reported as a
+                    // statement error (SQLState class 08 / "Communications link failure" text
+                    // family) does NOT prove zero effect — the server may have committed the
+                    // batch and only the ACK was lost. Statement-level atomicity no longer
+                    // backs the automatic retry (a non-idempotent UPDATE would double-apply
+                    // silently) → the UNKNOWN class (option C: intent deliberately left on the
+                    // carrier, FAILED + UNRESOLVED, manual verdict through retryGroup).
+                    throw new TickFailure(true, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_UNRESOLVED.name(), seq)
+                        + " (communication failure while the batch statement was in flight — the server may have committed it: "
+                        + dbError + ")");
+                }
                 if (dbError != null) {
                     // a DB-level error: the statement atomically rolled back server-side — zero
                     // effect PROVEN → the automatic same-seq retry flow (retryPending recorded)
@@ -512,6 +565,192 @@ public class DmlBatchAsyncTask extends AsyncTask {
     }
 
     // ==================================================================================
+    // N2: replica-lag throttle (design §5.2-2a / §6.3) + SKIP_BATCH resolution (§7.4)
+    // ==================================================================================
+
+    /**
+     * One per-tick lag probe on the batch session (每 tick 同会话顺带探测 — org spec §9.8.2
+     * "延迟 >10 秒暂停评估"). Decision shape:
+     * <ul>
+     * <li>probe OK + visible: NOT throttled ∧ lag &gt; threshold → engage (lagState.throttledAt);
+     *     throttled ∧ lag ≥ threshold/2 → STAY throttled (hysteresis — resume only BELOW half
+     *     the threshold, 防抖); throttled ∧ lag &lt; threshold/2 → release;</li>
+     * <li>probe failure / permission gap / undecidable value → lagState.visible=false + release
+     *     any prior throttle — the fixed-interval throttle is the degradation (never-throw, the
+     *     DML_BATCH_LAG_UNKNOWN copy surfaces it on the statusMsg);</li>
+     * <li>no replica (probe OK, 0.0) → visible, never throttled (照常).</li>
+     * </ul>
+     * A throttled tick persists lagState + the heartbeat (心跳照写 — the sweep's dead judgement
+     * reads lastTickAt on throttle ticks too) and returns true → the caller yields with
+     * delayTask(max(intervalMs,5000)) and NO intent write. The persist is best-effort
+     * (persistConfigQuietly): losing a throttle-state write only recomputes on the next tick.
+     *
+     * @return true when this tick must yield to the throttle
+     */
+    private boolean probeLagAndMaybeThrottle(DmlBatchAsyncTaskConfig cfg, DmlBatchCheckpoint cp,
+                                             DmExecAsyncTaskDO task, DiagSession session,
+                                             boolean postgres, DmlBatchEffectiveParams params) {
+        DmlBatchCheckpoint.LagState lagState = cp.getLagState();
+        if (lagState == null) {
+            lagState = new DmlBatchCheckpoint.LagState();
+            cp.setLagState(lagState);
+        }
+        Double lagSec = null;
+        boolean probeOk = true;
+        try {
+            ResultList lagResult = session.execute(DmlBatchLagProbe.lagSql(postgres));
+            String failure = DiagResultUtils.firstFailureMessage(lagResult);
+            if (failure != null) {
+                probeOk = false; // permission gap (REPLICATION CLIENT / pg_monitor) or dialect reject
+                log.warn("[DmlBatch] task {} lag probe failed (degrading to the fixed interval): {}",
+                    cfg.getBizId(), failure);
+            } else {
+                lagSec = DmlBatchLagProbe.parseLagSeconds(DiagResultUtils.extractRows(lagResult), postgres);
+            }
+        } catch (RuntimeException e) {
+            probeOk = false; // includes the DiagTimeoutException wrapper — never a batch failure
+            log.warn("[DmlBatch] task {} lag probe errored (degrading to the fixed interval)", cfg.getBizId(), e);
+        }
+
+        if (!probeOk || lagSec == null) {
+            // INVISIBLE: fixed-interval degradation + release any stale throttle (we cannot judge)
+            lagState.setVisible(false);
+            lagState.setLastLagSec(null);
+            lagState.setThrottledAt(null);
+            return false;
+        }
+
+        lagState.setVisible(true);
+        lagState.setLastLagSec(lagSec);
+        int threshold = params.getLagThresholdSec();
+        boolean wasThrottled = lagState.getThrottledAt() != null;
+        boolean throttle = wasThrottled ? lagSec >= threshold / 2.0   // hysteresis: release below half
+                                        : lagSec > threshold;         // engage above the threshold
+        if (throttle) {
+            if (!wasThrottled) {
+                lagState.setThrottledAt(System.currentTimeMillis());
+                log.warn("[DmlBatch] task {} throttling on replica lag {}s (> {}s)",
+                    cfg.getBizId(), lagSec, threshold);
+            }
+            cp.setLastTickAt(System.currentTimeMillis()); // 节流 tick 心跳照写
+            cp.setLastStatus("THROTTLED");
+            this.persistConfigQuietly(task, cfg);
+            return true;
+        }
+        if (wasThrottled) {
+            log.info("[DmlBatch] task {} resuming from lag throttle ({}s < {}s/2)",
+                cfg.getBizId(), lagSec, threshold);
+        }
+        lagState.setThrottledAt(null);
+        return false; // lagState rides the imminent intent write (无独立心跳写放大)
+    }
+
+    /**
+     * The SKIP_BATCH first tick (design §7.4): re-derive ONE boundary from the inherited cursor
+     * (step ① — the same frozen mechanism), then advance the cursor WITHOUT executing the DML.
+     * The re-derived (lo,hi] is a batch width over the CURRENT data — after drift it is NOT the
+     * same row set as the crashed batch (the modal copy discloses this). Evidence: the Done
+     * record carries resolution=SKIP_BATCH + the {lo,hi} pair, the checkpoint's append-only
+     * {@code skips} list freezes it for the segment summary, and a biz_log line mirrors the
+     * batch forensics shape.
+     * <p>
+     * Boundary NULL (nothing left after the cursor) → the skip is moot and the boundary remains
+     * the ONLY termination authority → COMPLETED. Zero write effect on this whole path → every
+     * failure is safe-FAILED and a crash simply re-skips (pendingResolution is cleared only by
+     * the successful skip-done persist).
+     */
+    private TickResult runSkipTick(DmlBatchAsyncTaskConfig cfg, DmlBatchCheckpoint cp, DmExecAsyncTaskDO task,
+                                   DiagSession session, String boundarySql, String keyType, boolean postgres) {
+        final String loRaw = cp.getCursor();
+        final String hiRaw;
+        try {
+            hiRaw = session.executeSingleValue(boundarySql);
+        } catch (RuntimeException e) {
+            throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(),
+                "skip-batch boundary select failed: " + rootMessage(e)));
+        }
+        if (hiRaw == null) {
+            // the cursor already sits past the last matching row — the skip completes the segment
+            cfg.setPendingResolution(null);
+            cp.setLastTickAt(System.currentTimeMillis());
+            cp.setLastStatus("COMPLETED");
+            this.persistConfig(task, cfg);
+            return TickResult.completed();
+        }
+        long seq = cp.getBatchesDone() + 1; // the unresolved batch's own seq (intent.seq ≡ batchesDone+1)
+
+        DmlBatchCheckpoint.Done done = new DmlBatchCheckpoint.Done();
+        done.setSeq(seq);
+        done.setHi(hiRaw);
+        done.setLo(loRaw);
+        done.setAffectRows(0L); // NOT executed — the honest zero (rowsDone deliberately unmoved)
+        done.setFinishedAt(System.currentTimeMillis());
+        done.setResolution(TicketSegment.RESOLUTION_SKIP_BATCH);
+
+        DmlBatchCheckpoint.SkipRecord skip = new DmlBatchCheckpoint.SkipRecord();
+        skip.setSeq(seq);
+        skip.setLo(loRaw);
+        skip.setHi(hiRaw);
+        skip.setAt(done.getFinishedAt());
+        if (cp.getSkips() == null) {
+            cp.setSkips(new java.util.ArrayList<>());
+        }
+        cp.getSkips().add(skip);
+
+        cp.setCursor(hiRaw);
+        cp.setBatchesDone(seq);
+        cp.setIntent(null);
+        cp.setLastDone(done);
+        cp.setLastTickAt(done.getFinishedAt());
+        cp.setLastStatus("RUNNING");
+        cfg.setPendingResolution(null); // consumed — a later window crash never re-skips
+        this.persistConfig(task, cfg);
+
+        // forensic trail (the batch-forensics shape, marked SKIP)
+        try {
+            DmMonBizLogDO logDO = new DmMonBizLogDO(Loglevel.INFO, "[DML-BATCH] SKIP seq=" + seq
+                + " lo=" + (loRaw == null ? "(start)" : loRaw) + " hi=" + hiRaw
+                + " resolution=SKIP_BATCH (boundary re-derived, DML not executed)",
+                LogDependBizType.DML_BATCH_TASK, cfg.getBizId());
+            monitorDal.bizLogMapper().insert(logDO);
+        } catch (RuntimeException e) {
+            log.warn("[DmlBatch] skip forensics log failed for task {} seq {} (execution continues)",
+                cfg.getBizId(), seq, e);
+        }
+        return TickResult.done(seq, 0L);
+    }
+
+    /** SQLState class-08 marker: "SQLState: 08S01" / "SQL State = 08001" family (never "…42008"). */
+    private static final java.util.regex.Pattern SQLSTATE_08 =
+        java.util.regex.Pattern.compile("sql\\s*state[^0-9]{0,3}08", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * N1b check handover #1 — the sidecar↔DB communication-error text family: these statement
+     * errors do NOT prove zero effect (the server may have committed; only the ACK was lost), so
+     * they belong to the UNKNOWN class, never the automatic retryPending flow. Members: the
+     * MySQL Connector/J marker, the PG JDBC sender marker, the socket-layer text family and any
+     * embedded SQLState class 08 (connection exception). A false positive costs one manual
+     * verdict over a probably-failed batch; a false negative risks a silent non-idempotent
+     * double-apply — the asymmetry decides (宁可误判 UNKNOWN).
+     */
+    static boolean isCommLinkError(String dbError) {
+        if (StringUtils.isBlank(dbError)) {
+            return false;
+        }
+        String lower = dbError.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("communications link failure")) {
+            return true; // MySQL Connector/J
+        }
+        if (lower.contains("an i/o error occurred while sending to the backend")) {
+            return true; // PG JDBC
+        }
+        if (lower.contains("connection reset") || lower.contains("broken pipe")) {
+            return true; // socket-layer text family
+        }
+        return SQLSTATE_08.matcher(dbError).find();
+    }
+
+    // ==================================================================================
     // checkpoint persistence / progress / terminal writeback / forensics
     // ==================================================================================
 
@@ -567,7 +806,11 @@ public class DmlBatchAsyncTask extends AsyncTask {
         }
     }
 
-    /** the segment summary freeze (design §5.3): {status, batchesDone, rowsDone, cursor?, error?, unresolvedIntent?}. */
+    /**
+     * the segment summary freeze (design §5.3): {status, batchesDone, rowsDone, cursor?, error?,
+     * unresolvedIntent?} + the N2 skippedBatches evidence list (design §7.4 "evidence 入 summary" —
+     * present only when a manual SKIP_BATCH advanced the cursor; the legacy shape is untouched).
+     */
     static Map<String, Object> summary(DmlBatchCheckpoint cp, String error, boolean unresolvedIntent) {
         Map<String, Object> summary = new HashMap<>();
         summary.put("batchesDone", cp.getBatchesDone());
@@ -582,9 +825,27 @@ public class DmlBatchAsyncTask extends AsyncTask {
             summary.put("unresolvedIntent", Boolean.TRUE);
             if (cp.getIntent() != null) {
                 summary.put("intentSeq", cp.getIntent().getSeq());
+            } else {
+                // N2 check fix: the re-frozen skip-verdict shape carries no intent (stripped at the
+                // resume inheritance) — the adjudicated batch's seq is batchesDone+1 by construction
+                summary.put("intentSeq", cp.getBatchesDone() + 1);
             }
         }
+        if (cp.getSkips() != null && !cp.getSkips().isEmpty()) {
+            summary.put("skippedBatches", cp.getSkips());
+        }
         return summary;
+    }
+
+    /**
+     * N2 check fix: true while a SKIP_BATCH verdict rides the configData UNCONSUMED (only the
+     * successful skip-done persist clears it). A terminal in this state means the adjudicated
+     * batch was neither skipped nor proven — it stays UNRESOLVED for the guard (option C: the
+     * human verdict must not silently downgrade to a RERUN of an unknown-outcome batch).
+     */
+    static boolean skipVerdictPending(DmlBatchAsyncTaskConfig cfg) {
+        return cfg != null
+            && TicketSegment.RESOLUTION_SKIP_BATCH.equals(cfg.getPendingResolution());
     }
 
     private static String progressSummary(DmlBatchCheckpoint cp) {
@@ -621,6 +882,19 @@ public class DmlBatchAsyncTask extends AsyncTask {
         if (cp.getIntent() != null && cp.getIntent().getLastBatchError() != null) {
             String err = cp.getIntent().getLastBatchError();
             sb.append(", lastError=").append(err.length() > 120 ? err.substring(0, 120) + "…" : err);
+        }
+        // N2 lag throttle state (§6.3): visible → the last measured lag (throttle marker when
+        // engaged); invisible → the degradation copy (DML_BATCH_LAG_UNKNOWN — 延迟不可见黄旗)
+        DmlBatchCheckpoint.LagState lag = cp.getLagState();
+        if (lag != null) {
+            if (lag.isVisible()) {
+                sb.append(", lag=").append(lag.getLastLagSec() == null ? "-" : lag.getLastLagSec() + "s");
+                if (lag.getThrottledAt() != null) {
+                    sb.append(" (throttled)");
+                }
+            } else {
+                sb.append(' ').append(DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_LAG_UNKNOWN.name()));
+            }
         }
         return sb.toString();
     }

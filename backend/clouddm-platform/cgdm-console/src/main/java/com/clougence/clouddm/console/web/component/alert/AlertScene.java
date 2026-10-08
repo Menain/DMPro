@@ -27,5 +27,27 @@ public enum AlertScene {
      * different risk-copy parameter — 2026-09-28 extended ruling). The ticket is NOT blocked;
      * it executes directly and ops + applicant are alerted through the tenant IM robots.
      */
-    GHOST_LARGE_TABLE_NO_PK
+    GHOST_LARGE_TABLE_NO_PK,
+
+    /**
+     * B7 N2 (裁决 #5/#16, design §8.2): a threshold-exceeding single-table UPDATE/DELETE whose
+     * target table has NO usable PK / NOT NULL UK — unlike the ghost ALERT_PASS semantics this
+     * submission is REJECTED (org spec §9.8.3: the WHERE predicate must land on a key; a keyless
+     * large DML is a violation, not a risk to wave through). The ticket never lands, so the alert
+     * fires at the controller boundary AFTER the submit transaction rolled back — the no-tx
+     * immediate-send branch of {@link AlertPushService#pushAlert} — with NO deep link, paired
+     * with the DML_BATCH_REJECT audit row (留痕与告警解耦: switch off / no messenger → the audit
+     * still records alertPushed=false).
+     */
+    DML_LARGE_TABLE_NO_KEY,
+
+    /**
+     * B7 N2 (design §8.3): a DML_BATCH segment terminal carrying the window-crash marker
+     * (summary.unresolvedIntent — the batch outcome is UNKNOWN, 裁决 #9 option C). Registered
+     * inside the segment-terminal transaction (sweep REQUIRES_NEW inner tx / the completion hook
+     * tx — afterCommit fires on their commit); the ticket EXISTS here, so the copy carries the
+     * deep link + the segment/batch location + the manual-verdict guidance (RERUN/SKIP through
+     * retryGroup).
+     */
+    DML_BATCH_UNRESOLVED
 }

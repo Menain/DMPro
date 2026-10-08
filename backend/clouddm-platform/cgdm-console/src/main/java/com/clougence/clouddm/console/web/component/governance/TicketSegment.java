@@ -74,6 +74,18 @@ public class TicketSegment {
     public static final String STATUS_SUCCESS   = "SUCCESS";
     public static final String STATUS_FAILED    = "FAILED";
 
+    /**
+     * B7 N2 window-crash manual verdicts (design §7.4, retryGroup FO additive field
+     * {@code dmlBatchResolution}): RERUN_BATCH = re-execute the unresolved batch from the
+     * inherited cursor (the normal continuation); SKIP_BATCH = re-derive one boundary from the
+     * cursor and advance it WITHOUT executing the DML (the evidence lands in the checkpoint +
+     * segment summary). Required iff the target segment's summary froze {@code unresolvedIntent}
+     * (missing/invalid → GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED, the B6 RETRY_UNSUPPORTED
+     * narrowing precedent).
+     */
+    public static final String RESOLUTION_RERUN_BATCH = "RERUN_BATCH";
+    public static final String RESOLUTION_SKIP_BATCH  = "SKIP_BATCH";
+
     /** 1-based segment position within the group plan (dense, 1..N) */
     private int               segIdx;
     /** AUTOEXEC | GHOST | DML_BATCH */
@@ -121,6 +133,16 @@ public class TicketSegment {
      * resolution guard). Stays on the runtime carrier as the forensic record of the inheritance.
      */
     private Map<String, Object> resumeCheckpoint;
+
+    /**
+     * DML_BATCH resume transport (B7 N2, design §7.4): set to {@link #RESOLUTION_SKIP_BATCH} by
+     * {@code resumeGroupUnderLock} when the human verdict over an UNRESOLVED segment is SKIP —
+     * consumed once by {@code submitForTicket} into the fresh task's configData
+     * ({@code pendingResolution}), whose FIRST tick performs the boundary re-derivation +
+     * cursor-only advance. RERUN needs no marker (the normal continuation IS the re-run).
+     * Cleared by {@code resetSegmentForRerun} like every stale execution binding.
+     */
+    private String            pendingResolution;
 
     /**
      * DML_BATCH batch key (plan + runtime freeze). {@code column} is the BARE identifier already

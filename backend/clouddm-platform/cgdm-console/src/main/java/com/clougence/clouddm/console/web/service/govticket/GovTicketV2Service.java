@@ -45,6 +45,19 @@ public interface GovTicketV2Service {
     void retryGroup(String puid, String uid, long groupId);
 
     /**
+     * B7 N2 (design §7.4): retryGroup with the window-crash manual verdict —
+     * {@code dmlBatchResolution} ∈ {RERUN_BATCH, SKIP_BATCH} (nullable). REQUIRED iff the resume
+     * target is a DML_BATCH segment whose frozen summary carries {@code unresolvedIntent}
+     * (missing/invalid → GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED); ignored by every other
+     * target shape. RERUN = re-execute the unresolved batch from the inherited cursor; SKIP =
+     * re-derive one boundary and advance the cursor WITHOUT executing (the evidence lands in the
+     * checkpoint + segment summary). The verdict is trailed twice (event DML_BATCH_RESOLUTION +
+     * the DML_BATCH_EXECUTE audit row annotated resolution+intentSeq — 四点注册复用, §12).
+     * The 3-arg form delegates here with a null resolution (byte-identical legacy behavior).
+     */
+    void retryGroup(String puid, String uid, long groupId, String dmlBatchResolution);
+
+    /**
      * B6 M1 (design §6.3): dispatch a ghost-marked PRE_DDL group through the GHOST tool session
      * (auto-route). Mirrors the retryGroup "build execution + markExecutionDispatched" shape:
      * launch the session bound to ticketId/groupId → group row EXECUTING → PREPARATION closed →

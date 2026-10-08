@@ -28,4 +28,14 @@ public class GovTicketV2GroupIdFO {
 
     @NotNull
     private Long groupId;
+
+    /**
+     * B7 N2 additive (design §7.4): the window-crash manual verdict — {@code RERUN_BATCH} ∨
+     * {@code SKIP_BATCH}. Nullable; REQUIRED only when the retry target is a DML_BATCH segment
+     * whose frozen summary carries {@code unresolvedIntent} (missing/invalid → rejected with
+     * GOV_TICKET_V2_DML_BATCH_RESOLUTION_REQUIRED — the B6 RETRY_UNSUPPORTED narrowing precedent).
+     * Every other group/segment shape ignores it (legacy callers send nothing — the FO's
+     * ignoreUnknown=false only guards UNKNOWN keys, a new declared field is wire-additive).
+     */
+    private String dmlBatchResolution;
 }

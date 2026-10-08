@@ -147,7 +147,8 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.GHOST_RESUME, //
                 AuditType.GHOST_STOP, //
                 AuditType.GHOST_DROP_OLD_TABLE, //
-                AuditType.DML_BATCH_EXECUTE)); // B7 four-point registration (2/4): init whitelist
+                AuditType.DML_BATCH_EXECUTE, // B7 four-point registration (2/4): init whitelist
+                AuditType.DML_BATCH_REJECT)); // B7 N2 four-point registration (2/4): init whitelist
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());

@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -136,6 +137,14 @@ public class DmlBatchAsyncTaskTest {
     private ResultList                   rangeResult;
     private RuntimeException             rangeThrows;
 
+    // N2 lag-throttle harness (the tick now prepends ONE lag-probe statement per session — the
+    // shared answerer routes it into its OWN recording so the N1b batch-sequence pins below stay
+    // byte-identical: executedSqls keeps meaning "the batch statements" (boundary + range).
+    // Default lagResult = an empty result set = "no replica" = proceed with fixed interval.)
+    private final List<String>           lagSqls = Collections.synchronizedList(new ArrayList<>());
+    private ResultList                   lagResult;
+    private RuntimeException             lagThrows;
+
     private DmExecAsyncTaskDO            storedRow;
 
     private final SessionSpi fakeSpi = new SessionSpi() {
@@ -243,9 +252,21 @@ public class DmlBatchAsyncTaskTest {
         // default worker answers: boundary finds hi=42, the batch affects 42 rows
         boundaryResult = queryResult(new String[] { "max" }, new String[][] { { "42" } });
         rangeResult = countResult(42L);
+        // N2 default lag answer: an EMPTY result set = "no replica" (SHOW REPLICA STATUS shape)
+        // → lag 0 → proceed; the N1b pins observe the exact pre-N2 batch behavior
+        lagResult = queryResult(new String[] { "seconds_behind_source" }, new String[0][]);
         when(queryService.syncExecuteQuery(anyString(), anyString(), any(QueryRequest.class))).thenAnswer(inv -> {
             QueryRequest request = inv.getArgument(2);
             String body = request.getQueryBody();
+            // N2: the per-tick lag probe rides the same session — routed into its own recording
+            // (lagSqls) so executedSqls keeps its N1b meaning (the batch statements only)
+            if (isLagProbe(body)) {
+                lagSqls.add(body);
+                if (lagThrows != null) {
+                    throw lagThrows;
+                }
+                return lagResult;
+            }
             executedSqls.add(body);
             if (body.startsWith("SELECT MAX(")) {
                 return boundaryResult;
@@ -684,6 +705,28 @@ public class DmlBatchAsyncTaskTest {
         assertTrue(executedSqls.isEmpty());
     }
 
+    @Test
+    public void tick_cancel_unconsumedSkipVerdict_markerRefrozen_noSilentRerunDowngrade() {
+        // check fix: a user stop BEFORE the skip tick consumed the SKIP verdict leaves the
+        // adjudicated batch STILL unresolved (the skip never happened) — the terminal summary
+        // must re-freeze the marker so the next retryGroup demands a fresh verdict instead of
+        // silently downgrading SKIP→RERUN over an unknown-outcome batch
+        ReflectionTestUtils.invokeMethod(task, "setInterrupted", InterruptedType.CANCEL);
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setBatchesDone(20);
+        cp.setCursor("99");
+
+        invokeTick(bootstrapConfigSkip(cp, 5_000_000L));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> summary = ArgumentCaptor.forClass(Map.class);
+        verify(completion).onBatchTerminal(eq(900L), eq(100L), eq(1), eq(TASK_ID), eq(false), anyString(),
+            summary.capture());
+        assertEquals(Boolean.TRUE, summary.getValue().get("unresolvedIntent"));
+        assertEquals(21L, summary.getValue().get("intentSeq")); // batchesDone+1 — the adjudicated batch
+        assertTrue(executedSqls.isEmpty());
+    }
+
     // ==================================================================================
     // session shape (R10 per-tick session; each batch commits independently)
     // ==================================================================================
@@ -699,7 +742,14 @@ public class DmlBatchAsyncTaskTest {
         assertFalse(ctxCaptor.getValue().isRdbReadOnly());
 
         ArgumentCaptor<QueryRequest> reqCaptor = ArgumentCaptor.forClass(QueryRequest.class);
-        verify(queryService, org.mockito.Mockito.times(2))
+        // N2 explicit adjudication (the ONLY frozen-pin touch of this delivery): design §5.2-2a
+        // mandates the replica-lag probe as the FIRST statement of EVERY batch session (每 tick
+        // 同会话顺带探测), so the per-tick remote-call count is 3 (lag + boundary + range) where
+        // N1b pinned 2. The pin's INTENT — the session shape (catalog/autoCommit/readOnly) and
+        // the TICKET requester tier — is unchanged: every statement rides the SAME DiagOpts, so
+        // get(0) (now the lag probe) still asserts Requester.TICKET. The lag probe's identity
+        // and routing are pinned separately by the N2 throttle tests below.
+        verify(queryService, org.mockito.Mockito.times(3))
             .syncExecuteQuery(eq(UID), eq(DIAG_SESSION), reqCaptor.capture());
         assertEquals(Requester.TICKET, reqCaptor.getAllValues().get(0).getRequester());
     }
@@ -739,8 +789,297 @@ public class DmlBatchAsyncTaskTest {
     }
 
     // ==================================================================================
+    // N2: replica-lag throttle (design §5.2-2a/§6.3) — engage / hysteresis / degrade / no-replica
+    // ==================================================================================
+
+    private ResultList lagRows(String secondsBehindSource) {
+        return queryResult(new String[] { "Seconds_Behind_Source" }, new String[][] { { secondsBehindSource } });
+    }
+
+    @Test
+    public void tick_lagOverThreshold_throttles_noIntentNoBatch_yieldDelay5sFloor() {
+        lagResult = lagRows("30"); // 30s > dmlLagThresholdSec default 10
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        // the probe rode the session FIRST; NO batch statement ran (节流 tick 不写 intent — 零假警报窗口)
+        assertEquals(1, lagSqls.size());
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLagProbe.MYSQL_LAG_SQL, lagSqls.get(0));
+        assertTrue("a throttled tick executes NO batch statement", executedSqls.isEmpty());
+        assertEquals(1, persistedConfigs.size());
+        DmlBatchCheckpoint write = persistedCheckpoint(0);
+        assertNull("the throttled tick writes NO intent", write.getIntent());
+        assertNotNull(write.getLagState());
+        assertTrue(write.getLagState().isVisible());
+        assertEquals(Double.valueOf(30.0), write.getLagState().getLastLagSec());
+        assertNotNull(write.getLagState().getThrottledAt());
+        assertEquals("THROTTLED", write.getLastStatus());
+        assertNotNull("节流 tick 心跳照写", write.getLastTickAt());
+        verify(completion, never()).onBatchTerminal(anyLong(), anyLong(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
+        // yield cadence = max(intervalMs, 5000)
+        assertEquals(ScheduleTask.TaskStatus.Delay, ReflectionTestUtils.getField(task, "status"));
+        assertEquals(5000, ReflectionTestUtils.getField(task, "delayTime"));
+    }
+
+    @Test
+    public void tick_lagHysteresis_atOrAboveHalf_staysThrottled_originalEngageTimeKept() {
+        lagResult = lagRows("6"); // ≥ threshold/2 = 5 → a throttled task STAYS throttled
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        DmlBatchCheckpoint.LagState engaged = new DmlBatchCheckpoint.LagState();
+        engaged.setVisible(true);
+        engaged.setThrottledAt(1234L); // previously engaged
+        cp.setLagState(engaged);
+
+        invokeTick(bootstrapConfig(cp, 5_000_000L));
+
+        assertTrue(executedSqls.isEmpty());
+        DmlBatchCheckpoint write = persistedCheckpoint(0);
+        assertEquals(Long.valueOf(1234L), write.getLagState().getThrottledAt()); // not re-stamped
+        assertEquals("THROTTLED", write.getLastStatus());
+    }
+
+    @Test
+    public void tick_lagHysteresis_belowHalf_releases_batchProceeds() {
+        lagResult = lagRows("4"); // < threshold/2 = 5 → release
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        DmlBatchCheckpoint.LagState engaged = new DmlBatchCheckpoint.LagState();
+        engaged.setVisible(true);
+        engaged.setThrottledAt(1234L);
+        cp.setLagState(engaged);
+
+        invokeTick(bootstrapConfig(cp, 5_000_000L));
+
+        // the batch ran normally (boundary + range) and the throttle marker is released
+        assertEquals(2, executedSqls.size());
+        DmlBatchCheckpoint done = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertNotNull(done.getLagState());
+        assertTrue(done.getLagState().isVisible());
+        assertNull(done.getLagState().getThrottledAt());
+        assertEquals("42", done.getCursor()); // the batch committed as usual
+    }
+
+    @Test
+    public void tick_lagProbeFailure_degradesInvisible_fixedIntervalContinues_neverThrows() {
+        lagThrows = new RuntimeException("access denied; you need REPLICATION CLIENT privilege");
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        // never-throw degradation: the batch proceeds on the fixed interval, lagState.visible=false
+        assertEquals(2, executedSqls.size());
+        DmlBatchCheckpoint done = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertNotNull(done.getLagState());
+        assertFalse("probe failure → invisible (延迟不可见黄旗载体)", done.getLagState().isVisible());
+        assertNull(done.getLagState().getThrottledAt());
+        assertEquals("42", done.getCursor());
+        verify(completion, never()).onBatchTerminal(anyLong(), anyLong(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
+    }
+
+    @Test
+    public void tick_lagUndecidableNull_invisibleDegradation() {
+        lagResult = lagRows(null); // replica row present but Seconds_Behind_Source NULL → undecidable
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        assertEquals(2, executedSqls.size());
+        DmlBatchCheckpoint done = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertFalse(done.getLagState().isVisible());
+    }
+
+    @Test
+    public void tick_noReplica_visibleZeroLag_batchProceeds() {
+        // the default harness lagResult is an EMPTY result set = SHOW REPLICA STATUS with no rows
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        assertEquals(2, executedSqls.size());
+        DmlBatchCheckpoint done = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertNotNull(done.getLagState());
+        assertTrue("无 replica = 照常 (visible, zero lag)", done.getLagState().isVisible());
+        assertEquals(Double.valueOf(0.0), done.getLagState().getLastLagSec());
+        assertNull(done.getLagState().getThrottledAt());
+    }
+
+    // ==================================================================================
+    // N2: communication-error classification (N1b check handover #1 — UNKNOWN, never retryPending)
+    // ==================================================================================
+
+    @Test
+    public void tick_commLinkError_unknownClass_neverRetryPending_unresolvedTerminal() {
+        rangeResult = errorResult("Communications link failure\n\nThe last packet sent successfully "
+                                  + "to the server was 0 milliseconds ago. SQLState: 08S01");
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        // UNKNOWN class: the server MAY have committed (the ack was lost) — statement atomicity
+        // no longer proves zero effect → NEVER the automatic retry flow (非幂等双倍窗口)
+        DmlBatchCheckpoint write = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertNotNull("the intent deliberately STAYS on the carrier (the window shape)", write.getIntent());
+        assertNull("NO retryPending — this is not the retry class", write.getIntent().getRetryPending());
+        assertEquals("UNRESOLVED", write.getLastStatus());
+        assertNull(write.getCursor()); // the cursor never advances on an unknown outcome
+
+        ArgumentCaptor<Map<String, Object>> summaryCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(completion).onBatchTerminal(eq(900L), eq(100L), eq(1), eq(TASK_ID),
+            eq(false), anyString(), summaryCaptor.capture());
+        assertEquals(Boolean.TRUE, summaryCaptor.getValue().get("unresolvedIntent"));
+        assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
+    }
+
+    @Test
+    public void tick_plainDbError_stillRetryPending_commClassNarrowingIsTextual() {
+        rangeResult = errorResult("ERROR 1213 (40001): Deadlock found when trying to get lock");
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        // a genuine server-side error keeps the N1b retryPending flow (zero effect PROVEN)
+        DmlBatchCheckpoint write = persistedCheckpoint(persistedConfigs.size() - 1);
+        assertEquals(Boolean.TRUE, write.getIntent().getRetryPending());
+        assertEquals("RETRYING", write.getLastStatus());
+        verify(completion, never()).onBatchTerminal(anyLong(), anyLong(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
+    }
+
+    @Test
+    public void isCommLinkError_matrix() {
+        // positive family: SQLState class 08 + the connector text family
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("Communications link failure"));
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("The last packet sent... SQLState: 08S01"));
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("ERROR: SQL State = 08001 (connection_failure)"));
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("An I/O error occurred while sending to the backend"));
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("java.net.SocketException: Connection reset by peer"));
+        assertTrue(DmlBatchAsyncTask.isCommLinkError("java.io.IOException: Broken pipe"));
+        // negative: genuine server-side errors keep the safe retry class
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("ERROR 1205 (HY000): Lock wait timeout exceeded"));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("ERROR 1213 (40001): Deadlock found when trying to get lock"));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("ERROR 1062 (23000): Duplicate entry '1' for key 'PRIMARY'"));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("ERROR: column \"x\" does not exist SQLState: 42703"));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("syntax error at or near \"UPDAT\" SQLState: 42601"));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError(null));
+        assertFalse(DmlBatchAsyncTask.isCommLinkError("  "));
+    }
+
+    // ==================================================================================
+    // N2: SKIP_BATCH resolution tick (design §7.4 — cursor-only advance, evidence frozen)
+    // ==================================================================================
+
+    private String bootstrapConfigSkip(DmlBatchCheckpoint checkpoint, Long estimatedRows) {
+        DmlBatchAsyncTaskConfig cfg = new DmlBatchAsyncTaskConfig();
+        cfg.setBizId(BIZ_ID);
+        cfg.setTicketId(900L);
+        cfg.setGroupId(100L);
+        cfg.setSegmentIndex(1);
+        cfg.setUserId(UID);
+        cfg.setDsId(DS_ID);
+        cfg.setDbName(DB);
+        cfg.setStmtSql(STMT_SQL);
+        cfg.setBatchKey(new TicketSegment.BatchKey("id", DmlBatchRangeSpec.KEY_TYPE_INT));
+        cfg.setEffectiveParams(new DmlBatchEffectiveParams());
+        cfg.setEstimatedRows(estimatedRows);
+        cfg.setIdempotent(Boolean.FALSE);
+        cfg.setCheckpoint(checkpoint);
+        cfg.setPendingResolution(TicketSegment.RESOLUTION_SKIP_BATCH);
+        String json = JsonUtils.toJson(cfg);
+        storedConfigData = json;
+        storedRow.setConfigData(json);
+        return json;
+    }
+
+    @Test
+    public void tick_pendingSkipBatch_advancesCursorWithoutDml_evidenceFrozen_markerConsumed() {
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(20);
+        cp.setRowsDone(100000);
+
+        invokeTick(bootstrapConfigSkip(cp, 5_000_000L));
+
+        // ONLY the boundary SELECT ran — the range DML never executed (the skip semantics)
+        assertEquals(1, executedSqls.size());
+        assertEquals(BOUNDARY_SQL, executedSqls.get(0));
+        assertEquals(1, persistedConfigs.size());
+        DmlBatchCheckpoint write = persistedCheckpoint(0);
+        assertEquals("42", write.getCursor());      // advanced to the re-derived boundary
+        assertEquals(21L, write.getBatchesDone());  // the skipped batch consumed its seq
+        assertEquals(100000L, write.getRowsDone()); // rowsDone UNMOVED — nothing was executed
+        assertNull(write.getIntent());              // the skip writes no intent (zero write effect)
+        assertNotNull(write.getLastDone());
+        assertEquals(21L, write.getLastDone().getSeq());
+        assertEquals("99", write.getLastDone().getLo());   // evidence pair {lo,hi}
+        assertEquals("42", write.getLastDone().getHi());
+        assertEquals(0L, write.getLastDone().getAffectRows());
+        assertEquals(TicketSegment.RESOLUTION_SKIP_BATCH, write.getLastDone().getResolution());
+        assertNotNull(write.getSkips());
+        assertEquals(1, write.getSkips().size());
+        assertEquals(21L, write.getSkips().get(0).getSeq());
+        assertEquals("99", write.getSkips().get(0).getLo());
+        assertEquals("42", write.getSkips().get(0).getHi());
+        // the marker is consumed by the successful skip-done persist (a later crash never re-skips)
+        DmlBatchAsyncTaskConfig persistedCfg = JsonUtils.toObj(persistedConfigs.get(0), DmlBatchAsyncTaskConfig.class);
+        assertNull(persistedCfg.getPendingResolution());
+        // the normal throttle cadence follows (BATCH_DONE path)
+        assertEquals(ScheduleTask.TaskStatus.Delay, ReflectionTestUtils.getField(task, "status"));
+        assertEquals(1000, ReflectionTestUtils.getField(task, "delayTime"));
+        verify(completion, never()).onBatchTerminal(anyLong(), anyLong(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any(), any());
+        // the skip forensics line
+        ArgumentCaptor<DmMonBizLogDO> logCaptor = ArgumentCaptor.forClass(DmMonBizLogDO.class);
+        verify(bizLogMapper).insert(logCaptor.capture());
+        assertTrue(logCaptor.getValue().getContent().contains("SKIP seq=21"));
+        assertTrue(logCaptor.getValue().getContent().contains("resolution=SKIP_BATCH"));
+    }
+
+    @Test
+    public void tick_pendingSkipBatch_boundaryNull_completes_terminationAuthorityUnchanged() {
+        boundaryResult = queryResult(new String[] { "max" }, new String[][] { { null } });
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(20);
+
+        invokeTick(bootstrapConfigSkip(cp, 5_000_000L));
+
+        // the cursor already sits past the last row — the skip probe completes the segment
+        // (the boundary stays the ONLY termination authority)
+        assertEquals(1, executedSqls.size());
+        verify(completion).onBatchTerminal(eq(900L), eq(100L), eq(1), eq(TASK_ID),
+            eq(true), isNull(), any());
+        assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
+    }
+
+    @Test
+    public void tick_pendingSkipBatch_boundaryFailure_safeFailed_reSkipSurvivesCrash() {
+        boundaryResult = errorResult("ERROR 1146 Table gone");
+        DmlBatchCheckpoint cp = new DmlBatchCheckpoint();
+        cp.setCursor("99");
+        cp.setBatchesDone(20);
+
+        invokeTick(bootstrapConfigSkip(cp, 5_000_000L));
+
+        // zero write effect on the whole skip path → the failure is SAFE for the TASK, but the
+        // adjudicated batch was NEITHER skipped NOR proven — the summary RE-FREEZES the
+        // unresolvedIntent marker (check fix: without it the next retryGroup sees no marker and
+        // silently downgrades the human SKIP verdict to a RERUN of the unknown-outcome batch —
+        // the double-apply hazard for non-idempotent UPDATEs). The configData marker also stays
+        // unconsumed, so a same-task crash-restart simply re-skips.
+        ArgumentCaptor<Map<String, Object>> summaryCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(completion).onBatchTerminal(eq(900L), eq(100L), eq(1), eq(TASK_ID),
+            eq(false), anyString(), summaryCaptor.capture());
+        assertEquals("the SKIP verdict was not consumed — the batch stays UNRESOLVED for the guard",
+            Boolean.TRUE, summaryCaptor.getValue().get("unresolvedIntent"));
+        assertEquals("the adjudicated batch's seq (batchesDone+1 — no intent on the skip shape)",
+            21L, summaryCaptor.getValue().get("intentSeq"));
+        DmlBatchAsyncTaskConfig persistedCfg = JsonUtils.toObj(persistedConfigs.get(persistedConfigs.size() - 1),
+            DmlBatchAsyncTaskConfig.class);
+        // the FAILED persist does not clear the marker (only the successful skip-done does)
+        assertEquals(TicketSegment.RESOLUTION_SKIP_BATCH, persistedCfg.getPendingResolution());
+        assertEquals("99", persistedCfg.getCheckpoint().getCursor()); // the cursor never advanced
+    }
+
+    // ==================================================================================
     // ResultList fixtures
     // ==================================================================================
+
+    /** N2 harness routing: the per-tick replica-lag probe statements (both dialect constants). */
+    private static boolean isLagProbe(String body) {
+        return com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLagProbe.MYSQL_LAG_SQL.equals(body)
+            || com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLagProbe.PG_LAG_SQL.equals(body);
+    }
 
     private static ResultList queryResult(String[] columns, String[][] rows) {
         ResultSetMeta meta = new ResultSetMeta();
