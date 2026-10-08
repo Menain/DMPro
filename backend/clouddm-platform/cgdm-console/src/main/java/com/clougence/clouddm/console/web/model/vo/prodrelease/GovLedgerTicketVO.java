@@ -45,4 +45,11 @@ public class GovLedgerTicketVO {
      * ghost routing is M5), so the merge-confirm surface warns about the large-table lock risk.
      */
     private boolean ghostRouted;
+    /**
+     * B7 N3 发布链披露 (additive, display-only — the ghostRouted twin): the ticket carries ≥1
+     * DML_BATCH-routed statement — the release merge replays it as ONE direct statement on prod
+     * (release-chain batch routing is v2, the B6 M5 cadence), so the merge-confirm surface warns
+     * about the direct long-lock/timeout risk.
+     */
+    private boolean dmlBatchRouted;
 }

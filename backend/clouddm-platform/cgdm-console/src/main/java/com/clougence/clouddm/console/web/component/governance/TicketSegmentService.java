@@ -181,9 +181,32 @@ public class TicketSegmentService {
             String jobBizId = DmTeamUtils.nextExecJobBizId();
             first.setJobBizId(jobBizId);
             persistRuntime(fresh, runtime);
-            this.autoExecService.createGroupJob(fresh, jobBizId, transactional, errorStrategy, languageTag, uid);
+            this.autoExecService.createGroupJob(fresh, jobBizId,
+                forceNonTransactionalIfBatched(plan, transactional, fresh.getId()),
+                errorStrategy, languageTag, uid);
             this.autoExecService.startJob(jobBizId, uid);
         }
+    }
+
+    /**
+     * B7 N3 (裁决 #11/A7, design §13 "PROD_DML 确认弹窗事务开关=true ∧ 组含 DML_BATCH 段 → 服务端
+     * 强制 enableTransactional=false"): a group carrying a DML_BATCH segment NEVER runs its
+     * AUTOEXEC segments transactionally — the batch loop commits per batch (分批的核心收益), so a
+     * whole-job transaction over the plain statements contradicts the group's partial-success
+     * semantics and re-creates the long-transaction lock holding the batching exists to remove.
+     * This is the SERVER-SIDE RE-VALIDATION covering EVERY dispatch chain (the auto-advance
+     * config builds transactional=true for DML changeType by default; the human-confirm FO
+     * carries the dialog's value — the dialog's disabled switch is the UX front, 三点明示之二).
+     * Mid-chain/resume/sweep re-dispatch parity lives in {@link #resolveTransactional}.
+     * GHOST-only plans are untouched (B6 behavior byte-identical).
+     */
+    private static boolean forceNonTransactionalIfBatched(List<TicketSegment> plan, boolean transactional, long groupId) {
+        if (transactional && TicketSegment.hasDmlBatchSegment(plan)) {
+            log.warn("[TicketSegment] group {} carries a DML_BATCH segment — enableTransactional forced to false: {}",
+                groupId, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_TRANSACTIONAL_FORCED.name()));
+            return false;
+        }
+        return transactional;
     }
 
     // ==================================================================================
@@ -1141,8 +1164,9 @@ public class TicketSegmentService {
      * (GHOST ∨ DML_BATCH; field name and wire shape unchanged for in-flight compatibility) — NOT
      * this carrier: the WAIT_EXEC sweep pre-filter (ChangeApprovalHandler.probeGhostGroupsIfDue →
      * GhostRouteFlags.anyRouted) skips a flagless ticket BEFORE ever inspecting exec_segments,
-     * and the groupList frontend projection (GovTicketV2ServiceImpl.fillGhostTaskProjection)
-     * uses the same positional gate. The coupling holds because flags and the segments plan are
+     * and the groupList frontend projections (GovTicketV2ServiceImpl.fillGhostTaskProjection AND
+     * its B7 N3 twin fillDmlBatchTaskProjection) use the same positional gate. The coupling holds
+     * because flags and the segments plan are
      * derived from the SAME authoritative precheck evaluation (submit/resubmit — the B7 marking
      * seam sets a group's flag when its plan carries a GHOST **or DML_BATCH** segment). ANY
      * future path that writes segments (plan or runtime, ANY routed type) MUST write the flags in
@@ -1167,9 +1191,19 @@ public class TicketSegmentService {
         return true;
     }
 
-    /** D15 group-level exec config: the group's own precheck changeType (DML → transactional). */
+    /**
+     * D15 group-level exec config: the group's own precheck changeType (DML → transactional).
+     * B7 N3 (裁决 #11): a DML_BATCH-segmented group forces NON-transactional AUTOEXEC segments —
+     * the mid-chain/resume/sweep-redispatch parity of {@link #forceNonTransactionalIfBatched}
+     * (before B7 the comment below held: "a segmented group carries DDL by construction" — a
+     * PROD_DML group segmented by a big DML has changeType=DML and WOULD run its plain statements
+     * as one transaction while its batched statement commits per batch).
+     */
     private static boolean resolveTransactional(DmTicketDbStmtDO group) {
         try {
+            if (TicketSegment.hasDmlBatchSegment(TicketSegment.parsePlan(group.getPrecheckResult()))) {
+                return false;
+            }
             Map<?, ?> precheck = JsonUtils.toObj(group.getPrecheckResult(), Map.class);
             Object ct = precheck == null ? null : precheck.get("changeType");
             return "DML".equals(ct == null ? null : String.valueOf(ct));

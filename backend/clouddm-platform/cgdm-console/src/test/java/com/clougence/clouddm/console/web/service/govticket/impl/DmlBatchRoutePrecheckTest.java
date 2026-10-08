@@ -865,6 +865,119 @@ public class DmlBatchRoutePrecheckTest {
         assertTrue(GhostRouteFlags.anyRouted(persistedMo));
     }
 
+    // ==================== N3: group-level session-state gate (N1a handover obligation #2) ====================
+    // The batch loop opens a FRESH channel-C session per tick — a group carrying SET/session-state
+    // statements (anything outside the DML∪DDL whitelist) makes its batched statements lose that
+    // context silently, so the WHOLE GROUP gives up DML_BATCH routing (display key). The NO_KEY
+    // rejection is UNAFFECTED (the §9.8.3 violation stands regardless of routing).
+
+    @Test
+    public void check_groupWithSetStatement_bigUpdateNotRouted_sessionStateHint() {
+        splitScripts = List.of(
+            script(0, "SET @cutoff = '2020-01-01'", SplitQueryType.SESSION_VARIABLE_RW),
+            updateScript(1, "UPDATE t_order SET status = 1 WHERE status = 0"));
+        estimation = estimation(5_000_000L, new SqlRowEstimator.StmtEstimation(2, 5_000_000L));
+
+        GovTicketV2CheckVO.GroupResult gr = checkProdDml("...");
+
+        assertEquals("PASS", gr.getCheckStatus()); // the downgrade is NEVER a rejection
+        assertNull("整组放弃 DML_BATCH 路由 — no plan at all", gr.getSegments());
+        assertEquals(1, gr.getDmlBatchRoutes().size());
+        GovTicketV2CheckVO.DmlBatchRouteVO route = gr.getDmlBatchRoutes().get(0);
+        assertEquals(GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_GROUP_SESSION_STATE, route.getRoute());
+        assertEquals(2, route.getStmtIndex()); // the UPDATE's 1-based exec_order position (SET occupies 1)
+        assertEquals("t_order", route.getTableName());
+        assertEquals(Long.valueOf(5_000_000L), route.getEstimatedRows());
+        assertTrue(route.getMessage().contains("t_order"));
+        assertNotNull("shape MO embedded verbatim (obligation #7 parity)", route.getShape());
+        // the probe still ran (the key state feeds the unaffected rejection decision)
+        verify(dmlBatchService).probeForKey(eq(UID), any(), any(), eq(DB), any(), eq("t_order"));
+    }
+
+    @Test
+    public void check_groupWithSelectStatement_whitelistIsDmlDdlOnly_notRouted() {
+        // SELECT is NEITHER isDmlType NOR isDdlType → the conservative whitelist fires the gate
+        // (SELECT ... INTO @v / set_config(...) can carry session state — 宁可误拒)
+        splitScripts = List.of(
+            script(0, "SELECT COUNT(*) FROM t_order", SplitQueryType.SELECT),
+            deleteScript(1, "DELETE FROM t_order WHERE status = 9"));
+        shapesBySql.put("DELETE FROM t_order WHERE status = 9", shape(true, "t_order", SplitQueryType.DELETE, false));
+        estimation = estimation(5_000_000L, new SqlRowEstimator.StmtEstimation(2, 5_000_000L));
+
+        GovTicketV2CheckVO.GroupResult gr = checkProdDml("...");
+
+        assertEquals("PASS", gr.getCheckStatus());
+        assertNull(gr.getSegments());
+        assertEquals(GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_GROUP_SESSION_STATE,
+            gr.getDmlBatchRoutes().get(0).getRoute());
+    }
+
+    @Test
+    public void check_groupWithSetStatement_noKeyStillRejected_rejectionIndependentOfRouting() {
+        // the session-state gate downgrades ROUTING only — an over-threshold keyless DML stays a
+        // §9.8.3 violation and the 裁决 #5 rejection fires exactly as in a pure group
+        splitScripts = List.of(
+            script(0, "SET @cutoff = '2020-01-01'", SplitQueryType.SESSION_VARIABLE_RW),
+            updateScript(1, "UPDATE t_order SET status = 1 WHERE status = 0"));
+        estimation = estimation(5_000_000L, new SqlRowEstimator.StmtEstimation(2, 5_000_000L));
+        probe = probe(DmlBatchKeyProbe.STATE_NO_KEY, null, null, 5_000_000L);
+        probe.setKeyDetail("no primary key and no unique key");
+
+        GovTicketV2CheckVO.GroupResult gr = checkProdDml("...");
+
+        assertEquals("FAIL", gr.getCheckStatus());
+        assertEquals(GovTicketV2CheckVO.FAIL_CODE_DML_NO_KEY, gr.getFailCode());
+        assertNotNull(gr.getDmlNoKeyReject());
+        assertEquals("t_order", gr.getDmlNoKeyReject().getTableName());
+    }
+
+    @Test
+    public void check_preDdlMixedAlterAndBigDml_ddlWhitelisted_bothStillRouted() {
+        // the PRE mixed matrix (裁决 #7): DDL is whitelisted — [大 ALTER, 大 DML] keeps BOTH routes
+        // ([GHOST(1), DML_BATCH(2)]) and the session-state gate never fires
+        splitScripts = List.of(
+            alterScript(0, "ALTER TABLE t_big ADD COLUMN c1 INT"),
+            deleteScript(1, "DELETE FROM t_order WHERE created < '2020-01-01'"));
+        shapesBySql.put("DELETE FROM t_order WHERE created < '2020-01-01'",
+            shape(true, "t_order", SplitQueryType.DELETE, false));
+        estimation = estimation(25_000_000L, new SqlRowEstimator.StmtEstimation(2, 5_000_000L));
+
+        GovTicketV2CheckVO.GroupResult gr = checkPreDdl("...");
+
+        assertEquals("PASS", gr.getCheckStatus());
+        List<TicketSegment> plan = gr.getSegments();
+        assertNotNull(plan);
+        assertEquals(2, plan.size());
+        assertEquals(TicketSegment.TYPE_GHOST, plan.get(0).getType());
+        assertEquals(Integer.valueOf(1), plan.get(0).getStmtIndex());
+        assertEquals(TicketSegment.TYPE_DML_BATCH, plan.get(1).getType());
+        assertEquals(Integer.valueOf(2), plan.get(1).getStmtIndex());
+        assertEquals(GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DML_BATCH, gr.getDmlBatchRoutes().get(0).getRoute());
+    }
+
+    @Test
+    public void check_sessionStateGroup_downgradedTableSuppressesAccumulateHint() {
+        // the downgraded statement's display supersedes the R13 accumulate hint for its table
+        // (one per-statement line, no redundant group-level line for the same table)
+        splitScripts = List.of(
+            script(0, "SET @x = 1", SplitQueryType.SESSION_VARIABLE_RW),
+            updateScript(1, "UPDATE t_order SET a = 1 WHERE id < 100"),
+            updateScript(2, "UPDATE t_order SET status = 1 WHERE status = 0"));
+        shapesBySql.put("UPDATE t_order SET a = 1 WHERE id < 100", shape(true, "t_order", SplitQueryType.UPDATE, false));
+        estimation = estimation(5_400_000L,
+            new SqlRowEstimator.StmtEstimation(2, 400_000L),       // below threshold → accumulate bookkeeping
+            new SqlRowEstimator.StmtEstimation(3, 5_000_000L));   // exceeded → downgraded by the gate
+
+        GovTicketV2CheckVO.GroupResult gr = checkProdDml("...");
+
+        assertEquals("PASS", gr.getCheckStatus());
+        assertNull(gr.getSegments());
+        assertEquals("exactly one display line — the accumulate hint is suppressed", 1, gr.getDmlBatchRoutes().size());
+        assertEquals(GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_GROUP_SESSION_STATE,
+            gr.getDmlBatchRoutes().get(0).getRoute());
+        assertEquals(3, gr.getDmlBatchRoutes().get(0).getStmtIndex());
+    }
+
     // ==================== fixture helpers ====================
 
     private GovTicketV2CheckVO.GroupResult checkProdDml(String sqlContent) {

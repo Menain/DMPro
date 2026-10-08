@@ -195,6 +195,12 @@ public class GovLedgerServiceImpl implements GovLedgerService {
             vo.setGhostRouted(ticketStmts.stream().anyMatch(
                 s -> com.clougence.clouddm.console.web.component.governance.GhostRouteMarks
                     .hasGhostRoute(s.getPrecheckResult())));
+            // B7 N3 发布链披露 (the ghostRouted twin): any group carrying a DML_BATCH route mark
+            // → the merge-confirm modal shows the batch-source direct-replay hint (release-chain
+            // batch routing is v2).
+            vo.setDmlBatchRouted(ticketStmts.stream().anyMatch(
+                s -> com.clougence.clouddm.console.web.component.governance.GhostRouteMarks
+                    .hasDmlBatchRoute(s.getPrecheckResult())));
             if (promoted && releaseStmt != null) {
                 DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseStmt.getReleaseId());
                 if (release != null) {

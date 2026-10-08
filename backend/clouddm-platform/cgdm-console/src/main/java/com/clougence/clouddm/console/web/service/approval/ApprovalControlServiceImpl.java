@@ -1213,6 +1213,9 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         if (dmTicketDO == null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
         }
+        // B7 N3 (裁决 #17): SPECIFY_TIME over a segmented group is rejected synchronously here —
+        // the ticket stays WAIT_CONFIRM and the operator re-picks IMMEDIATE/MANUAL_EXEC
+        assertScheduleSupportedForSegments(dmTicketDO, fo.getAutoExecConfig(), actionStatus);
 
         DmAuthUserDO confirmUser = this.authDal.userMapper().queryByUid(fo.getConfirmUid());
         ApprovalStageMO cContext = new ApprovalStageMO();
@@ -1361,6 +1364,11 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         if (dmTicketDO == null) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_NOT_EXIST_ERROR.name()));
         }
+        // B7 N3 (SYSTEM copy — 双副本同改契约): the same SPECIFY_TIME + segmented-group rejection
+        // as the human confirmTicketInTransaction. Today's SYSTEM callers pass IMMEDIATE by
+        // construction (auto-advance config / the open command execute), so this is the drift
+        // guard keeping the copies equivalent.
+        assertScheduleSupportedForSegments(dmTicketDO, fo.getAutoExecConfig(), actionStatus);
 
         // Hardcode SYSTEM — queryByUid("SYSTEM") returns null → NPE in original path.
         ApprovalStageMO cContext = new ApprovalStageMO();
@@ -1678,6 +1686,44 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                 }
             }
             throw e;
+        }
+    }
+
+    /**
+     * B7 N3 (裁决 #17, design §13 "SPECIFY_TIME + 分段组 → v1 确认拒绝引导"): a segmented group
+     * (plan carrying a GHOST ∨ DML_BATCH routed segment) cannot honor scheduled execution — the
+     * group job's schedule_time only defers the AUTOEXEC part while the routed segments execute
+     * through AsyncTasks with NO scheduling carrier (the group would silently split its
+     * semantics). Rejected SYNCHRONOUSLY at the confirm entry (both copies — 双副本同改契约) so
+     * the ticket stays WAIT_CONFIRM and the operator re-picks IMMEDIATE or MANUAL_EXEC (both
+     * preserved: MANUAL_EXEC builds no executor; pure-normal groups keep the N0 scheduled
+     * semantics byte-identical — the guard fires ONLY on a segment plan).
+     * <p>
+     * Gated on {@code actionStatus == WAIT_EXEC}: a REFUSE carrying a stale SPECIFY_TIME config
+     * must never be blocked. Legacy tickets (no ticketInfo.ticketType) carry no group rows /
+     * segment plans — the discriminator gates the group read so legacy confirms stay
+     * byte-identical with ZERO extra queries.
+     */
+    private void assertScheduleSupportedForSegments(DmApprovalDO dmTicket, DmAutoExecConfigFO config,
+                                                    ApprovalStatus actionStatus) {
+        if (actionStatus != ApprovalStatus.WAIT_EXEC
+            || config == null || config.getAutoExecType() != AutoExecType.SPECIFY_TIME) {
+            return;
+        }
+        ApprovalMO mo = parseTicketInfoTolerant(dmTicket.getTicketInfo());
+        if (mo == null || StringUtils.isEmpty(mo.getTicketType())) {
+            return; // legacy / non-v2 ticket — no segment plans exist (status quo, no group read)
+        }
+        List<DmTicketDbStmtDO> groups = this.ticketDbStmtDal.stmtMapper().queryByTicketId(dmTicket.getId());
+        if (groups == null) {
+            return;
+        }
+        for (DmTicketDbStmtDO group : groups) {
+            if (com.clougence.clouddm.console.web.component.governance.TicketSegment
+                    .isSegmentedPlan(group.getPrecheckResult())) {
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nDmMsgKeys.GOV_TICKET_V2_DML_BATCH_SCHEDULE_UNSUPPORTED.name()));
+            }
         }
     }
 

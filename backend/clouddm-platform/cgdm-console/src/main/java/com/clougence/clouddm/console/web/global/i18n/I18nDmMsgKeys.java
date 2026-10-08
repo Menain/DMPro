@@ -664,4 +664,12 @@ public enum I18nDmMsgKeys {
     ALERT_PUSH_DML_UNRESOLVED_BATCH,
     ALERT_PUSH_DML_UNRESOLVED_ACTION,
     ALERT_PUSH_DML_UNRESOLVED_LINK,
+
+    // -- Lock-free DML N3 (mixed groups / confirm re-validation; design §13/§15) --
+    /** 组内含 SET/会话状态类语句(非 DML/DDL 白名单)→ 整组放弃分批路由的展示键(N1a 移交②) */
+    DML_BATCH_GROUP_SESSION_STATE,
+    /** 确认复验:SPECIFY_TIME + 分段组 → 拒绝引导(裁决 #17,AsyncTask 无定时承载) */
+    GOV_TICKET_V2_DML_BATCH_SCHEDULE_UNSUPPORTED,
+    /** 派发复验:分批组强制 enableTransactional=false(裁决 #11,弹窗前置提示优先,此为兜底) */
+    DML_BATCH_TRANSACTIONAL_FORCED,
 }

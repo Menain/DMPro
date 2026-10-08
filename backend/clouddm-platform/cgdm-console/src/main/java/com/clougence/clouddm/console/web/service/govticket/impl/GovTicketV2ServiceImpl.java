@@ -1564,14 +1564,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // legacy/unrouted tickets never touch the GHOST task mapper.
         //
         // ⚠ DUAL-WRITE COUPLING PIN (B6 M4, M2 check 前瞻6; B7 semantic widening, 裁决 #12): this
-        // frontend projection AND the WAIT_EXEC sweep repair (ChangeApprovalHandler.
-        // probeGhostGroupsIfDue) both gate on GhostRouteFlags.anyRouted BEFORE ever looking at
-        // exec_segments — a segmented group only reaches TicketSegmentService.repairGroupUnderLock
-        // INSIDE that gate. The flags' semantics B7 WIDENED from "ghost-routed" to "HAS
-        // NON-DIRECT-EXECUTION SEGMENTS" (GHOST ∨ DML_BATCH; field name / wire shape unchanged) —
-        // a DML_BATCH-only ticket that did not set its flag would silently lose its sweep repair
-        // (R2). The coupling holds because submit/resubmit derive the flags and the segments plan
-        // from the SAME authoritative evaluation run (evaluateGhostRoute ∨ evaluateDmlBatchRoute).
+        // frontend projection (BOTH the ghost AND the DML_BATCH twin below) AND the WAIT_EXEC sweep
+        // repair (ChangeApprovalHandler.probeGhostGroupsIfDue) gate on GhostRouteFlags.anyRouted
+        // BEFORE ever looking at exec_segments — a segmented group only reaches
+        // TicketSegmentService.repairGroupUnderLock INSIDE that gate. The flags' semantics B7
+        // WIDENED from "ghost-routed" to "HAS NON-DIRECT-EXECUTION SEGMENTS" (GHOST ∨ DML_BATCH;
+        // field name / wire shape unchanged) — a DML_BATCH-only ticket that did not set its flag
+        // would silently lose its sweep repair AND its batch progress projection (R2). The
+        // coupling holds because submit/resubmit derive the flags and the segments plan from the
+        // SAME authoritative evaluation run (evaluateGhostRoute ∨ evaluateDmlBatchRoute).
         // ANY future path that writes segments (plan or runtime, ANY routed type) MUST write the
         // flags in the same breath — or these pre-filters must be made segments-aware — otherwise
         // the group silently loses both its projection here and its sweep safety net.
@@ -1595,6 +1596,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             if (anyGhostRouted
                 && com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
                 fillGhostTaskProjection(vo, ticketId, g.getId());
+                // B7 N3: the DML_BATCH twin under the SAME widened flags gate — a mixed PRE group
+                // fills BOTH projections, a DML_BATCH-only group fills only this one (the ghost
+                // lookup no-ops on the absent GHOST task and vice versa)
+                fillDmlBatchTaskProjection(vo, ticketId, g.getId());
             }
             result.add(vo);
         }
@@ -1670,6 +1675,98 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             return com.clougence.clouddm.console.web.service.ghost.GhostService.STATUS_ABORTED;
         }
         return cfg == null ? null : cfg.getLastStatus();
+    }
+
+    /**
+     * B7 N3 (design §10, groupList 投影扩展): additive DML_BATCH projection for the ticket-detail
+     * segment view — the NEWEST batch task bound to the group supplies the live checkpoint
+     * (batches/rows/percent), the lag-throttle state, the control-endpoint coordinates
+     * (taskId/segmentIndex/taskStatus) and the window-crash resolution material
+     * (unresolvedIntent/intentSeq/idempotent/lastBatchError/skipVerdictPending). It rides the
+     * existing 5s group refresh — ZERO new polling endpoints (unlike ghost there is no log tail;
+     * the whole progress lives in the task configData).
+     * <p>
+     * Never-throw: a projection failure degrades to a null dmlBatchProgress — the group list is a
+     * plain read endpoint and the segment runtime passthrough still renders. The unresolvedIntent
+     * derivation is TERMINAL-GATED: a RUNNING task with an in-flight intent is a healthy batch;
+     * the resolution guard's authority stays the segment summary in execSegments (N2 single-key
+     * ruling) — this field is display material only. The {@code dmlBatchService == null} guard is
+     * the engine-unwired degradation (the frozen GhostGroupListTest suite predates the field and
+     * must keep projecting byte-identically).
+     */
+    private void fillDmlBatchTaskProjection(GovTicketV2GroupVO vo, long ticketId, long groupId) {
+        if (dmlBatchService == null) {
+            return;
+        }
+        try {
+            com.clougence.clouddm.platform.dal.model.execution.DmExecAsyncTaskDO task
+                = dmlBatchService.findTaskForTicketGroup(ticketId, groupId, null);
+            if (task == null) {
+                return; // batch-marked but not dispatched yet (or GHOST-only group) — nothing to project
+            }
+            GovTicketV2GroupVO.DmlBatchProgressVO progress = new GovTicketV2GroupVO.DmlBatchProgressVO();
+            progress.setTaskId(task.getId());
+            com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus status = task.getStatus();
+            progress.setTaskStatus(status == null ? null : status.name());
+            progress.setPaused(status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.PAUSE);
+            vo.setDmlBatchProgress(progress);
+
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchAsyncTaskConfig cfg
+                = com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl.parseTaskConfig(task);
+            if (cfg == null) {
+                return; // unparsable configData — the task-level fields above still stand
+            }
+            progress.setSegmentIndex(cfg.getSegmentIndex());
+            progress.setEstimatedRows(cfg.getEstimatedRows());
+            progress.setIdempotent(cfg.getIdempotent());
+            boolean skipVerdictPending = com.clougence.clouddm.console.web.component.governance.TicketSegment
+                .RESOLUTION_SKIP_BATCH.equals(cfg.getPendingResolution());
+            progress.setSkipVerdictPending(skipVerdictPending);
+
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint cp = cfg.getCheckpoint();
+            if (cp == null) {
+                return;
+            }
+            progress.setBatchesDone(cp.getBatchesDone());
+            progress.setRowsDone(cp.getRowsDone());
+            if (cfg.getEstimatedRows() != null && cfg.getEstimatedRows() > 0) {
+                long percent = cp.getRowsDone() * 100 / cfg.getEstimatedRows();
+                progress.setPercentApprox((int) Math.min(100L, Math.max(0L, percent)));
+            }
+            if (cp.getLagState() != null) {
+                GovTicketV2GroupVO.LagStateVO lag = new GovTicketV2GroupVO.LagStateVO();
+                lag.setVisible(cp.getLagState().isVisible());
+                lag.setLastLagSec(cp.getLagState().getLastLagSec());
+                lag.setThrottled(cp.getLagState().getThrottledAt() != null);
+                progress.setLagState(lag);
+            }
+            com.clougence.clouddm.console.web.service.dmlbatch.asyntask.DmlBatchCheckpoint.Intent intent
+                = cp.getIntent();
+            if (intent != null) {
+                progress.setRetryPending(intent.getRetryPending());
+                progress.setLastBatchError(intent.getLastBatchError());
+            }
+            boolean terminal = status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.COMPLETE
+                || status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.FAILURE
+                || status == com.clougence.clouddm.platform.dal.model.execution.AsyncTaskStatus.CANCEL;
+            if (terminal) {
+                // the carrier mirror of the summary marker logic (isUnresolvedIntent ∨
+                // isSkipVerdictPending — the N2 check re-freeze included): intent ∧ ¬retryPending
+                // is the true window crash; an unconsumed SKIP verdict means the adjudicated batch
+                // was neither skipped nor proven (intentSeq = batchesDone+1 by construction)
+                boolean unresolved = (intent != null && !Boolean.TRUE.equals(intent.getRetryPending()))
+                    || skipVerdictPending;
+                progress.setUnresolvedIntent(unresolved);
+                if (unresolved) {
+                    progress.setIntentSeq(intent != null && !Boolean.TRUE.equals(intent.getRetryPending())
+                        ? intent.getSeq() : cp.getBatchesDone() + 1);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[GovTicketV2] dml batch projection failed for ticket {} group {} (dmlBatchProgress degrades to null)",
+                ticketId, groupId, e);
+            vo.setDmlBatchProgress(null);
+        }
     }
 
     // ==================== availablePairs / availableServices ====================
@@ -2160,6 +2257,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         Map<String, Long> accumulateByTable = new java.util.LinkedHashMap<>();
         Set<String> routedTables = new java.util.HashSet<>();
 
+        // B7 N3 (N1a handover obligation #2): the group-level session-state gate — computed ONCE
+        // per group (local, zero remote cost); consumed at the ROUTE step below
+        boolean groupHasSessionState = groupCarriesSessionState(scripts);
+
         for (SplitScript script : candidates) {
             int stmtIndex = (int) script.getIndex() + 1; // 1-based exec_order domain (R11)
             Long stmtRows = perStmt.get(stmtIndex);
@@ -2265,6 +2366,25 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                 continue;
             }
 
+            // N3 group-level session-state downgrade (N1a handover obligation #2): every tick of
+            // the batch loop runs in a FRESH channel-C session, so a group carrying SET/session-
+            // state statements cannot be batched soundly (PG `SET search_path` + unqualified names
+            // = cross-session resolution drift; MySQL `SET @v` feeding a later statement — an @v
+            // reference INSIDE this statement is already shape-gate rejected, this covers the
+            // clean statement that still relies on a group mate). The WHOLE GROUP gives up
+            // DML_BATCH routing; the statement stays direct with the display key. The NO_KEY
+            // rejection above is deliberately UNAFFECTED (the §9.8.3 violation of an
+            // over-threshold keyless DML stands regardless of routing).
+            if (groupHasSessionState) {
+                GovTicketV2CheckVO.DmlBatchRouteVO sessionVO = buildDmlRouteVO(stmtIndex,
+                    GovTicketV2CheckVO.DmlBatchRouteVO.ROUTE_DIRECT_GROUP_SESSION_STATE, shape, signalRows,
+                    probe.getTableRows(), threshold,
+                    DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_GROUP_SESSION_STATE.name(), table));
+                routes.add(sessionVO);
+                routedTables.add(table); // the per-statement display supersedes the accumulate hint
+                continue;
+            }
+
             // 4. ROUTE — freeze the segment prototype (sql/batchKey/estimatedRows/idempotent)
             boolean idempotent = !shape.isSelfReferencingSet()
                 && (shape.getNondeterministicFunctions() == null || shape.getNondeterministicFunctions().isEmpty());
@@ -2313,6 +2433,36 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             result.setDmlBatchRoutes(routes);
         }
         return outcome;
+    }
+
+    /**
+     * B7 N3 (N1a handover obligation #2, group-level session-state rule): true when ANY statement
+     * of the group falls outside the DML∪DDL whitelist — SET/session variables, USE/schema
+     * switches, transaction control, procedural blocks, SELECT, unknown/unclassified shapes. The
+     * batch loop opens a FRESH channel-C session per tick (design §5.2/R10), so session context
+     * established by group mates would silently NOT apply to the batched statement — an
+     * undetectable semantic drift the per-statement shape gate cannot see (it has no group
+     * context; the MySQL SPI rejecting @v references INSIDE a statement is the statement-level
+     * twin of this group-level gate). Conservative whitelist (宁可误拒不可误放): EVERY type of
+     * EVERY statement must classify as DML ∨ DDL by the same GovStmtSplitServiceImpl predicates
+     * the changeType derivation uses; null/empty type sets fire the gate too. Consequence: the
+     * whole group gives up DML_BATCH routing (display key per would-be-routed statement); the
+     * NO_KEY rejection and every other hint are unaffected. GHOST routing is NOT gated (gh-ost
+     * applies the ALTER from its own toolchain, no group-session dependency).
+     */
+    private static boolean groupCarriesSessionState(List<SplitScript> scripts) {
+        for (SplitScript script : scripts) {
+            Set<SplitQueryType> types = script.getType();
+            if (types == null || types.isEmpty()) {
+                return true;
+            }
+            for (SplitQueryType type : types) {
+                if (!GovStmtSplitServiceImpl.isDmlType(type) && !GovStmtSplitServiceImpl.isDdlType(type)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** one DML_BATCH display mark (the GhostRouteVO builder pattern; shape embedded verbatim — obligation #7). */

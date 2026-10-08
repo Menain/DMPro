@@ -184,6 +184,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         gateResult.put("stmtCount", buildEntries.size());
         List<Map<String, Object>> stmtSnapshots = new ArrayList<>();
         int ghostRoutedStmtCount = 0;
+        int dmlBatchRoutedStmtCount = 0;
         for (StmtBuildEntry be : buildEntries) {
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("sourceTicketId", be.source.stmt.getTicketId());
@@ -200,11 +201,24 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 s.put("ghostRouted", true);
                 ghostRoutedStmtCount++;
             }
+            // B7 N3 发布链披露 (design §10/T18, the B6 M3 mirror): a source group that routed a
+            // statement to lock-free DML batching carries its OWN additive key — PROD replay runs
+            // the frozen text as ONE direct statement (release-chain batch routing is v2, the M5
+            // cadence), so the merge/detail surface warns about the direct long-lock/timeout risk.
+            // Same purity: display-only, and releases without a batch-routed source keep
+            // gate_result byte-identical (the plain-source pin covers BOTH hint families).
+            if (GhostRouteMarks.hasDmlBatchRoute(be.source.stmt.getPrecheckResult())) {
+                s.put("dmlBatchRouted", true);
+                dmlBatchRoutedStmtCount++;
+            }
             stmtSnapshots.add(s);
         }
         gateResult.put("stmts", stmtSnapshots);
         if (ghostRoutedStmtCount > 0) {
             gateResult.put("ghostRoutedStmtCount", ghostRoutedStmtCount);
+        }
+        if (dmlBatchRoutedStmtCount > 0) {
+            gateResult.put("dmlBatchRoutedStmtCount", dmlBatchRoutedStmtCount);
         }
         String gateResultJson = JsonUtils.toJson(gateResult);
 
@@ -781,6 +795,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         gateResult.put("stmtCount", buildEntries.size());
         List<Map<String, Object>> stmtSnapshots = new ArrayList<>();
         int ghostRoutedStmtCount = 0;
+        int dmlBatchRoutedStmtCount = 0;
         for (StmtBuildEntry be : buildEntries) {
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("sourceTicketId", be.source.stmt.getTicketId());
@@ -794,11 +809,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 s.put("ghostRouted", true);
                 ghostRoutedStmtCount++;
             }
+            // B7 N3 发布链披露: the DML_BATCH twin survives the rewrite the same way
+            if (GhostRouteMarks.hasDmlBatchRoute(be.source.stmt.getPrecheckResult())) {
+                s.put("dmlBatchRouted", true);
+                dmlBatchRoutedStmtCount++;
+            }
             stmtSnapshots.add(s);
         }
         gateResult.put("stmts", stmtSnapshots);
         if (ghostRoutedStmtCount > 0) {
             gateResult.put("ghostRoutedStmtCount", ghostRoutedStmtCount);
+        }
+        if (dmlBatchRoutedStmtCount > 0) {
+            gateResult.put("dmlBatchRoutedStmtCount", dmlBatchRoutedStmtCount);
         }
         String gateResultJson = JsonUtils.toJson(gateResult);
         prodReleaseDal.releaseMapper().updateGateResult(releaseId, gateResultJson);

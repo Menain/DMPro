@@ -69,8 +69,79 @@ public class GovTicketV2GroupVO {
      * already holds, and a trimmed copy would fork the carrier into a second JSON shape.
      * <p>
      * ⚠ DUAL-WRITE COUPLING (see the pin in groupList / TicketSegmentService.persistRuntime):
-     * the ghost projection above and the WAIT_EXEC sweep repair both gate on ghostRouteFlags,
-     * NOT on this field — consumers must not treat a non-null execSegments as self-sufficient.
+     * the ghost AND DML_BATCH projections and the WAIT_EXEC sweep repair all gate on
+     * ghostRouteFlags, NOT on this field — consumers must not treat a non-null execSegments as
+     * self-sufficient.
      */
     private String  execSegments;
+
+    // ---- B7 N3 DML_BATCH projection, additive ----
+
+    /**
+     * The NEWEST DML_BATCH AsyncTask bound to the group (configData ticketId/groupId binding,
+     * the ghost projection's twin — same flags gate, same never-throw discipline, ZERO new
+     * endpoints: the batch progress lives entirely in the task configData checkpoint, so unlike
+     * ghost there is no tailStatus poller — the frontend renders off this projection as it
+     * rides the existing 5s group refresh). Null for non-routed groups, undispatched marks,
+     * legacy tickets and GHOST-only groups (no bound batch task).
+     * <p>
+     * The window-crash resolution trigger stays the SEGMENT SUMMARY frozen in execSegments
+     * (the resolution guard's sole authority, N2 ruling) — {@code unresolvedIntent} here is
+     * display material derived from the same terminal carrier, never the guard key.
+     */
+    private DmlBatchProgressVO dmlBatchProgress;
+
+    /**
+     * B7 N3: the batch-loop projection of one group's newest DML_BATCH task (design §10 —
+     * {batchesDone, rowsDone, percentApprox, lagState, paused, unresolvedIntent, intentSeq,
+     * idempotent} + the control/resolution material taskId/segmentIndex/taskStatus/
+     * lastBatchError/retryPending/skipVerdictPending).
+     */
+    @Getter
+    @Setter
+    public static class DmlBatchProgressVO {
+        /** dm_exec_async_task row id (control endpoints + the segment/task join). */
+        private Long    taskId;
+        /** the task's bound 1-based segIdx (control FO + inline attachment to the segment row). */
+        private Integer segmentIndex;
+        /** AsyncTaskStatus name: INIT/WAIT_START/RUNNING/BLOCK/PAUSE/PAUSING/CANCELING/COMPLETE/FAILURE/CANCEL. */
+        private String  taskStatus;
+        /** taskStatus == PAUSE (the controlled pause — the sweep never dead-judges it). */
+        private Boolean paused;
+        private Long    batchesDone;
+        private Long    rowsDone;
+        /** launch-frozen progress denominator ("约" semantics); null when the estimate was unavailable. */
+        private Long    estimatedRows;
+        /** rowsDone×100/estimatedRows capped at 100; null without a denominator. */
+        private Integer percentApprox;
+        /** replica-lag throttle visibility (null = no probe result yet). */
+        private LagStateVO lagState;
+        /**
+         * TERMINAL tasks only: the window-crash marker mirrored from the carrier
+         * (intent ∧ ¬retryPending ∨ an unconsumed SKIP verdict). A RUNNING task with an in-flight
+         * intent is a healthy batch, never "unresolved" — and the guard authority is the segment
+         * summary anyway (N2 single-key ruling).
+         */
+        private Boolean unresolvedIntent;
+        /** the unresolved batch's seq (intent.seq, else batchesDone+1 for the re-frozen SKIP shape). */
+        private Long    intentSeq;
+        /** launch-frozen idempotence mark (the resolution modal's red/green copy). */
+        private Boolean idempotent;
+        /** the in-flight intent carries a recorded DB error → the automatic retry flow is active. */
+        private Boolean retryPending;
+        /** the retry/verdict material for the modal's auxiliary line (≤ one DB message). */
+        private String  lastBatchError;
+        /** an UNCONSUMED SKIP_BATCH verdict (N2 check re-freeze shape) → "上次跳过未成功" copy. */
+        private Boolean skipVerdictPending;
+    }
+
+    /** the checkpoint lagState projection: visible=false → the fixed-interval degradation (延迟不可见). */
+    @Getter
+    @Setter
+    public static class LagStateVO {
+        private Boolean visible;
+        private Double  lastLagSec;
+        /** throttledAt != null — the batch loop is yielding to replica lag right now. */
+        private Boolean throttled;
+    }
 }

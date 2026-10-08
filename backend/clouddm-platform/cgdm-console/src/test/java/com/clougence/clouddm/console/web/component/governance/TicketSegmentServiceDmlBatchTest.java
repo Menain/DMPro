@@ -275,8 +275,16 @@ public class TicketSegmentServiceDmlBatchTest {
 
         service.dispatchFirstSegment(ticket, group, true, ErrorStrategy.NONE, "zh-CN", "SYSTEM");
 
-        // the AUTOEXEC first segment keeps the legacy job build; the batch dispatch happens at chain time
-        verify(autoExecService).createGroupJob(same(group), anyString(), eq(true), eq(ErrorStrategy.NONE),
+        // the AUTOEXEC first segment keeps the legacy job build; the batch dispatch happens at chain time.
+        // N3 EXPLICIT ADJUDICATION (the only existing pin touched by the N3 behavior change, the
+        // N2 补充裁决 (d) precedent): the transactional argument flips eq(true) → eq(false) —
+        // mixedPlanJson() carries a DML_BATCH segment, and 裁决 #11/A7 (implement.md N3 移交义务 #7)
+        // forces enableTransactional=false for EVERY AUTOEXEC job of a batched group (批间独立提交,
+        // the whole-job transaction contradicts the partial-success semantics). The pin's INTENT
+        // (job-only first dispatch, no batch launch here) is preserved byte-for-byte; the
+        // pass-through face for GHOST-only plans stays pinned in TicketSegmentMixedMatrixTest
+        // (transactionalUntouched_ghostOnlyPlan) and the B6 suite (zero change).
+        verify(autoExecService).createGroupJob(same(group), anyString(), eq(false), eq(ErrorStrategy.NONE),
             eq("zh-CN"), eq("SYSTEM"));
         verify(autoExecService).startJob(anyString(), eq("SYSTEM"));
         verify(govTicketV2Service, never()).dispatchBatchSegment(any(), any(), any(), anyString());

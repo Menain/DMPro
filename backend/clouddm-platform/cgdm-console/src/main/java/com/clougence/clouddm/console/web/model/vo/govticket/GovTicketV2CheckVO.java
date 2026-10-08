@@ -119,6 +119,14 @@ public class GovTicketV2CheckVO {
         public static final String ROUTE_DIRECT_PROBE_DEGRADED  = "DIRECT_PROBE_DEGRADED";
         /** group-level hint: same-table DML statements accumulate ≥ threshold without per-statement routing (R13). */
         public static final String ROUTE_SAME_TABLE_ACCUMULATE  = "SAME_TABLE_ACCUMULATE";
+        /**
+         * route (B7 N3, N1a handover obligation #2): the GROUP carries a SET/session-state
+         * statement (anything outside the DML∪DDL whitelist) — a fresh per-tick batch session
+         * cannot inherit that context, so the whole group gives up DML_BATCH routing and the
+         * over-threshold statement stays direct (display key explains; the NO_KEY rejection is
+         * unaffected — the §9.8.3 violation stands regardless of routing).
+         */
+        public static final String ROUTE_DIRECT_GROUP_SESSION_STATE = "DIRECT_GROUP_SESSION_STATE";
 
         /** 1-based statement position in the exec_order domain; 0 for the group-level accumulate hint. */
         private int     stmtIndex;
