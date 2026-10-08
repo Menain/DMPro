@@ -65,7 +65,7 @@ module.exports = {
           'READS SQL DATA', 'MODIFIES SQL DATA', 'security_barrier', 'MODIFY SQL DATA', 'Request', 'Convert', 'before', 'after', 'truncate', 'SQL', 'BladePipe', 'uid', '****',
           'NULL',
           'approTemplateName', 'port', 'P0', 'P1', 'P2', 'P3', 'P4', 'select month', 'select date', 'Select time', 'schema', 'Tenant', 'Namespace', '-$', '0', 'Namespace', 'BASE_TABLE', 'VIEW',
-          'NONE', 'Skip', 'SKIP', 'RETRY', 'IMMEDIATE', 'SPECIFY_TIME', 'MANUAL_EXEC', '¥', 'Push', 'PullRequest', 'Snapshot', 'CreateChange', 'None', 'Always', 'Suggest', 'Enable', 'Disable', 'Auto',
+          'NONE', 'Skip', 'SKIP', 'RETRY', 'IMMEDIATE', 'SPECIFY_TIME', 'MANUAL_EXEC', 'RERUN_BATCH', 'SKIP_BATCH', '¥', 'Push', 'PullRequest', 'Snapshot', 'CreateChange', 'None', 'Always', 'Suggest', 'Enable', 'Disable', 'Auto',
           'Manual', 'Disabled', 'Enable', 'zh', 'en', 'Failure', 'Webhook', 'POST', 'GET', 'http://... or https://...','HTTP','wget','curl','http','HTTP(GET)','json','text','new','old',
           'SELECT','DDL','QUERY','DML','CALL','OTHER','CONSOLE','TICKET','CHANGE','RUNNING','SUCCESS','WAIT_CONFIRM','ROLLBACK','FAILURE','ERROR', '取消',
           'To', 'Addr', '6%', 'VAT_NORMAL_INVOICE', 'VAT_SPECIAL_INVOICE','NULL', 'MFA', "MANAGED", "BYOC", 'weixin', 'feishu', 'slack', 'discord', 'dingtalk', ''

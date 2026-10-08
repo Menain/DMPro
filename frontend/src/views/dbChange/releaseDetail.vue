@@ -51,6 +51,10 @@
         <Alert v-if="ghostReplayHint" type="warning" show-icon class="gov-ghost-replay-hint">
           {{ $t('gov-release-ghost-replay-hint') }}
         </Alert>
+        <!-- B7 N3 发布链披露：分批源的生产重放为直接执行（长锁/超时风险黄旗） -->
+        <Alert v-if="dmlBatchReplayHint" type="warning" show-icon class="gov-ghost-replay-hint">
+          {{ $t('gov-release-dml-batch-replay-hint') }}
+        </Alert>
 
         <section v-if="showReleaseActions" class="page-section">
           <div class="gov-release-actions">
@@ -319,6 +323,19 @@ export default {
       try {
         const gr = JSON.parse(this.detail.gateResult);
         return Number(gr && gr.ghostRoutedStmtCount) > 0;
+      } catch (e) {
+        return false;
+      }
+    },
+    // B7 N3 发布链披露：dmlBatchRoutedStmtCount>0 → 「PRE 侧曾分批执行；PROD 重放为直接执行，
+    // 大表存在长锁/超时风险」黄旗；旧发布单无该键 → 不显示（同款容错解析）
+    dmlBatchReplayHint() {
+      if (!this.detail || !this.detail.gateResult) {
+        return false;
+      }
+      try {
+        const gr = JSON.parse(this.detail.gateResult);
+        return Number(gr && gr.dmlBatchRoutedStmtCount) > 0;
       } catch (e) {
         return false;
       }

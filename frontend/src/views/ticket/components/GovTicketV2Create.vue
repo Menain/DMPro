@@ -3,6 +3,7 @@ import TicketEditor from '@/components/editor/TicketEditor';
 import dayjs from 'dayjs';
 import { mapState } from 'vuex';
 import { segmentRangeI18n } from '@/const/ghost';
+import { segmentTypeBadgeI18n } from '@/const/dmlBatch';
 
 const PREFILL_KEY = 'cgdm.govTicketPrefill.v2';
 const PREFILL_TTL_MS = 10 * 60 * 1000;
@@ -272,6 +273,41 @@ export default {
       }
       return this.$t(range.key, range.args);
     },
+    segmentTypeBadgeI18n(segType) {
+      return segmentTypeBadgeI18n(segType);
+    },
+    // GHOST plan segments freeze `rows` (B6), DML_BATCH plan segments freeze `estimatedRows` (B7)
+    segmentRowsOf(seg) {
+      if (seg.rows != null) {
+        return seg.rows;
+      }
+      return seg.estimatedRows != null ? seg.estimatedRows : null;
+    },
+    // B7 N3: dmlBatchRoutes display marks — the message copy is backend pre-translated (the
+    // GHOST_ROUTE_ANNOUNCE precedent, rendered verbatim incl. the multi-line non-idempotent risk)
+    dmlRouteTagI18n(route) {
+      if (route === 'DML_BATCH') {
+        return 'fen-pi-lu-you-biao-qian';
+      }
+      if (route === 'SAME_TABLE_ACCUMULATE') {
+        return 'fen-pi-lei-ji-ti-shi';
+      }
+      return 'wu-suo-seg-zhi-jie';
+    },
+    dmlRouteTagColor(route) {
+      if (route === 'DML_BATCH' || route === 'DIRECT_KEY_UNSUPPORTED' || route === 'SAME_TABLE_ACCUMULATE') {
+        return 'warning';
+      }
+      return 'default';
+    },
+    dmlRouteRowClass(route) {
+      // yellow-flag rows: 将分批 / 键型不支持(长锁风险) / 同表累计提示; grey rows: 形状不支持 /
+      // 探测失败 / 组内会话状态语句(能力限制非违规)
+      if (route === 'DML_BATCH' || route === 'DIRECT_KEY_UNSUPPORTED' || route === 'SAME_TABLE_ACCUMULATE') {
+        return 'is-batch';
+      }
+      return 'is-direct';
+    },
     applyPrefill() {
       const query = this.$route.query;
       if (query.govV2 !== '1') {
@@ -384,6 +420,35 @@ export default {
                   {{ checkGroupForPair(pair.id).errorMessage }}
                 </span>
               </template>
+              <!-- B7 N3 (裁决 #5/#16, design §8.1): the no-key large-DML rejection renders the
+                   structured payload (failCode=DML_NO_KEY + dmlNoKeyReject) — 表/行数/阈值/键详情/
+                   guidance; submit refuses the whole ticket server-side (this is the /check 呈现) -->
+              <div v-if="checkGroupForPair(pair.id).failCode === 'DML_NO_KEY' && checkGroupForPair(pair.id).dmlNoKeyReject" class="check-dml-reject">
+                <div class="check-dml-reject__title">{{ $t('fen-pi-ju-jue-biao-ti') }}</div>
+                <div class="check-dml-reject__row">
+                  <span>{{ $t('fen-pi-ju-jue-biao') }}</span>
+                  <strong>{{ checkGroupForPair(pair.id).dmlNoKeyReject.dbName }}.{{ checkGroupForPair(pair.id).dmlNoKeyReject.tableName }}</strong>
+                </div>
+                <div class="check-dml-reject__row">
+                  <span>{{ $t('fen-pi-ju-jue-hang-shu') }}</span>
+                  <strong>
+                    {{
+                      $t('fen-pi-ju-jue-hang-shu-zhi', [
+                        checkGroupForPair(pair.id).dmlNoKeyReject.estimatedRows,
+                        checkGroupForPair(pair.id).dmlNoKeyReject.rowThreshold
+                      ])
+                    }}
+                  </strong>
+                </div>
+                <div v-if="checkGroupForPair(pair.id).dmlNoKeyReject.keyDetail" class="check-dml-reject__row">
+                  <span>{{ $t('fen-pi-ju-jue-jian') }}</span>
+                  <strong>{{ checkGroupForPair(pair.id).dmlNoKeyReject.keyDetail }}</strong>
+                </div>
+                <div v-if="checkGroupForPair(pair.id).dmlNoKeyReject.sqlSummary" class="check-dml-reject__sql">
+                  {{ checkGroupForPair(pair.id).dmlNoKeyReject.sqlSummary }}
+                </div>
+                <div class="check-dml-reject__guidance">{{ $t('fen-pi-ju-jue-zhi-dao') }}</div>
+              </div>
               <div v-if="checkGroupForPair(pair.id).statements?.length" class="check-statements">
                 <div v-for="stmt in checkGroupForPair(pair.id).statements" :key="stmt.index" class="check-stmt-row">
                   <Tag size="small">{{ stmt.type }}</Tag>
@@ -402,18 +467,34 @@ export default {
                   <span class="check-ghost-route-msg">{{ route.message }}</span>
                 </div>
               </div>
+              <!-- B7 N3 (design §10): dmlBatchRoutes display marks — 路由公告黄旗(将分批+非幂等风险
+                   行) / 键型不支持黄旗 / 形状不支持·探测失败·组内会话状态灰提示 / 同表累计提示(R13);
+                   the message copy is backend pre-translated (rendered verbatim, multi-line) -->
+              <div v-if="checkGroupForPair(pair.id).dmlBatchRoutes?.length" class="check-dml-routes">
+                <div
+                  v-for="(route, routeIdx) in checkGroupForPair(pair.id).dmlBatchRoutes"
+                  :key="`${route.stmtIndex}-${routeIdx}`"
+                  :class="['check-dml-route-row', dmlRouteRowClass(route.route)]"
+                >
+                  <Tag size="small" :color="dmlRouteTagColor(route.route)">
+                    {{ $t(dmlRouteTagI18n(route.route)) }}
+                  </Tag>
+                  <span class="check-dml-route-msg">{{ route.message }}</span>
+                </div>
+              </div>
               <!-- B6 M4: mixed-group segment plan — per-segment badges make the serial split
                    explicit at submit time (GHOST segment = yellow flag; replaces the M1
-                   multi-statement intercept lifted in M2) -->
+                   multi-statement intercept lifted in M2). B7 N3: the badge is three-way
+                   (GHOST / DML_BATCH / AUTOEXEC) — additive, the ghost rows render unchanged -->
               <div v-if="checkGroupForPair(pair.id).segments?.length" class="check-segments">
                 <div class="check-segments__title">{{ $t('wu-suo-zhi-xing-duan') }}</div>
                 <div v-for="seg in checkGroupForPair(pair.id).segments" :key="seg.segIdx" class="check-segment-row">
-                  <Tag size="small" :color="seg.type === 'GHOST' ? 'warning' : 'default'">
-                    {{ seg.type === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-seg-zhi-jie') }}
+                  <Tag size="small" :color="seg.type === 'AUTOEXEC' ? 'default' : 'warning'">
+                    {{ $t(segmentTypeBadgeI18n(seg.type)) }}
                   </Tag>
                   <span class="check-segment-range">{{ segmentRangeText(seg) }}</span>
-                  <span v-if="seg.type === 'GHOST' && seg.table" class="check-segment-table">
-                    {{ seg.rows == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, seg.rows]) }}
+                  <span v-if="seg.type !== 'AUTOEXEC' && seg.table" class="check-segment-table">
+                    {{ segmentRowsOf(seg) == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, segmentRowsOf(seg)]) }}
                   </span>
                 </div>
               </div>
@@ -648,6 +729,77 @@ export default {
                 .check-ghost-route-msg {
                   color: #41454d;
                 }
+              }
+            }
+
+            // B7 N3: DML batch route marks (the check-ghost-routes twin)
+            .check-dml-routes {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+
+              .check-dml-route-row {
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+                font-size: 12px;
+                padding: 4px 8px;
+                border-radius: 4px;
+
+                // yellow flag: 将分批 / 键型不支持(长锁风险) / 同表累计提示
+                &.is-batch {
+                  background: rgba(255, 153, 0, 0.08);
+                }
+
+                // grey hint: 形状不支持 / 探测失败 / 组内会话状态语句(能力限制非违规)
+                &.is-direct {
+                  background: var(--surface-soft, #f8fafc);
+                }
+
+                .check-dml-route-msg {
+                  color: #41454d;
+                  white-space: pre-wrap;
+                  word-break: break-all;
+                }
+              }
+            }
+
+            // B7 N3 (裁决 #5): the no-key large-DML rejection block (failCode=DML_NO_KEY payload)
+            .check-dml-reject {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+              padding: 8px 12px;
+              border-radius: 4px;
+              background: rgba(255, 24, 21, 0.06);
+              font-size: 12px;
+
+              .check-dml-reject__title {
+                font-size: 13px;
+                font-weight: 500;
+                color: #ed4014;
+              }
+
+              .check-dml-reject__row {
+                display: flex;
+                gap: 8px;
+                color: #41454d;
+
+                span {
+                  flex: none;
+                  color: #707070;
+                }
+              }
+
+              .check-dml-reject__sql {
+                color: #41454d;
+                font-family: Menlo, Monaco, 'Courier New', monospace;
+                white-space: pre-wrap;
+                word-break: break-all;
+              }
+
+              .check-dml-reject__guidance {
+                color: #ed4014;
               }
             }
 

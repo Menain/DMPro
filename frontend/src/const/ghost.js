@@ -43,7 +43,8 @@ export const SEGMENT_STATUS_I18N = {
 // Segment statement bounds → i18n key/args. Bounds are 1-based in the exec_order domain (R11);
 // the precheck statements[].index preview domain is 0-based — callers bridge with index + 1.
 export function segmentRangeI18n(seg) {
-  if (seg.type === 'GHOST') {
+  // B7: a DML_BATCH segment is single-statement like GHOST (stmtIndex, no stmtRange)
+  if (seg.type === 'GHOST' || seg.type === 'DML_BATCH') {
     return { key: 'wu-suo-seg-yu-ju', args: [seg.stmtIndex] };
   }
   const range = seg.stmtRange;

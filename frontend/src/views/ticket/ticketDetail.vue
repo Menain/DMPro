@@ -593,9 +593,13 @@
                    panel is excluded for segmented groups, so progress/controls never render twice
                    and exactly one tailStatus poller runs per group (continuous polling starts only
                    for a live session; a released one degrades to one silent synthesized probe).
-                   ⚠ execSegments/plan rendering here rides the ghostRouteFlags dual-write coupling
-                   — B7 semantic widening: the flags mean "has non-direct-execution segments"
-                   (GHOST ∨ DML_BATCH), wire shape unchanged
+                   B7 N3: a DML_BATCH segment mounts the lightweight DmlBatchGroupPanel instead —
+                   ZERO new pollers (its live data is the groupList VO `dmlBatchProgress`
+                   projection, arriving with this page's own 5s auto-refresh; controls are the
+                   /dmlBatch/* endpoints, DM_GHOST_EXEC-gated inside the panel).
+                   ⚠ execSegments/plan rendering here AND the dmlBatchProgress projection both ride
+                   the ghostRouteFlags dual-write coupling — B7 semantic widening: the flags mean
+                   "has non-direct-execution segments" (GHOST ∨ DML_BATCH), wire shape unchanged
                    (backend pins: GovTicketV2ServiceImpl.groupList / TicketSegmentService.persistRuntime). -->
               <div v-if="isSegmentedGroup(group)" class="gov-v2-segments">
                 <div class="gov-v2-segments__head" @click="toggleSegments(group)">
@@ -609,12 +613,12 @@
                 <div v-show="segmentsOpen(group)" class="gov-v2-segments__body">
                   <div v-for="seg in groupSegments(group)" :key="seg.segIdx" class="gov-v2-segment">
                     <div class="gov-v2-segment__head">
-                      <Tag size="small" :color="seg.type === 'GHOST' ? 'warning' : 'default'">
-                        {{ seg.type === 'GHOST' ? $t('wu-suo-lu-you-ghost') : $t('wu-suo-seg-zhi-jie') }}
+                      <Tag size="small" :color="seg.type === 'AUTOEXEC' ? 'default' : 'warning'">
+                        {{ $t(segmentTypeBadgeI18n(seg.type)) }}
                       </Tag>
                       <span class="gov-v2-segment__range">{{ segmentRangeText(seg) }}</span>
-                      <span v-if="seg.type === 'GHOST' && seg.table" class="gov-v2-segment__table">
-                        {{ seg.rows == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, seg.rows]) }}
+                      <span v-if="seg.type !== 'AUTOEXEC' && seg.table" class="gov-v2-segment__table">
+                        {{ segmentRowsOf(seg) == null ? seg.table : $t('wu-suo-seg-biao-hang-shu', [seg.table, segmentRowsOf(seg)]) }}
                       </span>
                       <span :class="['gov-v2-segment__status', `is-${segmentStatusOf(seg)}`]">
                         {{ segmentStatusText(seg) }}
@@ -628,13 +632,22 @@
                     </div>
                     <div v-if="seg.error" class="gov-v2-segment__error">
                       <span>{{ $t('wu-suo-shi-bai-yuan-yin') }}:</span>
-                      <span>{{ seg.error }}</span>
+                      <span>{{ segmentErrorText(seg) }}</span>
                     </div>
                     <ghost-group-panel
                       v-if="seg.type === 'GHOST' && seg.sessionId"
                       :group="segmentPanelGroup(group, seg)"
                       :can-exec="canGhostExec"
                       @dropped="loadV2GroupList"
+                    />
+                    <dml-batch-group-panel
+                      v-if="seg.type === 'DML_BATCH' && showDmlBatchPanel(group, seg)"
+                      :ticket-id="ticketId"
+                      :group="group"
+                      :seg="seg"
+                      :can-exec="canGhostExec"
+                      @refresh="loadV2GroupList"
+                      @resolve="openDmlResolutionModal(group, seg)"
                     />
                   </div>
                 </div>
@@ -823,8 +836,12 @@
           <RadioGroup class="ticket-execute-mode-options" v-model="confirmInfo.autoExecConfig.autoExecType">
             <Radio label="MANUAL_EXEC">{{ $t('yi-shou-dong-wan-cheng') }}</Radio>
             <Radio label="IMMEDIATE">{{ $t('li-ji-zhi-xing') }}</Radio>
-            <Radio label="SPECIFY_TIME">{{ $t('ding-shi-zhi-xing') }}</Radio>
+            <!-- B7 N3 (裁决 #17): 分批/分段组无定时承载 — SPECIFY_TIME 禁用+提示,服务端确认复验兜底 -->
+            <Radio label="SPECIFY_TIME" :disabled="ticketHasDmlBatchSegment">{{ $t('ding-shi-zhi-xing') }}</Radio>
           </RadioGroup>
+          <div v-if="ticketHasDmlBatchSegment" class="ticket-execute-batch-hint">
+            {{ $t('fen-pi-ding-shi-bu-zhi-chi') }}
+          </div>
           <div v-if="confirmInfo.autoExecConfig.autoExecType === 'SPECIFY_TIME'" class="ticket-execute-schedule-row">
             <span class="ticket-execute-schedule-label">{{ $t('zhi-hang-shi-jian') }}</span>
             <DatePicker
@@ -844,12 +861,16 @@
             <i-switch
               v-model="confirmInfo.autoExecConfig.enableTransactional"
               size="large"
-              :disabled="confirmInfo.autoExecConfig.autoExecType === 'MANUAL_EXEC'"
+              :disabled="confirmInfo.autoExecConfig.autoExecType === 'MANUAL_EXEC' || ticketHasDmlBatchSegment"
             >
               <template #open>{{ $t('kai-qi-0') }}</template>
               <template #close>{{ $t('guan-bi') }}</template>
             </i-switch>
-            <span>{{ $t('ru-guo-sql-yu-ju-zhong-cun-zai-fei-dml-yu-ju-ke-neng-hui-bei-fen-wei-duo-ge-shi-wu-zhi-hang') }}</span>
+            <!-- B7 N3 (裁决 #11 三点明示之二): 分批组事务开关禁用+行内明示,服务端强制 false 复验兜底 -->
+            <span v-if="ticketHasDmlBatchSegment" class="ticket-execute-batch-transaction-hint">
+              {{ $t('fen-pi-que-ren-shi-wu-jin-yong') }}
+            </span>
+            <span v-else>{{ $t('ru-guo-sql-yu-ju-zhong-cun-zai-fei-dml-yu-ju-ke-neng-hui-bei-fen-wei-duo-ge-shi-wu-zhi-hang') }}</span>
           </div>
         </FormItem>
         <FormItem :label="$t('bei-zhu')">
@@ -946,6 +967,43 @@
         <Input v-model="v2ResubmitRollBackSql" type="textarea" :rows="4" :placeholder="$t('hui-gun-sql-resubmit-placeholder')" />
       </div>
     </CCModal>
+    <!-- B7 N3 (design §7.4, 裁决 #9 选项 C): the window-crash manual-verdict modal — a batch whose
+         outcome is UNKNOWN (intent ∧ ¬retryPending frozen into the segment summary, or the N2
+         re-frozen unconsumed-SKIP shape) must be adjudicated RERUN/SKIP before retryGroup resumes;
+         the modal IS the second confirmation (二次确认) over the retry entry. Visibility follows
+         DM_GHOST_EXEC (the retry intercept warns read-only users instead). -->
+    <CCModal v-model="showDmlResolutionModal" :title="$t('fen-pi-cai-jue-biao-ti')" width="640px" @on-cancel="closeDmlResolutionModal">
+      <div v-if="dmlResolutionSeg" class="dml-resolution">
+        <div class="dml-resolution__locate">
+          {{ $t('fen-pi-cai-jue-shuo-ming', [dmlResolutionIntentSeq, dmlResolutionSeg.table || '-']) }}
+        </div>
+        <div v-if="dmlResolutionSkipVerdictPending" class="dml-resolution__skip-again">
+          {{ $t('fen-pi-cai-jue-skip-wei-cheng-gong') }}
+        </div>
+        <div :class="['dml-resolution__idempotent', dmlResolutionIdempotent ? 'is-idempotent' : 'is-non-idempotent']">
+          {{ dmlResolutionIdempotent ? $t('fen-pi-cai-jue-mi-deng') : $t('fen-pi-cai-jue-fei-mi-deng') }}
+        </div>
+        <div v-if="dmlResolutionLastError" class="dml-resolution__last-error">
+          {{ $t('fen-pi-cai-jue-shang-ci-cuo-wu', [dmlResolutionLastError]) }}
+        </div>
+        <RadioGroup v-model="dmlResolutionForm.resolution" class="dml-resolution__options">
+          <Radio label="RERUN_BATCH">
+            {{ $t('fen-pi-cai-jue-rerun') }}
+            <span class="dml-resolution__option-desc">{{ $t('fen-pi-cai-jue-rerun-shuo-ming') }}</span>
+          </Radio>
+          <Radio label="SKIP_BATCH">
+            {{ $t('fen-pi-cai-jue-skip') }}
+            <span class="dml-resolution__option-desc">{{ $t('fen-pi-cai-jue-skip-shuo-ming') }}</span>
+          </Radio>
+        </RadioGroup>
+      </div>
+      <template #footer>
+        <Button type="primary" :loading="dmlResolutionSubmitting" :disabled="dmlResolutionSubmitting" @click="submitDmlResolution">
+          {{ $t('que-ding') }}
+        </Button>
+        <Button @click="closeDmlResolutionModal">{{ $t('qu-xiao') }}</Button>
+      </template>
+    </CCModal>
   </div>
 </template>
 
@@ -957,7 +1015,9 @@ import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
 import copyMixin from '@/mixins/copyMixin';
 import { isCk, isMongoDB, RULE_WARN_LEVEL } from '@/utils';
 import GhostGroupPanel from './components/GhostGroupPanel.vue';
+import DmlBatchGroupPanel from './components/DmlBatchGroupPanel.vue';
 import { SEGMENT_STATUS_I18N, segmentRangeI18n } from '@/const/ghost';
+import { segmentTypeBadgeI18n, mapDmlBatchSegmentError } from '@/const/dmlBatch';
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 5000;
 const TICKET_TERMINAL_STATUSES = new Set(['REJECTED', 'FINISHED', 'CLOSED', 'CANCELED', 'FAILED']);
@@ -1030,7 +1090,8 @@ export default {
   name: 'TicketDetail',
   components: {
     ReadOnlyEditor,
-    GhostGroupPanel
+    GhostGroupPanel,
+    DmlBatchGroupPanel
   },
   mixins: [copyMixin],
   data() {
@@ -1240,7 +1301,16 @@ export default {
       // B6 M4: per-group user overrides of the segment list collapse state (groupId → boolean);
       // an absent entry falls back to the status-derived default in segmentsOpen()
       segmentsExpanded: {},
-      releaseSummary: null
+      releaseSummary: null,
+      // B7 N3: the window-crash manual-verdict modal (design §7.4 — RERUN_BATCH/SKIP_BATCH over an
+      // UNRESOLVED DML_BATCH segment; submit = retryGroup with the additive dmlBatchResolution)
+      showDmlResolutionModal: false,
+      dmlResolutionSubmitting: false,
+      dmlResolutionForm: {
+        resolution: 'RERUN_BATCH'
+      },
+      dmlResolutionGroup: null,
+      dmlResolutionSeg: null
     };
   },
   async mounted() {
@@ -1261,9 +1331,55 @@ export default {
   computed: {
     ...mapState(['userInfo', 'myAuth', 'dmGlobalSetting']),
     // B6 M1: every /ghost/* endpoint is DM_GHOST_EXEC-gated — holders get the live panel
-    // (progress/controls/log), everyone else the read-only groupList projection (design §6.9)
+    // (progress/controls/log), everyone else the read-only groupList projection (design §6.9).
+    // B7 N3 (裁决 #15): the /dmlBatch/* controls + the window-crash verdict entry reuse the SAME
+    // permission bit (canGhostExec is deliberately the single gate — zero new frontend auth keys).
     canGhostExec() {
       return this.myAuth.includes('DM_GHOST_EXEC');
+    },
+    // B7 N3 confirm-dialog gate: any group of this ticket carries a DML_BATCH segment (plan ∨
+    // runtime) → the transaction switch is disabled (批间独立提交, the server force is the
+    // backstop — 裁决 #11) and SPECIFY_TIME is rejected (AsyncTask 无定时承载 — 裁决 #17).
+    ticketHasDmlBatchSegment() {
+      return this.v2GroupList.some((group) => this.groupSegments(group).some((seg) => seg && seg.type === 'DML_BATCH'));
+    },
+    // ---- the adjudication modal's material (design §7.4: 批定位+幂等红绿字+lastBatchError) ----
+    dmlResolutionProgress() {
+      const group = this.dmlResolutionGroup;
+      const seg = this.dmlResolutionSeg;
+      if (!group || !seg) {
+        return null;
+      }
+      const p = group.dmlBatchProgress;
+      if (p && p.segmentIndex === seg.segIdx) {
+        return p;
+      }
+      return null;
+    },
+    dmlResolutionIntentSeq() {
+      const summary = this.dmlResolutionSeg ? this.dmlResolutionSeg.summary : null;
+      if (summary && summary.intentSeq != null) {
+        return summary.intentSeq;
+      }
+      if (this.dmlResolutionProgress && this.dmlResolutionProgress.intentSeq != null) {
+        return this.dmlResolutionProgress.intentSeq;
+      }
+      return '-';
+    },
+    // conservative direction: green ONLY on an explicit true (a missing mark shows the red copy)
+    dmlResolutionIdempotent() {
+      return !!(this.dmlResolutionSeg && this.dmlResolutionSeg.idempotent === true);
+    },
+    dmlResolutionLastError() {
+      if (this.dmlResolutionProgress && this.dmlResolutionProgress.lastBatchError) {
+        return this.dmlResolutionProgress.lastBatchError;
+      }
+      const summary = this.dmlResolutionSeg ? this.dmlResolutionSeg.summary : null;
+      return summary && summary.error ? summary.error : '';
+    },
+    // the N2 check re-freeze shape (上次 SKIP 未消费即终态) → 「上次跳过未成功,请重新裁决」 copy
+    dmlResolutionSkipVerdictPending() {
+      return !!(this.dmlResolutionProgress && this.dmlResolutionProgress.skipVerdictPending === true);
     },
     ticketProgressSteps() {
       const steps = [
@@ -2010,6 +2126,8 @@ export default {
         ddlSqlExecType: 'DIRECT',
         noneDdlSqlExecType: 'DIRECT',
         autoExecConfig: {
+          // B7 N3 (裁决 #11): a batched ticket never carries transactional=true — the switch is
+          // disabled in the dialog and the server-side dispatch re-validation forces it false
           enableTransactional: false,
           errorStrategy: 'NONE',
           retryWaitTime: 111, // Unit seconds
@@ -2200,11 +2318,33 @@ export default {
       if (this.v2RetryLoading) {
         return;
       }
+      // B7 N3 (design §7.4): a group whose FAILED DML_BATCH segment froze the unresolvedIntent
+      // marker MUST carry the manual verdict (the backend rejects a bare retry with
+      // RESOLUTION_REQUIRED) — intercept into the adjudication modal. The modal is DM_GHOST_EXEC
+      // -gated (裁决 #15); a read-only user gets the guidance message instead of a doomed request.
+      const group = this.v2GroupList.find((g) => g.groupId === groupId);
+      const unresolvedSeg = group ? this.findUnresolvedBatchSegment(group) : null;
+      if (unresolvedSeg) {
+        if (!this.canGhostExec) {
+          this.$Message.warning(this.$t('fen-pi-wu-cai-jue-quan-xian'));
+          return;
+        }
+        this.openDmlResolutionModal(group, unresolvedSeg);
+        return;
+      }
+      await this.doRetryGroup(groupId, null);
+    },
+    async doRetryGroup(groupId, dmlBatchResolution) {
+      if (this.v2RetryLoading) {
+        return;
+      }
       this.v2RetryLoading = true;
       try {
-        const res = await this.$services.dbChangeV2RetryGroup({
-          data: { groupId }
-        });
+        const data = { groupId };
+        if (dmlBatchResolution) {
+          data.dmlBatchResolution = dmlBatchResolution;
+        }
+        const res = await this.$services.dbChangeV2RetryGroup({ data });
         if (res.success) {
           this.$Message.success(this.$t('gov-v2-retry-success'));
           await this.getTicketDetail();
@@ -2365,7 +2505,8 @@ export default {
       if (!precheck || !Array.isArray(precheck.statements)) {
         return [];
       }
-      if (seg.type === 'GHOST') {
+      // B7: a DML_BATCH segment is single-statement like GHOST (stmtIndex key, no stmtRange)
+      if (seg.type === 'GHOST' || seg.type === 'DML_BATCH') {
         return precheck.statements.filter((stmt) => stmt.index + 1 === seg.stmtIndex);
       }
       if (!Array.isArray(seg.stmtRange) || seg.stmtRange.length !== 2) {
@@ -2410,6 +2551,69 @@ export default {
         return true;
       }
       return !group.ghostSessionId;
+    },
+    // ==================== B7 N3: DML_BATCH segment face (design §10) ====================
+    segmentTypeBadgeI18n(segType) {
+      return segmentTypeBadgeI18n(segType);
+    },
+    // GHOST plan segments freeze `rows` (B6), DML_BATCH plan segments freeze `estimatedRows` (B7)
+    segmentRowsOf(seg) {
+      if (seg.rows != null) {
+        return seg.rows;
+      }
+      return seg.estimatedRows != null ? seg.estimatedRows : null;
+    },
+    // the sweep's terminal-replay copy for a user-stopped task is mechanical English — present the
+    // ABORTED semantics instead (N2 check LOW #5: 部分成功保留+无自动回滚); anything else verbatim
+    segmentErrorText(seg) {
+      const mappedKey = seg.type === 'DML_BATCH' ? mapDmlBatchSegmentError(seg.error) : null;
+      if (mappedKey) {
+        return this.$t(mappedKey);
+      }
+      return seg.error;
+    },
+    // the batch panel renders once the segment is live/terminal (or the projection attached) —
+    // a pre-dispatch PLAN/PENDING segment has nothing to show (the ghost panel's no-sessionId
+    // minimalism; the segment head row already carries the PENDING status)
+    showDmlBatchPanel(group, seg) {
+      const p = group.dmlBatchProgress;
+      if (p && p.segmentIndex === seg.segIdx) {
+        return true;
+      }
+      return !!seg.status && seg.status !== 'PENDING';
+    },
+    // the resolution guard's authority is the SEGMENT SUMMARY marker (N2 补充裁决 (b)) — never
+    // the projection's display copy
+    findUnresolvedBatchSegment(group) {
+      return (
+        this.groupSegments(group).find(
+          (seg) => seg && seg.type === 'DML_BATCH' && seg.status === 'FAILED' && seg.summary && seg.summary.unresolvedIntent === true
+        ) || null
+      );
+    },
+    openDmlResolutionModal(group, seg) {
+      this.dmlResolutionGroup = group;
+      this.dmlResolutionSeg = seg;
+      this.dmlResolutionForm.resolution = 'RERUN_BATCH';
+      this.showDmlResolutionModal = true;
+    },
+    closeDmlResolutionModal() {
+      this.showDmlResolutionModal = false;
+      this.dmlResolutionGroup = null;
+      this.dmlResolutionSeg = null;
+    },
+    async submitDmlResolution() {
+      const group = this.dmlResolutionGroup;
+      if (!group || this.dmlResolutionSubmitting) {
+        return;
+      }
+      this.dmlResolutionSubmitting = true;
+      try {
+        await this.doRetryGroup(group.groupId, this.dmlResolutionForm.resolution);
+        this.closeDmlResolutionModal();
+      } finally {
+        this.dmlResolutionSubmitting = false;
+      }
     },
     async loadReleaseSummary() {
       const releaseId = this.ticketDetail?.releaseId;
@@ -3051,6 +3255,67 @@ export default {
 
   :deep(.ivu-switch) {
     flex: none;
+  }
+}
+
+// B7 N3: confirm-dialog batch disclosures (semantics as TEXT color — skill §7, no big backgrounds)
+.ticket-execute-batch-hint {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.ticket-execute-batch-transaction-hint {
+  color: #d46b08;
+}
+
+// B7 N3: the window-crash manual-verdict modal
+.dml-resolution {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dml-resolution__locate {
+  font-size: 14px;
+  color: var(--text-primary, #181d26);
+  line-height: 22px;
+}
+
+.dml-resolution__skip-again {
+  font-size: 13px;
+  color: #d46b08;
+}
+
+.dml-resolution__idempotent {
+  font-size: 13px;
+  line-height: 20px;
+
+  &.is-non-idempotent {
+    color: var(--error-color, #ff1815);
+  }
+
+  &.is-idempotent {
+    color: var(--success-color, #52c41a);
+  }
+}
+
+.dml-resolution__last-error {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.dml-resolution__options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  .dml-resolution__option-desc {
+    margin-left: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
   }
 }
 

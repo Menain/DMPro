@@ -33,6 +33,7 @@ import { sessionApi } from '@/services/http/api/session';
 import { lockAnalysisApi } from '@/services/http/api/lockAnalysis';
 import { spaceApi } from '@/services/http/api/space';
 import { ghostApi } from '@/services/http/api/ghost';
+import { dmlBatchApi } from '@/services/http/api/dmlBatch';
 
 export const api = {
   ...authApi,
@@ -69,5 +70,6 @@ export const api = {
   ...sessionApi,
   ...lockAnalysisApi,
   ...spaceApi,
-  ...ghostApi
+  ...ghostApi,
+  ...dmlBatchApi
 };
