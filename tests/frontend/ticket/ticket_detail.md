@@ -8,7 +8,7 @@
 
 - 页面：工单列表、工单创建、工单详情。
 - 路由：`/#/ticket`、`/#/ticket_create`、`/#/ticket/:id`。
-- 接口：工单列表、工单基础信息、数据库工单详情、SQL 分段预览、审批、执行确认、关闭工单、自动执行任务相关接口，以及无锁段视图（组详情 `execSegments` 透传）与 ghost 进度（`tailStatus`/`tailLog`）接口。
+- 接口：工单列表、工单基础信息、数据库工单详情、SQL 分段预览、审批、执行确认、关闭工单、自动执行任务相关接口，无锁段视图（组详情 `execSegments` 透传）与 ghost 进度（`tailStatus`/`tailLog`）接口，以及无锁数据变更批进度（组列表投影 `dmlBatchProgress`，零独立轮询）与批控制（`/dmlBatch/pause|resume|stop`）接口。
 - 状态：初始化、分析、等待审批、等待确认、待执行、执行中、完成、拒绝、失败、关闭、取消。
 - 不覆盖：审批规则配置、SQL 解析器正确性、执行引擎性能和第三方审批系统内部页面。
 
@@ -173,6 +173,16 @@
 - 操作步骤：创建页预检后查看段计划块；详情页展开组区段清单，核对段头徽标、段状态、起止语句号与语句行；执行中观察 GHOST 段行内进度面板与控制按钮；打开终态工单观察一次性探测行为；分别打开 M1 存量工单、纯普通组工单核对渲染链；切换段清单折叠/展开；用无 `DM_GHOST_EXEC` 权限账号乙查看执行中工单并检查网络请求；执行中切走页面再返回。
 - 预期结果：分段组渲染段视图——段头=类型徽标（GHOST 黄旗/直接执行）+段状态（复用 `ticket-execution-*` 4 态）+起止语句号（1 基 exec_order 域，空洞编号下不缺号不乱序），语句行与创建页行形状一致；GHOST 段行内挂 GhostGroupPanel（阶段/Copy N/M/Lag/ETA/暂停/恢复/终止/旧表入口，按权限可见）；AUTOEXEC 段仅段级状态与失败原因，不伪造语句级进度；单段退化组恰好一份面板、一个轮询器（组级面板不同时出现，挂载条件 `!isSegmentedGroup && ghostSessionId`）；5s 连续轮询仅对 EXECUTING ghost 段启动，终态段挂载仅一次静默探测（`modal:false`，不弹全局错误），终态即停；轮询期间切走页面再返回无叠加请求，离开页面计时器释放；已完成工单段清单默认收起、非 SUCCESS 组默认展开，用户 toggle 在会话内保留，刷新后段状态与服务端一致不回退；M1 存量 flags-only 工单渲染组级面板+路由黄旗（无 segments 载体不渲染段视图，黄旗互斥语义与旧 `v-else-if` 逐位等价）；纯普通/legacy 组 `execSegments=null` 不渲染段视图，三个块全不出现；runtime 坏 JSON/非数组回落 plan 载体不炸，plan 有 runtime 无时全段 PENDING 不挂面板；创建页段计划块逐段呈现（GHOST 段黄旗+语句范围+表·行数）且与既有按语句黄旗共存（决策原因 vs 执行结构，信息角色不同）；账号乙无 `DM_GHOST_EXEC` 时控制按钮不可见、进度只读、不发起 `/ghost/*` 请求；已知接受边界——多 ghost 段组中更早段旧表已删后刷新可能复显删除按钮，点击由后端 `GHOST_OLD_TABLE_ABSENT` 拒绝、零副作用（`lockfree_ddl.md` 附录 B 移交项）。
 - 恢复/清理：关闭本流程测试工单；恢复阈值与 `ghostDefaultOptions`（恢复插件默认）；删除造数表与时间戳旧表。
+
+### TD-MAIN-08 无锁数据变更批执行与裁决
+
+- 风险/目的：P0，确认工单详情按 groupList 投影渲染 DML_BATCH 段徽标与行内批进度且**零独立轮询器**，控制按钮与窗口崩溃人工裁决 Modal 按 `DM_GHOST_EXEC` + 段/任务状态双条件可见并与后端状态门镜像，创建页黄旗/红错/灰提示分派正确不侵占编辑器，确认弹窗分批组事务/定时禁用明示，存量 ghost 段视图与纯普通组渲染链逐位不变。
+- 初始路由与状态：`/#/ticket/:id` 与 `/#/ticket_create`；分别准备一条单条超阈大 UPDATE 的 PROD_DML 工单（DML_BATCH 段执行中）、一条窗口崩溃 UNRESOLVED 工单（段 summary 带 `unresolvedIntent`，EXEC_FAIL）、一条 PRE 混合组工单（[AUTOEXEC, DML_BATCH, GHOST] 三段）、一条组内含 `SET` 语句致大 DML 不路由的灰提示工单、一条无键大 DML（/check 红错态，未提交）、一条纯普通组工单。
+- 测试数据：阈值调低与造数按 `tests/dml/lockfree_dml.md` 附录 A（仅测试实例）；工单唯一标识 `codex_dml_<时间戳>`；非幂等语句（`SET cnt = cnt + 1`）与幂等语句各一条用于红/绿字。
+- 准备方法：管理后台无锁变更设置页「无锁数据变更」区块将 `dmlRowThreshold` 调低（如 10000）便于触发；双账号甲/乙（有/无 `DM_GHOST_EXEC`）；完整真库验收步骤见 `tests/dml/lockfree_dml.md` 第 2/4/6/7/9 章。
+- 操作步骤：创建页对大 DML 预检后核对逐语句黄旗（路由公告含键列/批大小/预计批数、非幂等警示、同表累计提示）与灰提示（形状/探测失败/组会话状态），对无键大 DML 核对组级红错并尝试提交；提交后在确认弹窗核对事务开关与「定时执行」的禁用态及明示文案；执行中打开详情段视图观察 DML_BATCH 徽标与行内进度（已执行批/行数/百分比≈/节流黄标/暂停态），用 DevTools Network 过滤 `dmlBatch|tailStatus|groupList` 核对轮询面；点击暂停/恢复/终止（红色+二次确认）；打开 UNRESOLVED 工单进入人工裁决 Modal 核对批定位、lastBatchError、幂等红/绿字、RERUN/SKIP 单选与二次确认；用账号乙查看执行中与 UNRESOLVED 工单并检查网络请求；分别打开灰提示工单、混合组三段工单、纯普通组工单核对渲染链；执行中切走页面再返回。
+- 预期结果：DML_BATCH 段行=类型徽标（`fen-pi-lu-you-biao-qian`）+段状态（复用 `ticket-execution-*` 4 态）+行内进度面板，数据全部来自 `dmlBatchProgress` 投影并随既有 5s 组刷新链（`scheduleTicketAutoRefresh→getTicketDetail→loadV2GroupList`）到达，**面板为纯 props：无 interval、无 tail 调用、Network 无任何独立轮询请求**（与 ghost 段 GhostGroupPanel 自带 tailStatus 5s 轮询的差异合理——混合组两类段同组时各自形态共存不冲突）；控制按钮三条件齐备才呈现（`DM_GHOST_EXEC` ∧ 段/组 EXECUTING ∧ 任务非终态），逐操作可用性与后端状态门逐值镜像（pause←RUNNING/BLOCK、resume←PAUSE、stop←RUNNING/BLOCK/PAUSE/INIT，WAIT_START 双侧均不呈现=诚实拒），BLOCK 展示为排队等待而非延迟节流（节流走 lagState 黄标且任务状态保持 RUNNING）；终止红色+二次确认+「部分成功保留、无自动回滚」文案，sweep 重放的机械英文错误 `dml batch task CANCEL` 被映射为中止语义文案（FAILURE 重放文案照原文不映射）；裁决 Modal 触发权威=段 `summary.unresolvedIntent`（投影字段仅展示素材，与后端 resolution 守卫同源——~7s 残余窗口内不误弹不漏弹），内容含批定位（intentSeq）+lastBatchError 辅助+幂等严格判（`=== true` 绿字「重跑安全」，false/缺省红字「可能双倍生效，请先核对数据」）+RERUN/SKIP 单选+跳过=按现时数据重推导边界的披露+二次确认，提交走 retryGroup（`dmlBatchResolution`），`skipVerdictPending` 时附「上次跳过未成功」提示；创建页黄旗/灰提示/红错按 design §13 矩阵分派（KEY_UNSUPPORTED/ROUTE_ANNOUNCE/SAME_TABLE_ACCUMULATE/非幂等=黄，SHAPE/PROBE_DEGRADED/GROUP_SESSION_STATE=灰，DML_NO_KEY=组级红错阻断提交），红错渲染 v-if 双条件且 keyDetail/sqlSummary 各自守卫（null-safe 插值不白屏），与既有规则校验弹窗、B6 段计划块共存不冲突；确认弹窗分批组事务开关禁用+「批间独立提交、部分成功、无自动回滚」明示、SPECIFY_TIME 禁用+引导（纯普通组两者均保持 TD-MAIN-04 现状）；账号乙进度/段状态只读可见，控制按钮与裁决入口不可见，Network **不发** `/dmlBatch/*` 请求；存量回归：ghost 段面板/M1 flags-only 组级面板/纯普通组（`execSegments=null` 三块全不出现）渲染链与 TD-MAIN-07 逐位一致；执行中切走再返回无请求叠加（零轮询器面板天然无计时器泄漏面）。
+- 恢复/清理：关闭本流程测试工单；恢复六 KV 默认（`dmlRowThreshold=1000000` 等，设置页 DML 区块「恢复默认」）；删除造数表；恢复测试账号权限。
 
 ### TD-BOUNDARY-01 空值与长内容
 

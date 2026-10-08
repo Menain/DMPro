@@ -32,7 +32,7 @@ PASS/FAIL，只维护当前真实入口、数据准备、操作、断言和清�
 
 | 业务域   | 流程文档                                                                                       | 入口/路由                    | 核心风险                     | 基础必跑套件                                                                        |
 |-------|--------------------------------------------------------------------------------------------|--------------------------|--------------------------|-------------------------------------------------------------------------------|
-| 工单    | [`ticket/ticket_detail.md`](ticket/ticket_detail.md)                                       | 工单列表 → `/#/ticket/:id`   | 进度、分析明细、SQL 只读展示、无锁段视图与 ghost 进度面板、权限与自动刷新 | Smoke、Main Flow、Extreme、Lifecycle、Permission、State Consistency                |
+| 工单    | [`ticket/ticket_detail.md`](ticket/ticket_detail.md)                                       | 工单列表 → `/#/ticket/:id`   | 进度、分析明细、SQL 只读展示、无锁段视图与 ghost 进度面板、无锁数据变更批进度/控制与人工裁决（零独立轮询）、权限与自动刷新 | Smoke、Main Flow、Extreme、Lifecycle、Permission、State Consistency                |
 | CI/CD | [`cicd/release_flow_change_record_refresh.md`](cicd/release_flow_change_record_refresh.md) | CI/CD 列表 → `/#/cicd/:id` | 变更记录轮询、级联进度、关闭工单后的终态回收   | Smoke、Main Flow、Repeat And Concurrency、Lifecycle、Permission、State Consistency |
 | 数据源   | [`datasource/driver_default_selection.md`](datasource/driver_default_selection.md)           | 实例列表 → `/#/datasource/add` | 后端默认驱动契约、家族和版本默认选择        | Smoke、Main Flow、Boundaries、Lifecycle、Permission、State Consistency              |
 | 数据源   | [`datasource/kingbasees_datasource.md`](datasource/kingbasees_datasource.md)                 | 实例列表 → SQL 工作台             | 四兼容模式、层级契约、单产品前端与真实执行链路   | Smoke、Main Flow、Failure And Recovery、Lifecycle、Permission、State Consistency     |
