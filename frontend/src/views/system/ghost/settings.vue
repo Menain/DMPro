@@ -4,96 +4,140 @@
       <div class="page-panel-body ghost-settings__panel">
         <Spin v-if="loading" fix />
 
-        <Form
-          v-if="loaded"
-          ref="settingsForm"
-          :key="revision"
-          :model="draftValues"
-          :rules="formRules"
-          label-position="top"
-          class="ghost-settings__form"
-        >
-          <section class="page-section ghost-settings__section">
-            <div class="page-section__title">{{ $t('wu-suo-she-zhi-zi-dong-lu-you') }}</div>
-            <div class="ghost-settings__fields">
-              <FormItem :label="$t('wu-suo-she-zhi-zi-dong-lu-you-kai-guan')" prop="ghostAutoRoute">
-                <PreferenceSettingField
-                  :field="autoRouteField"
-                  :model-value="draftValues.ghostAutoRoute"
-                  @update:model-value="setDraftValue('ghostAutoRoute', $event)"
-                />
-                <p class="ghost-settings__help">{{ $t('wu-suo-she-zhi-zi-dong-lu-you-ti-shi') }}</p>
-              </FormItem>
-              <FormItem :label="$t('wu-suo-she-zhi-da-xiao-yu-zhi')" prop="ghostSizeThresholdMb">
-                <PreferenceSettingField
-                  :field="sizeThresholdField"
-                  :model-value="draftValues.ghostSizeThresholdMb"
-                  @update:model-value="setDraftValue('ghostSizeThresholdMb', $event)"
-                />
-              </FormItem>
-              <FormItem :label="$t('wu-suo-she-zhi-hang-shu-yu-zhi')" prop="ghostRowThreshold">
-                <PreferenceSettingField
-                  :field="rowThresholdField"
-                  :model-value="draftValues.ghostRowThreshold"
-                  @update:model-value="setDraftValue('ghostRowThreshold', $event)"
-                />
-                <p class="ghost-settings__help">{{ $t('wu-suo-she-zhi-yu-zhi-ti-shi') }}</p>
-              </FormItem>
-            </div>
-          </section>
+        <template v-if="loaded">
+          <!-- 区块一:无锁结构变更(gh-ost,B6 7e)——区块级独立保存,不组装/不触碰 DML 区块 KV -->
+          <Form ref="ghostForm" :key="'g' + revision" :model="draftValues" :rules="ghostRules" label-position="top" class="ghost-settings__form">
+            <section class="page-section ghost-settings__section">
+              <div class="page-section__title">{{ $t('wu-suo-she-zhi-zi-dong-lu-you') }}</div>
+              <div class="ghost-settings__fields">
+                <FormItem :label="$t('wu-suo-she-zhi-zi-dong-lu-you-kai-guan')" prop="ghostAutoRoute">
+                  <PreferenceSettingField
+                    :field="autoRouteField"
+                    :model-value="draftValues.ghostAutoRoute"
+                    @update:model-value="setDraftValue('ghostAutoRoute', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('wu-suo-she-zhi-zi-dong-lu-you-ti-shi') }}</p>
+                </FormItem>
+                <FormItem :label="$t('wu-suo-she-zhi-da-xiao-yu-zhi')" prop="ghostSizeThresholdMb">
+                  <PreferenceSettingField
+                    :field="sizeThresholdField"
+                    :model-value="draftValues.ghostSizeThresholdMb"
+                    @update:model-value="setDraftValue('ghostSizeThresholdMb', $event)"
+                  />
+                </FormItem>
+                <FormItem :label="$t('wu-suo-she-zhi-hang-shu-yu-zhi')" prop="ghostRowThreshold">
+                  <PreferenceSettingField
+                    :field="rowThresholdField"
+                    :model-value="draftValues.ghostRowThreshold"
+                    @update:model-value="setDraftValue('ghostRowThreshold', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('wu-suo-she-zhi-yu-zhi-ti-shi') }}</p>
+                </FormItem>
+              </div>
+            </section>
 
-          <section class="page-section ghost-settings__section">
-            <div class="page-section__title">{{ $t('wu-suo-she-zhi-gao-jing') }}</div>
-            <div class="ghost-settings__fields">
-              <FormItem :label="$t('wu-suo-she-zhi-gao-jing-kai-guan')" prop="alertPushEnable">
-                <PreferenceSettingField
-                  :field="alertPushField"
-                  :model-value="draftValues.alertPushEnable"
-                  @update:model-value="setDraftValue('alertPushEnable', $event)"
-                />
-                <p class="ghost-settings__help">
-                  {{ $t('wu-suo-she-zhi-gao-jing-ti-shi') }}
-                  <router-link to="/integrations/im">{{ $t('wu-suo-she-zhi-ji-qi-ren-pei-zhi') }}</router-link>
-                </p>
-              </FormItem>
-            </div>
-          </section>
+            <section class="page-section ghost-settings__section">
+              <div class="page-section__title">{{ $t('wu-suo-she-zhi-gao-jing') }}</div>
+              <div class="ghost-settings__fields">
+                <FormItem :label="$t('wu-suo-she-zhi-gao-jing-kai-guan')" prop="alertPushEnable">
+                  <PreferenceSettingField
+                    :field="alertPushField"
+                    :model-value="draftValues.alertPushEnable"
+                    @update:model-value="setDraftValue('alertPushEnable', $event)"
+                  />
+                  <p class="ghost-settings__help">
+                    {{ $t('wu-suo-she-zhi-gao-jing-ti-shi') }}
+                    <router-link to="/integrations/im">{{ $t('wu-suo-she-zhi-ji-qi-ren-pei-zhi') }}</router-link>
+                  </p>
+                </FormItem>
+              </div>
+            </section>
 
-          <section class="page-section ghost-settings__section">
-            <div class="page-section__title">{{ $t('wu-suo-can-shu') }}</div>
-            <p class="ghost-settings__hint">{{ $t('wu-suo-can-shu-ti-shi') }}</p>
-            <Alert v-if="optionsJsonInvalid" type="error" show-icon class="ghost-settings__alert">
-              {{ $t('wu-suo-json-wu-xiao') }}
-            </Alert>
-            <div class="ghost-settings__fields">
-              <FormItem v-for="field in ghostNumberFields" :key="field.key" :label="$t(field.labelKey)" :prop="field.key">
-                <PreferenceSettingField :field="field" :model-value="draftValues[field.key]" @update:model-value="setDraftValue(field.key, $event)" />
-              </FormItem>
-              <FormItem :label="$t('wu-suo-param-cut-over-type')" prop="cutOverType">
-                <!-- gh-ost --cut-over enum tokens (GhostCutOverType), rendered verbatim -->
-                <Select v-model="draftValues.cutOverType" transfer style="width: 100%">
-                  <Option v-for="opt in cutOverTypes" :key="opt" :value="opt">{{ opt }}</Option>
-                </Select>
-              </FormItem>
-              <FormItem v-for="field in ghostBoolFields" :key="field.key" :label="$t(field.labelKey)" :prop="field.key">
-                <PreferenceSettingField :field="field" :model-value="draftValues[field.key]" @update:model-value="setDraftValue(field.key, $event)" />
-              </FormItem>
-            </div>
-            <div class="ghost-settings__restore">
-              <Button :loading="restoring" :disabled="optionsStoredBlank || loading || saving" @click="handleRestoreDefaults">
-                {{ $t('wu-suo-hui-fu-mo-ren') }}
+            <section class="page-section ghost-settings__section">
+              <div class="page-section__title">{{ $t('wu-suo-can-shu') }}</div>
+              <p class="ghost-settings__hint">{{ $t('wu-suo-can-shu-ti-shi') }}</p>
+              <Alert v-if="optionsJsonInvalid" type="error" show-icon class="ghost-settings__alert">
+                {{ $t('wu-suo-json-wu-xiao') }}
+              </Alert>
+              <div class="ghost-settings__fields">
+                <FormItem v-for="field in ghostNumberFields" :key="field.key" :label="$t(field.labelKey)" :prop="field.key">
+                  <PreferenceSettingField
+                    :field="field"
+                    :model-value="draftValues[field.key]"
+                    @update:model-value="setDraftValue(field.key, $event)"
+                  />
+                </FormItem>
+                <FormItem :label="$t('wu-suo-param-cut-over-type')" prop="cutOverType">
+                  <!-- gh-ost --cut-over enum tokens (GhostCutOverType), rendered verbatim -->
+                  <Select v-model="draftValues.cutOverType" transfer style="width: 100%">
+                    <Option v-for="opt in cutOverTypes" :key="opt" :value="opt">{{ opt }}</Option>
+                  </Select>
+                </FormItem>
+                <FormItem v-for="field in ghostBoolFields" :key="field.key" :label="$t(field.labelKey)" :prop="field.key">
+                  <PreferenceSettingField
+                    :field="field"
+                    :model-value="draftValues[field.key]"
+                    @update:model-value="setDraftValue(field.key, $event)"
+                  />
+                </FormItem>
+              </div>
+              <div class="ghost-settings__restore">
+                <Button :loading="restoring" :disabled="optionsStoredBlank || loading || saving" @click="handleRestoreDefaults">
+                  {{ $t('wu-suo-hui-fu-mo-ren') }}
+                </Button>
+              </div>
+            </section>
+
+            <div class="ghost-settings__actions">
+              <Button :disabled="!dirtyGhost || loading || saving || restoring" @click="resetDraft">{{ $t('qu-xiao') }}</Button>
+              <Button type="primary" :loading="saving" :disabled="!dirtyGhost || loading || restoring" @click="handleSaveGhost">
+                {{ $t('bao-cun') }}
               </Button>
             </div>
-          </section>
-        </Form>
+          </Form>
+
+          <!-- 区块二:无锁数据变更(B7 N2,裁决 #14)——六 KV,区块级独立保存互不干扰。
+               独立 dmlDraftValues 模型:gh-ost 的 JSON 选项与 B7 KV 存在同名键(dmlBatchSize——
+               gh-ost --dml-batch-size 存于 ghostDefaultOptions JSON,B7 批大小是顶层 KV 行),
+               共享扁平草稿会互相覆盖/交叉置脏,故两区块草稿物理隔离 -->
+          <Form ref="dmlForm" :key="'d' + revision" :model="dmlDraftValues" :rules="dmlRules" label-position="top" class="ghost-settings__form">
+            <section class="page-section ghost-settings__section">
+              <div class="page-section__title">{{ $t('fen-pi-kuai-biao-ti') }}</div>
+              <p class="ghost-settings__hint">{{ $t('fen-pi-kuai-ti-shi') }}</p>
+              <div class="ghost-settings__fields">
+                <FormItem :label="$t('fen-pi-zi-dong-lu-you-kai-guan')" prop="dmlBatchAutoRoute">
+                  <PreferenceSettingField
+                    :field="dmlAutoRouteField"
+                    :model-value="dmlDraftValues.dmlBatchAutoRoute"
+                    @update:model-value="setDmlDraftValue('dmlBatchAutoRoute', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('fen-pi-zi-dong-lu-you-ti-shi') }}</p>
+                </FormItem>
+                <FormItem v-for="field in dmlNumberFields" :key="field.key" :label="$t(field.labelKey)" :prop="field.key">
+                  <PreferenceSettingField
+                    :field="field"
+                    :model-value="dmlDraftValues[field.key]"
+                    @update:model-value="setDmlDraftValue(field.key, $event)"
+                  />
+                  <p v-if="field.helpKey" class="ghost-settings__help">{{ $t(field.helpKey) }}</p>
+                </FormItem>
+              </div>
+            </section>
+
+            <div class="ghost-settings__actions">
+              <Button :loading="restoring" :disabled="loading || saving" @click="handleRestoreDmlDefaults">
+                {{ $t('fen-pi-hui-fu-mo-ren') }}
+              </Button>
+              <Button :disabled="!dirtyDml || loading || saving || restoring" @click="resetDmlBlock">{{ $t('qu-xiao') }}</Button>
+              <Button type="primary" :loading="saving" :disabled="!dirtyDml || loading || restoring" @click="handleSaveDml">
+                {{ $t('bao-cun') }}
+              </Button>
+            </div>
+          </Form>
+        </template>
 
         <div v-else-if="!loading" class="ghost-settings__empty">{{ $t('preference-load-failed') }}</div>
       </div>
-    </div>
-
-    <div class="page-shell__footer ghost-settings__footer">
-      <Button :disabled="!dirty || loading || saving" @click="resetDraft">{{ $t('qu-xiao') }}</Button>
-      <Button type="primary" :loading="saving" :disabled="!dirty || loading || restoring" @click="handleSave">{{ $t('bao-cun') }}</Button>
     </div>
   </div>
 </template>
@@ -157,9 +201,36 @@ const KV_LABEL_KEYS = {
   ghostSizeThresholdMb: 'wu-suo-she-zhi-da-xiao-yu-zhi',
   ghostRowThreshold: 'wu-suo-she-zhi-hang-shu-yu-zhi',
   alertPushEnable: 'wu-suo-she-zhi-gao-jing-kai-guan',
-  ghostDefaultOptions: 'wu-suo-can-shu'
+  ghostDefaultOptions: 'wu-suo-can-shu',
+  dmlBatchAutoRoute: 'fen-pi-zi-dong-lu-you-kai-guan',
+  dmlRowThreshold: 'fen-pi-hang-shu-yu-zhi',
+  dmlBatchSize: 'fen-pi-dan-pi-hang-shu',
+  dmlBatchIntervalMs: 'fen-pi-pi-jian-ge',
+  dmlLagThresholdSec: 'fen-pi-yan-chi-yu-zhi',
+  dmlBatchTimeoutSec: 'fen-pi-dan-pi-chao-shi'
 };
 const SCALAR_KV_KEYS = [KV_AUTO_ROUTE, KV_SIZE_MB, KV_ROW_THRESHOLD, KV_ALERT_PUSH];
+const GHOST_ALL_KEYS = [...SCALAR_KV_KEYS, ...OPTION_KEYS];
+
+// The six B7 lock-free-DML RootUserConfig KVs (RootUserConfig dml* block). DML_KV_DEFAULTS is the
+// typed mirror of the @UserConfigDef defaultValue entries (same last-resort fallback contract).
+// Restoring defaults BLANKS the six rows — a blank/missing value falls back to the backend
+// fail-safe defaults (fetchSystemConf null → default), the 7e ghostDefaultOptions pattern.
+const KV_DML_AUTO_ROUTE = 'dmlBatchAutoRoute';
+const KV_DML_ROW_THRESHOLD = 'dmlRowThreshold';
+const KV_DML_BATCH_SIZE = 'dmlBatchSize';
+const KV_DML_INTERVAL_MS = 'dmlBatchIntervalMs';
+const KV_DML_LAG_SEC = 'dmlLagThresholdSec';
+const KV_DML_TIMEOUT_SEC = 'dmlBatchTimeoutSec';
+const DML_KV_KEYS = [KV_DML_AUTO_ROUTE, KV_DML_ROW_THRESHOLD, KV_DML_BATCH_SIZE, KV_DML_INTERVAL_MS, KV_DML_LAG_SEC, KV_DML_TIMEOUT_SEC];
+const DML_KV_DEFAULTS = {
+  dmlBatchAutoRoute: true,
+  dmlRowThreshold: 1000000,
+  dmlBatchSize: 5000,
+  dmlBatchIntervalMs: 1000,
+  dmlLagThresholdSec: 10,
+  dmlBatchTimeoutSec: 300
+};
 
 // threshold ranges mirror WhiteListServiceForBasic/Full userConfigRange (server-side authority)
 const AUTO_ROUTE_FIELD = { key: KV_AUTO_ROUTE, widget: 'switch', labelKey: KV_LABEL_KEYS[KV_AUTO_ROUTE] };
@@ -180,6 +251,34 @@ const ROW_THRESHOLD_FIELD = {
   unitKey: 'wu-suo-dan-wei-hang'
 };
 const ALERT_PUSH_FIELD = { key: KV_ALERT_PUSH, widget: 'switch', labelKey: KV_LABEL_KEYS[KV_ALERT_PUSH] };
+
+// B7 DML block fields — ranges mirror the WhiteListServiceForBasic/Full dml* Range entries
+// (dmlRowThreshold 1~1000000000 / dmlBatchSize 1000~50000 / dmlBatchIntervalMs 0~60000 /
+// dmlLagThresholdSec 1~3600 / dmlBatchTimeoutSec 10~3600; the boolean kill switch has no Range).
+const DML_AUTO_ROUTE_FIELD = { key: KV_DML_AUTO_ROUTE, widget: 'switch', labelKey: KV_LABEL_KEYS[KV_DML_AUTO_ROUTE] };
+const DML_NUMBER_FIELDS = [
+  {
+    key: KV_DML_ROW_THRESHOLD,
+    widget: 'number',
+    labelKey: KV_LABEL_KEYS[KV_DML_ROW_THRESHOLD],
+    min: 1,
+    max: 1000000000,
+    unitKey: 'wu-suo-dan-wei-hang',
+    helpKey: 'fen-pi-hang-shu-yu-zhi-ti-shi'
+  },
+  { key: KV_DML_BATCH_SIZE, widget: 'number', labelKey: KV_LABEL_KEYS[KV_DML_BATCH_SIZE], min: 1000, max: 50000, unitKey: 'wu-suo-dan-wei-hang' },
+  { key: KV_DML_INTERVAL_MS, widget: 'number', labelKey: KV_LABEL_KEYS[KV_DML_INTERVAL_MS], min: 0, max: 60000, unitKey: 'fen-pi-dan-wei-hao-miao' },
+  {
+    key: KV_DML_LAG_SEC,
+    widget: 'number',
+    labelKey: KV_LABEL_KEYS[KV_DML_LAG_SEC],
+    min: 1,
+    max: 3600,
+    unitKey: 'preference-unit-seconds',
+    helpKey: 'fen-pi-yan-chi-ti-shi'
+  },
+  { key: KV_DML_TIMEOUT_SEC, widget: 'number', labelKey: KV_LABEL_KEYS[KV_DML_TIMEOUT_SEC], min: 10, max: 3600, unitKey: 'preference-unit-seconds' }
+];
 
 // mins mirror the standalone launch form precedent (b38c752f GhostLaunchForm); the backend applies
 // no range validation inside the JSON blob, so no invented maxima — InputNumber clamps at min.
@@ -313,8 +412,14 @@ export default {
       restoring: false,
       revision: 0,
       configMeta: {},
+      // two PHYSICALLY SEPARATE draft models — the gh-ost JSON options and the B7 KVs share a key
+      // name (dmlBatchSize: gh-ost's --dml-batch-size inside ghostDefaultOptions vs the top-level
+      // B7 batch-size KV). A single flat draft would let one block's value overwrite/cross-dirty
+      // the other (violating 区块级独立保存互不干扰), so each block owns its own draft/original.
       originalValues: {},
       draftValues: {},
+      dmlOriginalValues: {},
+      dmlDraftValues: {},
       optionsJsonInvalid: false,
       optionsStoredBlank: true,
       autoRouteField: AUTO_ROUTE_FIELD,
@@ -323,26 +428,43 @@ export default {
       alertPushField: ALERT_PUSH_FIELD,
       ghostNumberFields: GHOST_NUMBER_FIELDS,
       ghostBoolFields: GHOST_BOOL_FIELDS,
-      cutOverTypes: CUT_OVER_TYPES
+      cutOverTypes: CUT_OVER_TYPES,
+      dmlAutoRouteField: DML_AUTO_ROUTE_FIELD,
+      dmlNumberFields: DML_NUMBER_FIELDS
     };
   },
   computed: {
-    formRules() {
+    ghostRules() {
       const rules = {};
       [SIZE_THRESHOLD_FIELD, ROW_THRESHOLD_FIELD, ...GHOST_NUMBER_FIELDS].forEach((field) => {
         rules[field.key] = [{ trigger: 'change', validator: this.buildNumberValidator(field) }];
       });
       return rules;
     },
-    dirty() {
+    dmlRules() {
+      const rules = {};
+      DML_NUMBER_FIELDS.forEach((field) => {
+        rules[field.key] = [{ trigger: 'change', validator: this.buildNumberValidator(field) }];
+      });
+      return rules;
+    },
+    // block-scoped dirty flags (区块级 draft 隔离 — each block's save/cancel/leave-warning keys on
+    // its OWN draft; an invalid stored ghost JSON keeps the GHOST block dirty so its next save
+    // repairs the KV)
+    dirtyGhost() {
       if (!this.loaded) {
         return false;
       }
-      // an invalid stored JSON keeps the page dirty so the next save repairs the KV
       if (this.optionsJsonInvalid) {
         return true;
       }
-      return [...SCALAR_KV_KEYS, ...OPTION_KEYS].some((key) => this.draftValues[key] !== this.originalValues[key]);
+      return GHOST_ALL_KEYS.some((key) => this.draftValues[key] !== this.originalValues[key]);
+    },
+    dirtyDml() {
+      if (!this.loaded) {
+        return false;
+      }
+      return DML_KV_KEYS.some((key) => this.dmlDraftValues[key] !== this.dmlOriginalValues[key]);
     }
   },
   mounted() {
@@ -383,7 +505,7 @@ export default {
           configMap[config.configName] = config;
         });
         const configMeta = {};
-        [...SCALAR_KV_KEYS, KV_OPTIONS].forEach((key) => {
+        [...SCALAR_KV_KEYS, KV_OPTIONS, ...DML_KV_KEYS].forEach((key) => {
           configMeta[key] = configMap[key] || null;
         });
         this.configMeta = configMeta;
@@ -402,10 +524,24 @@ export default {
         };
         this.originalValues = values;
         this.draftValues = { ...values };
+        // B7 DML KVs live in their OWN draft object — NOT merged into `values` above, because the
+        // gh-ost options layer already owns the `dmlBatchSize` key name (a flat merge would let the
+        // B7 KV overwrite the gh-ost option and cross-wire the two blocks' dirty/save logic).
+        const dmlValues = {
+          dmlBatchAutoRoute: parseBool(rawOf(configMeta[KV_DML_AUTO_ROUTE], ''), DML_KV_DEFAULTS[KV_DML_AUTO_ROUTE]),
+          dmlRowThreshold: parseInteger(rawOf(configMeta[KV_DML_ROW_THRESHOLD], ''), DML_KV_DEFAULTS[KV_DML_ROW_THRESHOLD]),
+          dmlBatchSize: parseInteger(rawOf(configMeta[KV_DML_BATCH_SIZE], ''), DML_KV_DEFAULTS[KV_DML_BATCH_SIZE]),
+          dmlBatchIntervalMs: parseInteger(rawOf(configMeta[KV_DML_INTERVAL_MS], ''), DML_KV_DEFAULTS[KV_DML_INTERVAL_MS]),
+          dmlLagThresholdSec: parseInteger(rawOf(configMeta[KV_DML_LAG_SEC], ''), DML_KV_DEFAULTS[KV_DML_LAG_SEC]),
+          dmlBatchTimeoutSec: parseInteger(rawOf(configMeta[KV_DML_TIMEOUT_SEC], ''), DML_KV_DEFAULTS[KV_DML_TIMEOUT_SEC])
+        };
+        this.dmlOriginalValues = dmlValues;
+        this.dmlDraftValues = { ...dmlValues };
         this.loaded = true;
         this.revision += 1;
         await this.$nextTick();
-        this.$refs.settingsForm?.clearValidate?.();
+        this.$refs.ghostForm?.clearValidate?.();
+        this.$refs.dmlForm?.clearValidate?.();
       } finally {
         this.loading = false;
       }
@@ -413,14 +549,39 @@ export default {
     setDraftValue(key, value) {
       this.draftValues[key] = value;
     },
+    setDmlDraftValue(key, value) {
+      this.dmlDraftValues[key] = value;
+    },
+    // block-scoped cancel: only THIS block's own draft reverts (the other block is untouched)
     resetDraft() {
       this.draftValues = { ...this.originalValues };
       this.revision += 1;
       this.$nextTick(() => {
-        this.$refs.settingsForm?.clearValidate?.();
+        this.$refs.ghostForm?.clearValidate?.();
       });
     },
-    collectWrites() {
+    resetDmlBlock() {
+      this.dmlDraftValues = { ...this.dmlOriginalValues };
+      this.revision += 1;
+      this.$nextTick(() => {
+        this.$refs.dmlForm?.clearValidate?.();
+      });
+    },
+    // reload after a block-scoped save/restore while PRESERVING the OTHER block's draft
+    // (区块级独立保存互不干扰: saving/restoring one block never discards the other's edits).
+    // load() rebuilds both drafts from the server; we snapshot the other block's in-progress
+    // draft and restore it over the reload so its unsaved edits survive.
+    async reloadKeepingDml() {
+      const preserved = { ...this.dmlDraftValues };
+      await this.load();
+      this.dmlDraftValues = preserved;
+    },
+    async reloadKeepingGhost() {
+      const preserved = { ...this.draftValues };
+      await this.load();
+      this.draftValues = preserved;
+    },
+    collectGhostWrites() {
       const writes = [];
       const draft = this.draftValues;
       const original = this.originalValues;
@@ -439,6 +600,15 @@ export default {
       }
       return writes;
     },
+    collectDmlWrites() {
+      const writes = [];
+      DML_KV_KEYS.forEach((key) => {
+        if (this.dmlDraftValues[key] !== this.dmlOriginalValues[key]) {
+          writes.push({ key, value: String(this.dmlDraftValues[key]) });
+        }
+      });
+      return writes;
+    },
     buildUpsertData(key, value) {
       const meta = this.configMeta[key];
       if (meta && !meta.needCreated) {
@@ -450,39 +620,62 @@ export default {
       const reason = res.msg || this.$t('cao-zuo-shi-bai');
       this.$Message.error({ content: this.$t('wu-suo-bao-cun-shi-bai-xiang', [this.$t(KV_LABEL_KEYS[key]), reason]), duration: 5 });
     },
-    async handleSave() {
-      if (!this.dirty || this.saving || this.restoring) {
+    // one upsert per KV so a partial failure can be reported per item (modal:false — the
+    // per-item message below is the report, the generic error queue must not double it)
+    async runUpserts(writes) {
+      let failed = 0;
+      for (const write of writes) {
+        const res = await this.$services.rdpUserConfigUpsertUserConfigs({ data: this.buildUpsertData(write.key, write.value), modal: false });
+        if (!res.success) {
+          failed += 1;
+          this.reportItemFailure(write.key, res);
+        }
+      }
+      return failed;
+    },
+    async handleSaveGhost() {
+      if (!this.dirtyGhost || this.saving || this.restoring) {
         return;
       }
-      const valid = await this.$refs.settingsForm.validate();
+      const valid = await this.$refs.ghostForm.validate();
       if (!valid) {
         return;
       }
       this.saving = true;
       try {
-        // one upsert per KV so a partial failure can be reported per item (modal:false — the
-        // per-item message below is the report, the generic error queue must not double it)
-        let failed = 0;
-        for (const write of this.collectWrites()) {
-          const res = await this.$services.rdpUserConfigUpsertUserConfigs({ data: this.buildUpsertData(write.key, write.value), modal: false });
-          if (!res.success) {
-            failed += 1;
-            this.reportItemFailure(write.key, res);
-          }
-        }
+        const failed = await this.runUpserts(this.collectGhostWrites());
         if (!failed) {
           this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
         }
-        await this.load();
+        await this.reloadKeepingDml();
+      } finally {
+        this.saving = false;
+      }
+    },
+    async handleSaveDml() {
+      if (!this.dirtyDml || this.saving || this.restoring) {
+        return;
+      }
+      const valid = await this.$refs.dmlForm.validate();
+      if (!valid) {
+        return;
+      }
+      this.saving = true;
+      try {
+        const failed = await this.runUpserts(this.collectDmlWrites());
+        if (!failed) {
+          this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
+        }
+        await this.reloadKeepingGhost();
       } finally {
         this.saving = false;
       }
     },
     handleRestoreDefaults() {
-      // the confirm-then-reload below discards pending edits in the other sections too — say so
-      const hasDraftEdits = [...SCALAR_KV_KEYS, ...OPTION_KEYS].some((key) => this.draftValues[key] !== this.originalValues[key]);
+      // block-scoped (N2): the reload below PRESERVES the DML block's draft — the discard
+      // warning only concerns THIS block's pending edits
       let content = this.$t('wu-suo-hui-fu-mo-ren-ti-shi');
-      if (hasDraftEdits) {
+      if (this.dirtyGhost) {
         content += ` ${this.$t('wu-suo-hui-fu-mo-ren-diu-qi')}`;
       }
       this.$Modal.confirm({
@@ -502,13 +695,48 @@ export default {
           return;
         }
         this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
-        await this.load();
+        await this.reloadKeepingDml();
+      } finally {
+        this.restoring = false;
+      }
+    },
+    handleRestoreDmlDefaults() {
+      // 恢复默认仅清本区块 (裁决 #14): blanks the six DML KV rows — blank values fall back to the
+      // backend fail-safe defaults (fetchSystemConf null → @UserConfigDef default), and the
+      // confirm's discard warning only concerns THIS block's draft (the ghost draft survives)
+      let content = this.$t('fen-pi-hui-fu-mo-ren-ti-shi');
+      if (this.dirtyDml) {
+        content += ` ${this.$t('fen-pi-hui-fu-mo-ren-diu-qi')}`;
+      }
+      this.$Modal.confirm({
+        title: this.$t('fen-pi-hui-fu-mo-ren-que-ren'),
+        content,
+        okText: this.$t('que-ren'),
+        cancelText: this.$t('qu-xiao'),
+        onOk: () => this.doRestoreDmlDefaults()
+      });
+    },
+    async doRestoreDmlDefaults() {
+      this.restoring = true;
+      try {
+        let failed = 0;
+        for (const key of DML_KV_KEYS) {
+          const res = await this.$services.rdpUserConfigUpsertUserConfigs({ data: this.buildUpsertData(key, ''), modal: false });
+          if (!res.success) {
+            failed += 1;
+            this.reportItemFailure(key, res);
+          }
+        }
+        if (!failed) {
+          this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
+        }
+        await this.reloadKeepingGhost();
       } finally {
         this.restoring = false;
       }
     },
     confirmDiscardIfNeeded() {
-      if (!this.dirty) {
+      if (!this.dirtyGhost && !this.dirtyDml) {
         return Promise.resolve(true);
       }
       return new Promise((resolve) => {
@@ -523,7 +751,7 @@ export default {
       });
     },
     handleBeforeUnload(event) {
-      if (!this.dirty) {
+      if (!this.dirtyGhost && !this.dirtyDml) {
         return;
       }
       event.preventDefault();
@@ -568,6 +796,10 @@ export default {
     flex-direction: column;
     gap: 32px;
     max-width: 1040px;
+  }
+
+  &__form + &__form {
+    margin-top: 32px;
   }
 
   &__section {
@@ -638,22 +870,16 @@ export default {
     padding-left: 11px;
   }
 
+  &__actions {
+    display: flex;
+    gap: 8px;
+    padding-left: 11px;
+  }
+
   &__empty {
     padding: 48px 0;
     color: var(--text-tertiary);
     text-align: center;
-  }
-
-  .page-shell__footer {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 64px;
-    padding: 12px 24px;
-    border-top: 1px solid var(--border-light);
-    background: var(--bg-card);
   }
 
   @media (max-width: 767px) {
@@ -664,11 +890,6 @@ export default {
     .ghost-settings__fields {
       grid-template-columns: minmax(0, 1fr);
       gap: 4px;
-    }
-
-    .page-shell__footer {
-      flex-wrap: wrap;
-      padding: 12px 16px;
     }
   }
 }
