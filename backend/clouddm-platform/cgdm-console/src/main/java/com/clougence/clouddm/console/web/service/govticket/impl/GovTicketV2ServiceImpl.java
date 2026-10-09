@@ -195,6 +195,11 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchService dmlBatchService;
+    // @Lazy: DingTalk bridge outbound (task 10-09) — the bridge service lazy-reaches the alert/
+    //   approval layers back; safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService dingBridgeOutboundService;
     @Resource
     private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
 
@@ -383,6 +388,19 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         // direct chain — the alert fact is trailed into the event chain inside this transaction and
         // the IM push is registered for afterCommit (never blocks or rolls back the submission).
         registerGhostAlerts(puid, uid, ticket.getId(), ticket.getOwnerUid(), prechecks);
+
+        // DingTalk bridge outbound hook 1 (task 10-09, design §3.3): an External-channel DIRECT
+        // submission registers the afterCommit flows/create trigger — the bridge initiates the
+        // DingTalk approval instance while the ticket waits at WAIT_APPROVAL for inbound commands.
+        // VIA_RELEASE never triggers (no approval instance exists, design boundary #14); Internal/
+        // plugin channels never trigger (boundary #13). Never blocks or rolls back the submission.
+        if (!viaRelease && approvalType == ApprovalType.External) {
+            try {
+                dingBridgeOutboundService.triggerCreateFlow(puid, ticket.getId());
+            } catch (Throwable t) {
+                log.warn("[DingBridge] submit outbound trigger failed for ticket {}, degraded", ticket.getId(), t);
+            }
+        }
 
         GovTicketV2SubmitVO result = new GovTicketV2SubmitVO();
         result.setTicketId(ticket.getId());

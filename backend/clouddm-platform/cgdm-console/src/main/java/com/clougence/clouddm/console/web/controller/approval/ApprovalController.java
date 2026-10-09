@@ -98,6 +98,8 @@ public class ApprovalController {
     private ExecutionDal           executionDal;
     @Resource
     private MonitorDal             monitorDal;
+    @Resource
+    private com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService dingBridgeOutboundService;
 
     //
     // control
@@ -168,6 +170,23 @@ public class ApprovalController {
 
         String msg = DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_CLOSE_AT_CONSOLE_MESSAGE.name());
         this.approvalFlowService.closeTicket(fo.getTicketId(), msg, puid, uid);
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    /**
+     * Manual re-issue of a failed DingTalk-bridge outbound initiation (task 10-09, design §4).
+     * Permission mirrors the cancel/close precedent (HIGH + request-or-approve labels); the
+     * tenant/identity check and the outbound_status guard matrix (FAILED ∨ NOT_STARTED only —
+     * STARTED/STARTING reject) live in the service. Synchronous: the bridge outcome is reported
+     * back to the operator (success → empty data; failure → i18n error with the persisted cause).
+     */
+    @RequestAuth(level = HIGH, value = { RDP_WORKER_ORDER_REQUEST, RDP_WORKER_ORDER_APPROVE })
+    @RequestMapping(value = "/reissueFlow", method = RequestMethod.POST)
+    public ResWebData<?> reissueFlow(@Valid @RequestBody DmTicketFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+
+        this.dingBridgeOutboundService.reissueFlow(puid, uid, fo.getTicketId());
         return ResWebDataUtils.buildSuccess();
     }
 

@@ -75,6 +75,15 @@ public class DmApprovalDO {
     private String                rollBackSql;
     private String                ticketInfo;
 
+    // DingTalk bridge outbound runtime state (task 10-09-dingtalk-approval-bridge, design §3.1).
+    // Written ONLY by the outbound machinery (trigger/sweep/reissue) of External-channel rows;
+    // NULL on every non-applicable row. Status vocabulary: NOT_STARTED/STARTING/STARTED/FAILED
+    // (NULL reads as NOT_STARTED). These columns never touch gmt_modified (scheduler lease).
+    private String                outboundStatus;
+    private String                outboundError;
+    private Integer               outboundRetryCount;
+    private Date                  outboundNextRetryAt;
+
     public boolean hasFeature(ApprovalFeature feature) {
         return CollectionUtils.isNotEmpty(this.features) && this.features.contains(feature);
     }

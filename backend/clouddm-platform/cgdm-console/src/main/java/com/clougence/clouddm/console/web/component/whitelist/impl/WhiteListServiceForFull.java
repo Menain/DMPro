@@ -63,6 +63,9 @@ public class WhiteListServiceForFull implements WhiteListService, DsFeatureIDs, 
             this.userConfigRange.put(RootUserConfig.Fields.dmlBatchIntervalMs, new Range(0, 60000));
             this.userConfigRange.put(RootUserConfig.Fields.dmlLagThresholdSec, new Range(1, 3600));
             this.userConfigRange.put(RootUserConfig.Fields.dmlBatchTimeoutSec, new Range(10, 3600));
+            // DingTalk bridge outbound (design §3.2 — the string baseUrl/token and the boolean
+            // kill switch carry no Range, dmlBatchAutoRoute precedent; only the timeout is bounded)
+            this.userConfigRange.put(RootUserConfig.Fields.dingBridgeTimeoutMs, new Range(1000, 60000));
 
         }
     }

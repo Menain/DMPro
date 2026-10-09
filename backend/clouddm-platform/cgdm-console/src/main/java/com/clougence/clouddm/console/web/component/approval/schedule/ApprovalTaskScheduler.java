@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Service;
@@ -48,6 +49,10 @@ import lombok.extern.slf4j.Slf4j;
 public class ApprovalTaskScheduler {
     private static final int            THREAD_COUNT_MULTIPLIER = 2;
     private static final int            QUEUE_SIZE_MULTIPLIER   = 3;
+    /** DingTalk bridge outbound compensation sweep throttle (task 10-09, design §4): the finest
+     *  backoff slot is 1 minute, so a 30s round granularity adds no meaningful delay while
+     *  keeping the FAILED-row query off the 1s hot tick. */
+    private static final long           OUTBOUND_SWEEP_INTERVAL_MS = 30_000L;
 
     @Resource
     private ApprovalDal                 approvalDal;
@@ -66,6 +71,11 @@ public class ApprovalTaskScheduler {
     private Thread                      scheduleWorkThread;
     private Set<Long>                   taskInQueueSet;
     private Set<Long>                   controlTaskInQueueSet;
+    /** last outbound-sweep round timestamp (throttle state, single dispatcher thread). */
+    private volatile long               lastOutboundSweepAt;
+    /** one-round-at-a-time guard of the outbound sweep on the worker pool (concurrency state,
+     *  not a data cache — taskInQueueSet precedent). */
+    private final AtomicBoolean         outboundSweepInFlight = new AtomicBoolean(false);
 
     public void start() {
         int threadCount = Runtime.getRuntime().availableProcessors() * THREAD_COUNT_MULTIPLIER;
@@ -95,6 +105,16 @@ public class ApprovalTaskScheduler {
     }
 
     private void doSchedule() {
+        // DingTalk bridge outbound compensation sweep (task 10-09, design §4): throttled duty on
+        // this existing tick — runs BEFORE the empty-ticket-list early return so outbound retries
+        // are independent of ticket traffic; never throws into the dispatch loop. The round itself
+        // executes on the worker pool, NEVER inline here (see submitOutboundSweep).
+        long now = System.currentTimeMillis();
+        if (now - this.lastOutboundSweepAt >= OUTBOUND_SWEEP_INTERVAL_MS) {
+            this.lastOutboundSweepAt = now;
+            submitOutboundSweep();
+        }
+
         List<Long> ticketList = this.approvalDal.approvalMapper().listUnFinishTicketIdList();
 
         // there is nothing to do.
@@ -113,6 +133,43 @@ public class ApprovalTaskScheduler {
             // DEBUG: this fires on every sweep round (~5s) while any ticket is
             // in flight — routine heartbeat noise at INFO level.
             log.debug("[Rdp TicketTask] submitted " + submitted + " task.");
+        }
+    }
+
+    /**
+     * DingTalk bridge outbound sweep dispatch (task 10-09, design §4/§12 red line "outbound must
+     * never hang the main chain"): the round runs on the EXISTING worker pool — NEVER inline on
+     * this dispatcher thread. A round can carry up to SWEEP_BATCH_LIMIT bridge HTTP calls, and a
+     * slow/down bridge (exactly when retries accrue) would otherwise stall the whole ticket
+     * dispatch loop for minutes (PRE_INIT / approval instance creation / execution progress all
+     * ride this single thread). The in-flight flag caps pool occupancy at ONE sweep round; a
+     * rejected submission (full queue) or an in-flight round simply skips the window — the next
+     * 30s tick retries. Kill switch off = the round is a single KV read (service-level gate).
+     */
+    private void submitOutboundSweep() {
+        ThreadPoolExecutor executor = this.threadPoolExecutor;
+        if (executor == null) {
+            // defensive: pre-start()/legacy test wiring — no pool exists to occupy
+            this.taskProcessor.sweepOutboundRetry();
+            return;
+        }
+        if (!this.outboundSweepInFlight.compareAndSet(false, true)) {
+            return; // previous round still in flight (slow bridge) — skip this window
+        }
+        try {
+            executor.execute(() -> {
+                try {
+                    this.taskProcessor.sweepOutboundRetry();
+                } catch (Throwable t) {
+                    // sweepOutboundRetry is never-throw by contract; belt-and-suspenders so the
+                    // in-flight guard can never latch on a pool thread
+                    log.warn("[DingBridge] outbound sweep round crashed", t);
+                } finally {
+                    this.outboundSweepInFlight.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            this.outboundSweepInFlight.set(false); // queue full — skip this round
         }
     }
 

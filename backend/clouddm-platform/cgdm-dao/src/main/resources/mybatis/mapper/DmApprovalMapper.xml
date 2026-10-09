@@ -35,6 +35,10 @@
                 typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
         <result column="features" property="features"
                 typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="outbound_status" property="outboundStatus"/>
+        <result column="outbound_error" property="outboundError"/>
+        <result column="outbound_retry_count" property="outboundRetryCount"/>
+        <result column="outbound_next_retry_at" property="outboundNextRetryAt"/>
     </resultMap>
 
     <sql id="all_ticket_col">
@@ -66,7 +70,11 @@
         roll_back_sql,
         ticket_info,
         levels,
-        features
+        features,
+        outbound_status,
+        outbound_error,
+        outbound_retry_count,
+        outbound_next_retry_at
     </sql>
 
     <sql id="basic_ticket_col">
@@ -148,6 +156,136 @@
         WHERE
             id = #{ticketId}
     </update>
+
+    <!-- ============ DingTalk bridge outbound (task 10-09-dingtalk-approval-bridge) ============
+         Row-level CAS claims + state writes of the outbound_status lifecycle
+         (NULL/NOT_STARTED → STARTING → STARTED | FAILED). gmt_modified is deliberately
+         NOT touched — it doubles as the scheduler lease field (EXEC_FAIL idle-spin lesson).
+         NOTE: the column carries ON UPDATE CURRENT_TIMESTAMP, so "not touching" REQUIRES the
+         explicit `gmt_modified = gmt_modified` neutralization below — omitting the column would
+         silently bump it (check fix 2026-10-09). Outbound bookkeeping must never masquerade as
+         ticket activity and shift the 5s quiet-window lease of listUnFinishTicketIdList. -->
+
+    <update id="claimOutboundFirstSend">
+        UPDATE
+            dm_approval
+        SET
+            outbound_status        = 'STARTING',
+            outbound_error         = NULL,
+            outbound_next_retry_at = NULL,
+            gmt_modified           = gmt_modified
+        WHERE
+            id = #{ticketId}
+            AND
+            (outbound_status IS NULL OR outbound_status = 'NOT_STARTED')
+    </update>
+
+    <update id="claimOutboundForRetry">
+        UPDATE
+            dm_approval
+        SET
+            outbound_status = 'STARTING',
+            gmt_modified    = gmt_modified
+        WHERE
+            id = #{ticketId}
+            AND
+            outbound_status      = 'FAILED'
+            AND
+            outbound_retry_count = #{expectedRetryCount}
+    </update>
+
+    <update id="claimOutboundForReissue">
+        UPDATE
+            dm_approval
+        SET
+            outbound_status        = 'STARTING',
+            outbound_retry_count   = 0,
+            outbound_error         = NULL,
+            outbound_next_retry_at = NULL,
+            gmt_modified           = gmt_modified
+        WHERE
+            id = #{ticketId}
+            AND
+            (outbound_status IS NULL OR outbound_status IN ('NOT_STARTED', 'FAILED'))
+    </update>
+
+    <update id="markOutboundStarted">
+        UPDATE
+            dm_approval
+        SET
+            outbound_status        = 'STARTED',
+            outbound_error         = NULL,
+            outbound_next_retry_at = NULL,
+            gmt_modified           = gmt_modified
+        WHERE
+            id = #{ticketId}
+    </update>
+
+    <update id="markOutboundFailed">
+        UPDATE
+            dm_approval
+        SET
+            outbound_status        = 'FAILED',
+            outbound_error         = #{error},
+            outbound_retry_count   = #{retryCount},
+            outbound_next_retry_at = #{nextRetryAt},
+            gmt_modified           = gmt_modified
+        WHERE
+            id = #{ticketId}
+    </update>
+
+    <!-- flowId backfill under the appro_identity "write only when currently empty"
+         contract — dual source (outbound response / inbound command externalFlowId),
+         first writer wins, never overwrites (design boundary #4/#6). -->
+    <update id="updateOutboundFlowIdIfEmpty">
+        UPDATE
+            dm_approval
+        SET
+            appro_identity = #{flowId},
+            gmt_modified   = gmt_modified
+        WHERE
+            id = #{ticketId}
+            AND
+            (appro_identity IS NULL OR appro_identity = '')
+    </update>
+
+    <!-- New approval round (release resubmit, design boundary #15): resubmit rebuilds the
+         approval surface — clear appro_identity + the four outbound columns so the round-2
+         flowId is not blocked by the "only when empty" guard (the old instance was already
+         closed by the RELEASE_RETURNED cancel notification). -->
+    <update id="clearOutboundForNewRound">
+        UPDATE
+            dm_approval
+        SET
+            appro_identity         = NULL,
+            outbound_status        = NULL,
+            outbound_error         = NULL,
+            outbound_retry_count   = 0,
+            outbound_next_retry_at = NULL,
+            gmt_modified           = gmt_modified
+        WHERE
+            id = #{ticketId}
+    </update>
+
+    <select id="listOutboundRetryDue" resultType="java.lang.Long">
+        SELECT
+            id
+        FROM
+            dm_approval
+        WHERE
+            outbound_status          = 'FAILED'
+            AND
+            outbound_retry_count     <![CDATA[ < ]]> #{maxRetry}
+            AND
+            outbound_next_retry_at   IS NOT NULL
+            AND
+            outbound_next_retry_at   <![CDATA[ <= ]]> NOW()
+            AND
+            deleted = false
+        ORDER BY
+            outbound_next_retry_at ASC
+        LIMIT #{limit}
+    </select>
 
     <select id="queryByBizId" resultMap="DmApprovalDO">
         SELECT

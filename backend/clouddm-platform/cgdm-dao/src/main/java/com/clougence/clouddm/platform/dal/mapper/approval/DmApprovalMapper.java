@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.platform.dal.mapper.approval;
 
+import java.util.Date;
 import java.util.List;
 
 import org.apache.ibatis.annotations.Param;
@@ -64,5 +65,35 @@ public interface DmApprovalMapper extends BaseMapper<DmApprovalDO> {
     void updateTicketInfo(@Param("ticketId") Long ticketId, @Param("ticketInfo") String ticketInfo);
 
     void updateExpectedAffectedRows(@Param("ticketId") Long ticketId, @Param("expectedAffectedRows") Long expectedAffectedRows);
+
+    // ---------- DingTalk bridge outbound (task 10-09-dingtalk-approval-bridge, design §3.1/§4) ----------
+    // The claim updates are row-level CAS (conditional on the current outbound_status /
+    // retry_count) so concurrent consoles and the compensation sweep can never double-send.
+    // None of these statements touches gmt_modified (scheduler lease field).
+
+    /** CAS claim of the FIRST send: NULL/NOT_STARTED → STARTING. affected=0 = lost race / already sent. */
+    int claimOutboundFirstSend(@Param("ticketId") Long ticketId);
+
+    /** CAS claim of a sweep retry: FAILED with the expected retry_count → STARTING. */
+    int claimOutboundForRetry(@Param("ticketId") Long ticketId, @Param("expectedRetryCount") int expectedRetryCount);
+
+    /** CAS claim of a manual reissue: NULL/NOT_STARTED/FAILED → STARTING with retry_count reset to 0. */
+    int claimOutboundForReissue(@Param("ticketId") Long ticketId);
+
+    /** Terminal success write: STARTED + error/next-retry cleared. */
+    int markOutboundStarted(@Param("ticketId") Long ticketId);
+
+    /** Failure write: FAILED + cause (truncated) + retry_count + next backoff slot (NULL = no further auto retry). */
+    int markOutboundFailed(@Param("ticketId") Long ticketId, @Param("error") String error,
+                           @Param("retryCount") int retryCount, @Param("nextRetryAt") Date nextRetryAt);
+
+    /** flowId backfill under the "write only when currently empty" contract (dual-source first-writer-wins). */
+    int updateOutboundFlowIdIfEmpty(@Param("ticketId") Long ticketId, @Param("flowId") String flowId);
+
+    /** New approval round (release resubmit, design boundary #15): clear appro_identity + the four outbound columns. */
+    int clearOutboundForNewRound(@Param("ticketId") Long ticketId);
+
+    /** Compensation sweep candidates: FAILED ∧ retry_count < maxRetry ∧ next_retry_at due. */
+    List<Long> listOutboundRetryDue(@Param("maxRetry") int maxRetry, @Param("limit") int limit);
 
 }

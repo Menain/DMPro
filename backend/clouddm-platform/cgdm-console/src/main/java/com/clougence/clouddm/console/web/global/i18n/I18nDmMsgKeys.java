@@ -672,4 +672,32 @@ public enum I18nDmMsgKeys {
     GOV_TICKET_V2_DML_BATCH_SCHEDULE_UNSUPPORTED,
     /** 派发复验:分批组强制 enableTransactional=false(裁决 #11,弹窗前置提示优先,此为兜底) */
     DML_BATCH_TRANSACTIONAL_FORCED,
+
+    // -- DingTalk approval bridge outbound (task 10-09-dingtalk-approval-bridge, design §3.3/§4) --
+    /** 手动重发守卫:非 External 通道工单无桥接发起概念 */
+    DING_BRIDGE_REISSUE_CHANNEL_MISMATCH,
+    /** 手动重发守卫:outbound_status=STARTED → 拒绝(防双发,幂等键兜底在桥接侧) */
+    DING_BRIDGE_REISSUE_ALREADY_STARTED,
+    /** 手动重发守卫:outbound_status=STARTING → 发起在途,拒绝并发重发 */
+    DING_BRIDGE_REISSUE_IN_FLIGHT,
+    /** 手动重发守卫:止血开关关闭或 baseUrl 未配置 → 拒绝并引导设置页 */
+    DING_BRIDGE_REISSUE_DISABLED,
+    /** 手动重发同步调用失败(错误原因透传) */
+    DING_BRIDGE_REISSUE_FAILED,
+    /** 告警文案:出站发起失败标题 */
+    ALERT_PUSH_DING_BRIDGE_CREATE_TITLE,
+    /** 告警文案:出站撤销通知失败标题 */
+    ALERT_PUSH_DING_BRIDGE_CANCEL_TITLE,
+    /** 告警文案:工单定位行 */
+    ALERT_PUSH_DING_BRIDGE_TICKET,
+    /** 告警文案:失败原因行 */
+    ALERT_PUSH_DING_BRIDGE_ERROR,
+    /** 告警文案:将自动退避重试(可手动重发) */
+    ALERT_PUSH_DING_BRIDGE_ACTION_RETRY,
+    /** 告警文案:重试已达上限/不可重试,需人工介入 */
+    ALERT_PUSH_DING_BRIDGE_ACTION_FINAL,
+    /** 告警文案:撤销失败不阻塞本地流转,僵尸实例由守卫无害化 */
+    ALERT_PUSH_DING_BRIDGE_ACTION_CANCEL,
+    /** 告警文案:工单详情深链 */
+    ALERT_PUSH_DING_BRIDGE_LINK,
 }

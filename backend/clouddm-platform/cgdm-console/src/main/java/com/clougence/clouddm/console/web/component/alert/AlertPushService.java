@@ -130,9 +130,37 @@ public class AlertPushService {
                 return buildDmlNoKeyMessage(ctx);
             case DML_BATCH_UNRESOLVED:
                 return buildDmlUnresolvedMessage(ctx);
+            case DING_BRIDGE_OUTBOUND_FAILED:
+                return buildDingBridgeMessage(ctx);
             default:
                 return DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_GHOST_TITLE.name(), ctx.getTicketId());
         }
+    }
+
+    /**
+     * DingTalk bridge outbound failure copy (task 10-09-dingtalk-approval-bridge, design §3.3/§4):
+     * title (CREATE vs CANCEL flavor) + the approval row deep link + the failure cause + the
+     * action guidance (auto-retry scheduled / final verdict / best-effort cancel notice).
+     */
+    private String buildDingBridgeMessage(AlertContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        boolean cancel = AlertContext.BRIDGE_OP_CANCEL.equals(ctx.getBridgeOp());
+        I18nDmMsgKeys titleKey = cancel //
+                ? I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_CANCEL_TITLE : I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_CREATE_TITLE;
+        sb.append(DmI18nUtils.getMessage(titleKey.name(), StringUtils.trimToEmpty(ctx.getBridgeBizNo())));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_TICKET.name(), ctx.getTicketId()));
+        sb.append("\n").append(DmI18nUtils.getMessage(
+                I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_ERROR.name(), StringUtils.trimToEmpty(ctx.getBridgeError())));
+        I18nDmMsgKeys actionKey;
+        if (cancel) {
+            actionKey = I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_ACTION_CANCEL;
+        } else {
+            actionKey = ctx.isBridgeFinal() //
+                    ? I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_ACTION_FINAL : I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_ACTION_RETRY;
+        }
+        sb.append("\n").append(DmI18nUtils.getMessage(actionKey.name()));
+        sb.append("\n").append(DmI18nUtils.getMessage(I18nDmMsgKeys.ALERT_PUSH_DING_BRIDGE_LINK.name(), ctx.getTicketId()));
+        return sb.toString();
     }
 
     /**

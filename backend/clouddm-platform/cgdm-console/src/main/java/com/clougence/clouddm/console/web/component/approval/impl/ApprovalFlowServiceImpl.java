@@ -79,6 +79,11 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private GovReturnNotifyService                  govReturnNotifyService;
+    // @Lazy: DingTalk bridge outbound (task 10-09, 裁决 #3) — cancel/close are the human-path
+    //   V1/V2 convergence point for the outbound revoke notification; safe-side proxy injection.
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService dingBridgeOutboundService;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -113,6 +118,19 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         }
         this.cancelAllProcess(ticketId);
         this.transitionTicketToTerminal(ticketDO.getId(), ApprovalStatus.CLOSED, statusMessage);
+
+        // DingTalk bridge outbound cancel hook (task 10-09, 裁决 #3): human close of an
+        // External-channel row notifies the bridge afterCommit so the DingTalk instance is
+        // revoked. Guards (External / flowId present / kill switch) live inside; no flowId =
+        // zero-call skip; failure = alert only, the local transition never blocks/rolls back.
+        // The inbound open-command cancel travels applyExternalApprovalResult and NEVER passes
+        // through here — echo isolation by construction (design §1).
+        try {
+            dingBridgeOutboundService.notifyCancelFlow(puid, ticketId,
+                com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService.REASON_LOCAL_CLOSED);
+        } catch (Throwable t) {
+            log.warn("[DingBridge] closeTicket cancel notify failed for ticket {}, degraded", ticketId, t);
+        }
     }
 
     @Override
@@ -133,6 +151,17 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         checkInProgress(ticketDO);
         this.cancelAllProcess(ticketId);
         this.transitionTicketToTerminal(ticketDO.getId(), ApprovalStatus.CANCELED, statusMessage);
+
+        // DingTalk bridge outbound cancel hook (task 10-09, 裁决 #3) — see closeTicket: same
+        // guards, same afterCommit best-effort semantics, reason LOCAL_CANCELED. This is the
+        // human console path (V1/V2 convergence point); the inbound /tickets/cancel command
+        // never reaches it (echo isolation, design §1).
+        try {
+            dingBridgeOutboundService.notifyCancelFlow(puid, ticketId,
+                com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService.REASON_LOCAL_CANCELED);
+        } catch (Throwable t) {
+            log.warn("[DingBridge] cancelTicket cancel notify failed for ticket {}, degraded", ticketId, t);
+        }
     }
 
     @Override

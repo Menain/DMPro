@@ -49,5 +49,18 @@ public enum AlertScene {
      * deep link + the segment/batch location + the manual-verdict guidance (RERUN/SKIP through
      * retryGroup).
      */
-    DML_BATCH_UNRESOLVED
+    DML_BATCH_UNRESOLVED,
+
+    /**
+     * DingTalk bridge outbound failure (task 10-09-dingtalk-approval-bridge, design §3.3/§4):
+     * one flows/create or flows/cancel call to the bridge service failed. Anti-bombardment
+     * cadence: fires ONCE on the first transition to FAILED (retry copy when auto-retry is
+     * scheduled, final copy on a non-retryable 4xx), plus ONCE as the terminal alert when the
+     * sweep exhausts the retry cap; mid-sequence retry failures stay silent. Cancel failures
+     * fire a single best-effort alert (no retry exists for cancels). Pushed from the
+     * DingBridgeOutboundService REQUIRES_NEW write-back transaction so the AlertPushService
+     * afterCommit registration fires on the inner commit (the outer afterCommit iteration
+     * snapshot would silently drop a late registration).
+     */
+    DING_BRIDGE_OUTBOUND_FAILED
 }

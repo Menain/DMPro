@@ -64,4 +64,20 @@ public class AlertContext {
     private Integer segmentIndex;
     /** DML_BATCH_UNRESOLVED: the unresolved batch seq frozen in the segment summary (intentSeq). */
     private Long    intentSeq;
+
+    // ---- DingTalk bridge outbound scene (task 10-09; additive — earlier builders never read these) ----
+
+    public static final String BRIDGE_OP_CREATE = "CREATE";
+    public static final String BRIDGE_OP_CANCEL = "CANCEL";
+
+    /** DING_BRIDGE_OUTBOUND_FAILED: {@link #BRIDGE_OP_CREATE} or {@link #BRIDGE_OP_CANCEL}. */
+    private String  bridgeOp;
+    /** DING_BRIDGE_OUTBOUND_FAILED: TICKET / RELEASE (the flows payload bizType). */
+    private String  bridgeBizType;
+    /** DING_BRIDGE_OUTBOUND_FAILED: display order number (the flows payload bizNo). */
+    private String  bridgeBizNo;
+    /** DING_BRIDGE_OUTBOUND_FAILED: the failure cause (truncated by the caller). */
+    private String  bridgeError;
+    /** DING_BRIDGE_OUTBOUND_FAILED: true = auto-retry exhausted or non-retryable (final copy). */
+    private boolean bridgeFinal;
 }

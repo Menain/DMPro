@@ -357,6 +357,33 @@ public class RootUserConfig {
     private Boolean       dmlBatchAutoRoute;
 
     /**
+     * DingTalk approval bridge outbound (task 10-09-dingtalk-approval-bridge, design §3.2): the
+     * bridge service holds the ONLY DingTalk app + Stream connection; open-cdm calls it to
+     * create/cancel approval flow instances for External-channel approval rows (PROD_DML DIRECT
+     * tickets + DM_PROD_RELEASE approval tickets). Read discipline: fail-safe (null/exception →
+     * the defaultValue below) + defensive clamping of the timeout into the WhiteList Range; the
+     * enable switch fails CLOSED — an unreadable switch means NO outbound at all (pure pull-mode
+     * fallback, 09-16 architecture stays fully functional through the inbound open commands).
+     */
+    @UserConfigDef(name = "dingBridgeBaseUrl", defaultValue = "", valueRange = "http(s)://host[:port][/prefix] of the bridge service; blank = outbound skipped", descKey = I18nUserConfigMsgKeys.USER_DING_BRIDGE_BASE_URL, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private String        dingBridgeBaseUrl;
+    @UserConfigDef(name = "dingBridgeAuthToken", defaultValue = "", valueRange = "token sent as the X-Bridge-Auth header on outbound bridge calls", descKey = I18nUserConfigMsgKeys.USER_DING_BRIDGE_AUTH_TOKEN, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, isSecret = true)
+    private String        dingBridgeAuthToken;
+    @UserConfigDef(name = "dingBridgeTimeoutMs", defaultValue = "10000", valueRange = "1000 ~ 60000 ms", descKey = I18nUserConfigMsgKeys.USER_DING_BRIDGE_TIMEOUT_MS, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       dingBridgeTimeoutMs;
+
+    /**
+     * Bridge outbound kill switch (dmlBatchAutoRoute semantics verbatim): {@code false} → EVERY
+     * outbound call is skipped (flows/create, flows/cancel, compensation sweep) and applicable
+     * rows stay at NOT_STARTED — behavior degrades to the 09-16 pure pull-mode (the bridge
+     * reconciles through the open read endpoints). In-flight local flows are NOT affected, and
+     * the inbound open command plane is completely independent of this switch. Default false =
+     * zero-behavior-change rollout (design §11).
+     */
+    @UserConfigDef(name = "dingBridgeOutboundEnable", defaultValue = "false", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_DING_BRIDGE_OUTBOUND_ENABLE, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       dingBridgeOutboundEnable;
+
+    /**
      * Tencent Cloud (DBbrain)
      */
 

@@ -138,6 +138,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private GovReturnNotifyService govReturnNotifyService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
+    // @Lazy: DingTalk bridge outbound (task 10-09) — the bridge service lazy-reaches the alert/
+    //   approval layers back; safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService dingBridgeOutboundService;
 
     // ==================== create (merge transaction) ====================
 
@@ -302,6 +307,17 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
         // Step 10: Event RELEASE_CREATED
         appendReleaseEvent(release.getId(), GovEventType.RELEASE_CREATED, null, ProdReleaseStatus.APPROVING.name(), uid, null);
+
+        // Step 11: DingTalk bridge outbound hook 2 (task 10-09, design §3.3): register the
+        // afterCommit flows/create for the release approval ticket — service-layer single point,
+        // so BOTH the console entry and the open /releases/create entry are covered. The trigger
+        // internally guards External channel + kill switch + baseUrl (non-External = zero effect).
+        // Never blocks or rolls back the merge transaction.
+        try {
+            dingBridgeOutboundService.triggerCreateFlow(puid, ticketResult.getTicketId());
+        } catch (Throwable t) {
+            log.warn("[DingBridge] createRelease outbound trigger failed for release {}, degraded", release.getId(), t);
+        }
 
         return release.getId();
     }
@@ -703,6 +719,18 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                     releaseId, release.getCreatorUid(), e);
             }
         }
+
+        // Step 8: DingTalk bridge outbound cancel hook (task 10-09, 裁决 #3): a RETURNED release
+        //   cancels its approval flow locally (Step 5) — notify the bridge afterCommit so the
+        //   DingTalk instance is revoked (no flowId = zero-call skip; failure = alert only, the
+        //   local transition never blocks/rolls back). Human path only — the inbound open command
+        //   plane never travels through here (echo isolation, design §1).
+        try {
+            dingBridgeOutboundService.notifyCancelFlow(puid, approvalId,
+                com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService.REASON_RELEASE_RETURNED);
+        } catch (Throwable t) {
+            log.warn("[DingBridge] returnRelease cancel notify failed for release {}, degraded", releaseId, t);
+        }
     }
 
     // ==================== resubmitRelease (R3: RETURNED release resubmit) ====================
@@ -899,6 +927,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Backfill release.approval_id with the new approval ticket
         prodReleaseDal.releaseMapper().updateApprovalId(releaseId, ticketResult.getTicketId());
 
+        // Step 9b: DingTalk bridge new approval round (task 10-09, design boundary #15): resubmit
+        // rebuilds the approval surface — clear appro_identity + the four outbound columns (the
+        // fresh row is clean by construction; the explicit reset materializes the contract so the
+        // round-2 flowId can never be blocked by the "write only when empty" guard), then register
+        // the afterCommit flows/create re-trigger (External + kill-switch guards live inside).
+        // The old instance was already closed by the RETURNED-time cancel notification.
+        try {
+            dingBridgeOutboundService.resetForNewApprovalRound(ticketResult.getTicketId());
+            dingBridgeOutboundService.triggerCreateFlow(puid, ticketResult.getTicketId());
+        } catch (Throwable t) {
+            log.warn("[DingBridge] resubmitRelease outbound re-trigger failed for release {}, degraded", releaseId, t);
+        }
+
         // Step 10: Transit RETURNED → APPROVING
         boolean ok = releaseStateMachine.transit(releaseId,
             Set.of(ProdReleaseStatus.RETURNED), ProdReleaseStatus.APPROVING);
@@ -968,6 +1009,16 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         appendReleaseEvent(releaseId, GovEventType.RELEASE_CANCELLED,
             ProdReleaseStatus.RETURNED.name(), ProdReleaseStatus.CANCELLED.name(), uid,
             JsonUtils.toJson(Map.of("from", "RETURNED")));
+
+        // DingTalk bridge outbound cancel hook (task 10-09, design §3.3 挂点 3): second chance —
+        // the return-time notification may have failed (bridge down); cancel re-notifies (the
+        // bridge treats already-cancelled as idempotent success). No flowId = zero-call skip.
+        try {
+            dingBridgeOutboundService.notifyCancelFlow(puid, release.getApprovalId(),
+                com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService.REASON_LOCAL_CANCELED);
+        } catch (Throwable t) {
+            log.warn("[DingBridge] cancelRelease cancel notify failed for release {}, degraded", releaseId, t);
+        }
     }
 
     // ==================== handleApproved / handleRejected / handleCancelled ====================

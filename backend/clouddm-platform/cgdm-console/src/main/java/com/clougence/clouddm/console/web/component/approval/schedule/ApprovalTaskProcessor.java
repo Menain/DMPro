@@ -98,6 +98,11 @@ public class ApprovalTaskProcessor {
     private ApprovalPersonService                   approvalPersonService;
     @Resource
     private PlatformTransactionManager              txManager;
+    // @Lazy: DingTalk bridge outbound compensation sweep (task 10-09, design §4) — hung on the
+    //   existing scheduler tick (NO new thread); safe-side proxy injection (iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.bridge.DingBridgeOutboundService dingBridgeOutboundService;
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
     public ApprovalTaskProcessor(List<ApprovalHandler> handlers){
@@ -329,6 +334,23 @@ public class ApprovalTaskProcessor {
         //List<PrimaryUserVO> primaryUserVOS = queryOrderExecPerson(approvalDO);
         //updatePerson(primaryUserVOS, approvalDO, ApprovalStage.CONFIRM);
         approvalHandler(approvalDO.getApproBiz()).runningCheck(approvalDO.getId(), approvalDO.getApproBiz(), imSenderService);
+    }
+
+    /**
+     * DingTalk bridge outbound compensation sweep (task 10-09, design §4) — one throttled round
+     * per call, driven by the ApprovalTaskScheduler tick (no new thread). Re-sends FAILED
+     * outbound initiations whose backoff slot is due (row-level CAS claims inside the service
+     * make multi-console rounds safe); kill switch off = full no-op. NEVER throws.
+     */
+    public void sweepOutboundRetry() {
+        try {
+            if (this.dingBridgeOutboundService == null) {
+                return; // defensive: legacy test constructions wire no bridge service
+            }
+            this.dingBridgeOutboundService.retryFailedOutbounds();
+        } catch (Throwable t) {
+            log.warn("[DingBridge] outbound compensation sweep round degraded", t);
+        }
     }
 
     private ApprovalHandler approvalHandler(ApprovalBiz approvalBiz) {
