@@ -69,6 +69,19 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
+
+    /**
+     * Direct-connect approval channels deprecated by the DingTalk bridge architecture
+     * (10-09 decision #2). The bridge project holds the only DingTalk app + Stream connection;
+     * new configurations must use {@link ApprovalType#External}. Rows for these providers are
+     * KEPT in getTicketTypes (so legacy type=DingTalk environments still echo in the env-param
+     * modal) but forced enable=false. The runtime chain (submit routing / template check /
+     * scheduler / Stream) reads the STORED env param — never this list — so already-configured
+     * environments keep working bit-for-bit. Plugin code is untouched (deprecation is display-only).
+     */
+    private static final Set<ApprovalProvider> DEPRECATED_DIRECT_CHANNELS =
+        Set.of(ApprovalProvider.DingTalk, ApprovalProvider.Feishu, ApprovalProvider.Wechat);
+
     @Resource
     private SystemDal                               systemDal;
     @Resource
@@ -182,6 +195,17 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
             Map<String, Object> provider = new HashMap<>();
             provider.put("approvalType", type.name());
             provider.put("i18n", DmI18nUtils.getMessage(ApprovalType.valueOfProvider(type).getI18nKey()));
+
+            // Deprecated direct-connect channels (DingTalk bridge architecture, 10-09): keep the
+            // row for legacy env echo, force enable=false so new configurations cannot pick it.
+            // Short-circuits the plugin/enable/status probes below — a retired plugin is never
+            // called for a channel that is no longer selectable anyway.
+            if (DEPRECATED_DIRECT_CHANNELS.contains(type)) {
+                provider.put("enable", false);
+                provider.put("desc", DmI18nUtils.getMessage(I18nRdpMsgKeys.TICKET_APPROVAL_TYPE_DEPRECATED.name()));
+                list.add(provider);
+                continue;
+            }
 
             // not found plugin
             if (!serviceNames.contains(type.name())) {
