@@ -8,10 +8,11 @@
     :size="tableSize"
     :bordered="border"
     :pagination="false"
-    :scroll="scroll"
+    :scroll="mergedScroll"
     :row-key="rowKey"
     :row-selection="rowSelection"
     :locale="tableLocale"
+    @resize-column="handleResizeColumn"
   >
     <template #bodyCell="{ column, record, index }">
       <DmTableRenderCell
@@ -200,9 +201,58 @@ export default {
       default: undefined
     }
   },
+  data() {
+    return {
+      // 用户拖拽后的列宽:{ [列 key]: px }。仅内存态,不回写页面 columns、不持久化(刷新/切页回默认宽)
+      widthOverrides: {},
+      // 双击刚恢复默认宽的列;用于吞掉 antd DragHandle 在 mouseup 后经 rAF 补发的一次 resizeColumn(旧宽),避免覆盖恢复结果
+      pendingWidthReset: {}
+    };
+  },
   computed: {
+    convertedColumns() {
+      return convertTableColumns(this.columns).map((col) => {
+        if (!col.resizable) {
+          return col;
+        }
+        const columnKey = col.key;
+        return {
+          ...col,
+          // 双击拖拽把手恢复默认宽度:经 customHeaderCell 注入 th 级监听,闭包携带列 key,无需 th 序号对位
+          customHeaderCell: () => ({
+            onDblclick: (event) => this.handleResizeHandleDblclick(event, columnKey)
+          })
+        };
+      });
+    },
     antdColumns() {
-      return convertTableColumns(this.columns);
+      if (!Object.keys(this.widthOverrides).length) {
+        return this.convertedColumns;
+      }
+      return this.convertedColumns.map((col) => {
+        const width = this.widthOverrides[col.key];
+        if (width === undefined || width === col.width) {
+          return col;
+        }
+        return { ...col, width };
+      });
+    },
+    mergedScroll() {
+      if (!this.scroll || typeof this.scroll.x !== 'number') {
+        return this.scroll;
+      }
+      // 拖宽/拖窄后把宽度增量累加到 scroll.x,保持 fixed 列 sticky 偏移与横向滚动范围一致
+      let delta = 0;
+      for (const col of this.convertedColumns) {
+        const width = this.widthOverrides[col.key];
+        if (width !== undefined) {
+          delta += width - col.width;
+        }
+      }
+      if (!delta) {
+        return this.scroll;
+      }
+      return { ...this.scroll, x: this.scroll.x + delta };
     },
     dataSource() {
       return this.data;
@@ -217,6 +267,23 @@ export default {
       return {
         emptyText: this.locale?.emptyText || this.$t('zan-wu-shu-ju')
       };
+    }
+  },
+  methods: {
+    handleResizeColumn(width, originColumn) {
+      const key = originColumn.key;
+      if (this.pendingWidthReset[key]) {
+        delete this.pendingWidthReset[key];
+        return;
+      }
+      this.widthOverrides[key] = width;
+    },
+    handleResizeHandleDblclick(event, key) {
+      if (!event.target.closest('.ant-table-resize-handle')) {
+        return;
+      }
+      delete this.widthOverrides[key];
+      this.pendingWidthReset[key] = true;
     }
   }
 };
