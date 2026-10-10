@@ -42,6 +42,7 @@ import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketResubmit
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseResubmitFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeLedgerListFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2SubmitFO;
 import com.clougence.clouddm.console.web.model.fo.govticket.GovTicketV2ResubmitFO;
 import com.clougence.clouddm.console.web.model.vo.govticket.GovTicketV2SubmitVO;
@@ -52,11 +53,14 @@ import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketDetailVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeLedgerTicketVO;
+import com.clougence.clouddm.console.web.model.vo.prodrelease.GovLedgerTicketVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketBaseInfoVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketProcessVO;
 import com.clougence.clouddm.console.web.model.vo.ticket.RdpTicketActivityVO;
 import com.clougence.clouddm.console.web.service.approval.ApprovalControlService;
+import com.clougence.clouddm.console.web.service.governance.GovLedgerService;
 import com.clougence.clouddm.console.web.service.governance.GovOpenApiService;
 import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
 import com.clougence.clouddm.console.web.service.govticket.GovTicketV2Service;
@@ -126,6 +130,11 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
     private ProdReleaseDal       prodReleaseDal;
     @Resource
     private ProdReleaseService   prodReleaseService;
+    // ding-bridge R5: console ledger projection = single source of truth for the two admission
+    // branches; the open surface layers tenant isolation on top (ledgerListOpen) — the console
+    // list itself is deliberately tenant-agnostic (D6) and must never gain filtering.
+    @Resource
+    private GovLedgerService     govLedgerService;
     @Resource
     private DmResAuthService     dmResAuthService;
     @Resource
@@ -667,7 +676,7 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         }
     }
 
-    private List<OpenDbChangeTicketVO> paginate(List<OpenDbChangeTicketVO> list, int page, int size) {
+    private <T> List<T> paginate(List<T> list, int page, int size) {
         if (page < 1) {
             page = 1;
         }
@@ -931,6 +940,77 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         }
         vo.setEvents(eventEntries);
 
+        return vo;
+    }
+
+    // ==================== Read: ledger list (ding-bridge R5) ====================
+
+    @Override
+    public List<OpenDbChangeLedgerTicketVO> ledgerListOpen(String puid, String uid, DbChangeLedgerListFO fo) {
+        // Console projection is the single source of truth for the two admission branches
+        // (PRE_DDL executed / PROD_DML VIA_RELEASE pool). GovLedgerServiceImpl.list is
+        // deliberately tenant-agnostic (D6) and MUST stay untouched — tenant isolation for
+        // the open surface is layered on HERE: batch-load the tickets behind the projected
+        // rows and keep only primaryUid == caller puid. Cross-tenant rows are silently
+        // dropped (empty list — list semantics, never not-found; existence not leaked).
+        List<GovLedgerTicketVO> rows = govLedgerService.list(puid);
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Set<Long> ticketIds = new HashSet<>();
+        for (GovLedgerTicketVO row : rows) {
+            ticketIds.add(row.getTicketId());
+        }
+        List<DmApprovalDO> tickets = approvalDal.approvalMapper().selectBatchIds(ticketIds);
+        Map<Long, DmApprovalDO> ticketMap = new HashMap<>();
+        if (tickets != null) {
+            for (DmApprovalDO t : tickets) {
+                ticketMap.put(t.getId(), t);
+            }
+        }
+
+        List<OpenDbChangeLedgerTicketVO> result = new ArrayList<>();
+        for (GovLedgerTicketVO row : rows) {
+            DmApprovalDO ticket = ticketMap.get(row.getTicketId());
+            if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+                continue; // tenant isolation (also skips rows whose ticket vanished mid-flight)
+            }
+            if (StringUtils.isNotBlank(fo.getTicketType()) && !fo.getTicketType().equals(row.getTicketType())) {
+                continue;
+            }
+            if (fo.getPromoted() != null && fo.getPromoted().booleanValue() != row.isPromoted()) {
+                continue;
+            }
+            result.add(toOpenLedgerVO(row));
+        }
+
+        return paginate(result, fo.getPageNum(), fo.getPageSize());
+    }
+
+    /**
+     * Map the console ledger row to the desensitized open shape: list-level fields only —
+     * sqlSummary (≤200 chars, capped by the console projection), no full SQL, no connection
+     * strings, and ownerUid is deliberately NOT carried over.
+     */
+    private OpenDbChangeLedgerTicketVO toOpenLedgerVO(GovLedgerTicketVO row) {
+        OpenDbChangeLedgerTicketVO vo = new OpenDbChangeLedgerTicketVO();
+        vo.setTicketId(row.getTicketId());
+        vo.setTicketTitle(row.getTicketTitle());
+        vo.setServiceName(row.getServiceName());
+        vo.setServiceId(row.getServiceId());
+        vo.setGmtCreate(row.getGmtCreate());
+        vo.setExecStatus(row.getExecStatus());
+        vo.setSqlSummary(row.getSqlSummary());
+        vo.setTicketType(row.getTicketType());
+        vo.setApprovalMode(row.getApprovalMode());
+        vo.setPreDbs(row.getPreDbs());
+        vo.setProdDbs(row.getProdDbs());
+        vo.setPromoted(row.isPromoted());
+        vo.setReleaseNo(row.getReleaseNo());
+        vo.setReleaseStatus(row.getReleaseStatus());
+        vo.setGhostRouted(row.isGhostRouted());
+        vo.setDmlBatchRouted(row.isDmlBatchRouted());
         return vo;
     }
 

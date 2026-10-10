@@ -34,8 +34,10 @@ import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseReturnF
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeLedgerListFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeLedgerTicketVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.GovOpenApiService;
@@ -353,6 +355,26 @@ public class DbChangeOpenApi extends BasicApi {
 
         log.info("[DbChangeOpenApi] ticketDetail request id={}, ticketId={}, found={}",
             requestId, fo.getTicketId(), result != null);
+        return ResWebDataUtils.buildSuccess(result);
+    }
+
+    // ==================== Read: ledger/list (ding-bridge R5, path 1 entry) ====================
+
+    @McpTool(DmMcpI18nKey.M_DBCHANGE_LEDGER_LIST)
+    @RequestAuth(strategy = RequestAuth.AuthStrategy.Ignore)
+    @RequestMapping(value = "/ledger/list", method = RequestMethod.POST)
+    public ResWebData<List<OpenDbChangeLedgerTicketVO>> ledgerList(@RequestBody @Valid DbChangeLedgerListFO fo,
+                                                                    HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
+
+        log.info("[DbChangeOpenApi] ledgerList request id={}, uid={}, ticketType={}, promoted={}, pageNum={}, pageSize={}",
+            requestId, uid, fo.getTicketType(), fo.getPromoted(), fo.getPageNum(), fo.getPageSize());
+
+        List<OpenDbChangeLedgerTicketVO> result = govOpenApiService.ledgerListOpen(puid, uid, fo);
+
+        log.info("[DbChangeOpenApi] ledgerList request id={}, result count={}", requestId, result.size());
         return ResWebDataUtils.buildSuccess(result);
     }
 }

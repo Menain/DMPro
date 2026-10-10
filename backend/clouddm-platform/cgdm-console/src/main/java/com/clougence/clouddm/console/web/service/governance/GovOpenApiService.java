@@ -27,7 +27,9 @@ import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketResubmit
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseResubmitFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketDetailFO;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeLedgerListFO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeLedgerTicketVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketSubmitVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO;
@@ -146,4 +148,19 @@ public interface GovOpenApiService {
      * no internal exception stacks, no console-specific permission flags.
      */
     OpenDbChangeTicketDetailVO ticketDetail(String puid, String uid, DbChangeTicketDetailFO fo);
+
+    /**
+     * Read: change ledger list (ding-bridge R5) — the release-merge candidate projection
+     * (executed PRE_DDL tickets + VIA_RELEASE PROD_DML pool rows), for the bridge to pick
+     * entries inside the DingTalk flow (path 1: ledger/list → releases/create → approve).
+     * <p>
+     * Tenant-filtered (HARD constraint — the console ledger deliberately has NO tenant
+     * filtering per D6 and that behavior must not flip): only rows whose ticket
+     * primaryUid == caller puid are returned. Cross-tenant / no match → empty list
+     * (list semantics, never not-found). Desensitized list-level shape: sqlSummary
+     * ≤200 chars, no full SQL, no connection strings, no ownerUid; the ledger detail
+     * endpoint is NOT opened. In-memory paginated (pageNum/pageSize), optional
+     * ticketType / promoted filters.
+     */
+    List<OpenDbChangeLedgerTicketVO> ledgerListOpen(String puid, String uid, DbChangeLedgerListFO fo);
 }
