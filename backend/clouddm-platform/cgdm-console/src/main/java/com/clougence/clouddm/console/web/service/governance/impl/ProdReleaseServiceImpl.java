@@ -149,6 +149,14 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public long createRelease(String puid, String uid, ProdReleaseCreateFO fo) {
+        // Console entry (GovReleaseController /govrelease/create): skipOutbound is NEVER exposed
+        // here — behavior bit-identical to pre-M4b (outbound hook always fires; task 10-09 M4b).
+        return createRelease(puid, uid, fo, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    public long createRelease(String puid, String uid, ProdReleaseCreateFO fo, boolean skipOutbound) {
         List<Long> ticketIds = fo.getTicketIds();
         if (ticketIds == null || ticketIds.isEmpty()) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.GOV_RELEASE_NO_TICKETS.name()));
@@ -313,10 +321,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // so BOTH the console entry and the open /releases/create entry are covered. The trigger
         // internally guards External channel + kill switch + baseUrl (non-External = zero effect).
         // Never blocks or rolls back the merge transaction.
-        try {
-            dingBridgeOutboundService.triggerCreateFlow(puid, ticketResult.getTicketId());
-        } catch (Throwable t) {
-            log.warn("[DingBridge] createRelease outbound trigger failed for release {}, degraded", release.getId(), t);
+        // M4b (2026-10-10, user ruling): skipOutbound=true — open entry only, path-1 bridge-originated
+        // create where the DingTalk approval ALREADY completed inside the bridge's own flow —
+        // suppresses this hook explicitly instead of relying on bridge-side dedup (orchestration
+        // §5.8/§10.6/§11.1). Every step above is unaffected; the console 3-arg overload always
+        // passes false (behavior bit-identical).
+        if (!skipOutbound) {
+            try {
+                dingBridgeOutboundService.triggerCreateFlow(puid, ticketResult.getTicketId());
+            } catch (Throwable t) {
+                log.warn("[DingBridge] createRelease outbound trigger failed for release {}, degraded", release.getId(), t);
+            }
+        } else {
+            log.info("[DingBridge] createRelease outbound skipped by caller (skipOutbound=true) for release {}", release.getId());
         }
 
         return release.getId();

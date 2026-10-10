@@ -301,9 +301,9 @@ public class DbChangeOpenApi extends BasicApi {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
 
-        log.info("[DbChangeOpenApi] releaseCreate request id={}, uid={}, creatorAccount={}, ticketCount={}",
+        log.info("[DbChangeOpenApi] releaseCreate request id={}, uid={}, creatorAccount={}, ticketCount={}, skipOutbound={}",
             requestId, uid, fo.getCreatorAccount(),
-            fo.getTicketIds() != null ? fo.getTicketIds().size() : 0);
+            fo.getTicketIds() != null ? fo.getTicketIds().size() : 0, fo.getSkipOutbound());
 
         com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO result =
             govOpenApiService.createRelease(puid, uid, fo);

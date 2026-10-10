@@ -113,6 +113,7 @@ public class DingBridgeFlowTriggerTest {
     private DmTicketDbStmtMapper      ticketStmtMapper;
     private DmApprovalMapper          releaseApprovalMapper;
     private ApprovalControlService    approvalControlService;
+    private DmDbChangeEventMapper     releaseEventMapper;
 
     @Before
     public void setUp() {
@@ -348,9 +349,9 @@ public class DingBridgeFlowTriggerTest {
 
         approvalControlService = mock(ApprovalControlService.class);
         DbChangeEventDal dbChangeEventDal = mock(DbChangeEventDal.class);
-        DmDbChangeEventMapper eventMapper = mock(DmDbChangeEventMapper.class);
-        when(dbChangeEventDal.eventMapper()).thenReturn(eventMapper);
-        when(eventMapper.insert(any(DmDbChangeEventDO.class))).thenReturn(1);
+        releaseEventMapper = mock(DmDbChangeEventMapper.class);
+        when(dbChangeEventDal.eventMapper()).thenReturn(releaseEventMapper);
+        when(releaseEventMapper.insert(any(DmDbChangeEventDO.class))).thenReturn(1);
 
         ReleaseSchemaPrecheckService precheckService = mock(ReleaseSchemaPrecheckService.class);
         when(precheckService.precheck(any())).thenReturn(PrecheckConclusion.pass());
@@ -399,6 +400,58 @@ public class DingBridgeFlowTriggerTest {
         when(bridge.triggerCreateFlow(anyString(), anyLong())).thenThrow(new RuntimeException("boom"));
 
         assertEquals(600L, releaseService.createRelease(PUID, UID, createFO(ticketId)));
+    }
+
+    // ==================== hook ② M4b: skipOutbound (open entry only) ====================
+
+    @Test
+    public void createRelease_skipOutbound_neverTriggers_openEntryM4bPin() {
+        // M4b (user ruling 2026-10-10): path-1 = the bridge converts ledger entries into a
+        // release AFTER the DingTalk approval already completed inside its own flow — the open
+        // /releases/create entry passes skipOutbound=true and the outbound hook is suppressed
+        // explicitly (zero bridge interaction), replacing the "bridge-side dedup" wording.
+        setUpReleaseFixture();
+        long ticketId = 132L;
+        stubMergeableSourceTicket(ticketId, 232L);
+
+        long releaseId = releaseService.createRelease(PUID, UID, createFO(ticketId), true);
+
+        assertEquals(600L, releaseId);
+        verifyNoInteractions(bridge);
+    }
+
+    @Test
+    public void createRelease_skipOutbound_onlySuppressesOutbound_chainUnchangedM4bPin() {
+        // skipOutbound affects ONLY Step 11: release row, stmt snapshot, approval ticket creation,
+        // ticketInfo writeback, approval_id backfill and the RELEASE_CREATED event all land
+        // identically — the release stays fully drivable by the inbound command plane.
+        setUpReleaseFixture();
+        long ticketId = 133L;
+        stubMergeableSourceTicket(ticketId, 233L);
+
+        long releaseId = releaseService.createRelease(PUID, UID, createFO(ticketId), true);
+
+        assertEquals(600L, releaseId);
+        verify(releaseMapper).insert(any(DmProdReleaseDO.class));
+        verify(releaseStmtMapper).insert(any(DmProdReleaseStmtDO.class));
+        verify(approvalControlService).createSqlTicket(any(), any(), any(), eq(ApprovalBiz.DM_PROD_RELEASE));
+        verify(releaseApprovalMapper).updateById(any(DmApprovalDO.class)); // ticketInfo releaseId/releaseNo writeback
+        verify(releaseMapper).updateApprovalId(600L, 700L);
+        verify(releaseEventMapper).insert(any(DmDbChangeEventDO.class)); // RELEASE_CREATED event
+        verifyNoInteractions(bridge);
+    }
+
+    @Test
+    public void createRelease_skipOutboundFalse_stillTriggers_openEntryDefaultM4bPin() {
+        // open entry with explicit false (= absent flag, GovOpenApiServiceImpl maps null→false)
+        // → outbound fires exactly as before (console 3-arg pin above covers the page entry).
+        setUpReleaseFixture();
+        long ticketId = 134L;
+        stubMergeableSourceTicket(ticketId, 234L);
+
+        assertEquals(600L, releaseService.createRelease(PUID, UID, createFO(ticketId), false));
+
+        verify(bridge).triggerCreateFlow(PUID, 700L);
     }
 
     // ==================== helpers ====================

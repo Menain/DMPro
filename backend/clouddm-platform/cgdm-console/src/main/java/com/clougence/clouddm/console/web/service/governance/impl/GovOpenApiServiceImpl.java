@@ -823,8 +823,12 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         createFO.setTicketIds(fo.getTicketIds());
         createFO.setTitle(fo.getTitle());
 
-        // Delegate to ProdReleaseService.createRelease (full chain: eligibility/gates/tenant/lock/uk)
-        long releaseId = prodReleaseService.createRelease(puid, creatorUid, createFO);
+        // Delegate to ProdReleaseService.createRelease (full chain: eligibility/gates/tenant/lock/uk).
+        // M4b (task 10-09): pass through the additive skipOutbound flag — path-1 bridge-originated
+        // create (DingTalk approval already completed inside the bridge's flow) sets true to
+        // suppress the outbound flows/create hook; null/false = outbound fires as before.
+        long releaseId = prodReleaseService.createRelease(puid, creatorUid, createFO,
+            Boolean.TRUE.equals(fo.getSkipOutbound()));
 
         // Build response VO — releaseId + releaseNo + approval ticketId
         DmProdReleaseDO release = prodReleaseDal.releaseMapper().queryById(releaseId);

@@ -31,6 +31,14 @@ import lombok.Setter;
  * or PROD_DML WAIT_RELEASE with SUCCESS stmts). {@code creatorAccount} is optional —
  * when omitted, the caller (service account) is the creator. When provided, the resolved
  * user's primaryUid must match the caller's puid.
+ * <p>
+ * {@code skipOutbound} (task 10-09 M4b, additive): true suppresses ONLY the DingTalk bridge
+ * outbound flows/create hook after the release approval ticket is created — every other step
+ * (merge/gates/approval ticket/events/inbound command plane) is unchanged. Path-1 semantics:
+ * the bridge converts ledger entries into a release AFTER the DingTalk approval already
+ * completed inside its own flow, so re-initiating would spawn a duplicate approval instance
+ * (orchestration §5.8/§10.6/§11.1). Null/false = outbound fires as before. The console entry
+ * (/govrelease/create) never exposes this parameter.
  */
 @Getter
 @Setter
@@ -45,4 +53,7 @@ public class DbChangeReleaseCreateFO {
 
     @McpField(value = DmMcpI18nKey.F_TITLE_DESC, required = false)
     private String title;
+
+    @McpField(value = DmMcpI18nKey.F_SKIP_OUTBOUND_DESC, required = false)
+    private Boolean skipOutbound;
 }

@@ -34,8 +34,20 @@ public interface ProdReleaseService {
     /**
      * Create a production release by merging multiple executed PRE_DDL ticket statement groups.
      * Transaction: insert release + stmt snapshots + create approval ticket + createProcess + event.
+     * Delegates to the 4-arg variant with {@code skipOutbound=false} (console entry — the
+     * DingTalk bridge outbound hook always fires there, behavior unchanged).
      */
     long createRelease(String puid, String uid, ProdReleaseCreateFO fo);
+
+    /**
+     * Create a production release — variant with explicit outbound control (task 10-09 M4b).
+     * {@code skipOutbound=true} suppresses ONLY the DingTalk bridge flows/create hook (Step 11);
+     * every other step (merge/gates/approval ticket/events) is bit-identical. Used by the open
+     * /releases/create entry when the bridge declares the DingTalk approval already happened
+     * (path-1, orchestration §5.8/§10.6/§11.1) — prevents spawning a duplicate approval instance.
+     * The console entry never exposes this parameter and keeps calling the 3-arg overload.
+     */
+    long createRelease(String puid, String uid, ProdReleaseCreateFO fo, boolean skipOutbound);
 
     /**
      * Start execution after approval confirmation.

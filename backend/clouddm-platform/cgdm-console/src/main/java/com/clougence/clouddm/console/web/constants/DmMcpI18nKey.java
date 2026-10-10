@@ -59,6 +59,7 @@ public interface DmMcpI18nKey {
     String F_TICKET_IDS_DESC           = "MCP_F_TICKET_IDS_DESC";
     String F_CREATOR_ACCOUNT_DESC     = "MCP_F_CREATOR_ACCOUNT_DESC";
     String F_TITLE_DESC                = "MCP_F_TITLE_DESC";
+    String F_SKIP_OUTBOUND_DESC        = "MCP_F_SKIP_OUTBOUND_DESC";
     String F_PROMOTED_DESC             = "MCP_F_PROMOTED_DESC";
 
     //

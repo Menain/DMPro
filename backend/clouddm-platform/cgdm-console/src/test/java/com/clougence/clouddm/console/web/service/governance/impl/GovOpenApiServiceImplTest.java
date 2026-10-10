@@ -36,11 +36,14 @@ import com.clougence.clouddm.console.web.component.approval.impl.ApprovalProvide
 import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.approval.model.ExternalCommandMeta;
 import com.clougence.clouddm.console.web.component.auth.DmResAuthService;
+import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeReleaseDetailFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketCommandFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketListFO;
 import com.clougence.clouddm.console.web.model.fo.openapi.DbChangeTicketStmtFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
 import com.clougence.clouddm.console.web.model.fo.ticket.DmAutoExecConfigFO;
+import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeReleaseCreateVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketStmtVO;
 import com.clougence.clouddm.console.web.model.vo.openapi.OpenDbChangeTicketVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
@@ -709,6 +712,48 @@ public class GovOpenApiServiceImplTest {
             // ok
         }
         verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+    }
+
+    // ==================== Command: releases/create skipOutbound pass-through (M4b) ====================
+
+    @Test
+    public void createRelease_skipOutboundTrue_passedThroughToService() {
+        // M4b (task 10-09, user ruling 2026-10-10): the additive open-FO flag reaches the
+        // ProdReleaseService 4-arg overload verbatim — path-1 bridge-originated create (DingTalk
+        // approval already completed inside the bridge's flow) suppresses the outbound hook.
+        when(prodReleaseService.createRelease(eq(PUID), eq(UID), any(ProdReleaseCreateFO.class), eq(true)))
+            .thenReturn(600L);
+
+        DbChangeReleaseCreateFO fo = new DbChangeReleaseCreateFO();
+        fo.setTicketIds(List.of(100L));
+        fo.setSkipOutbound(true);
+
+        OpenDbChangeReleaseCreateVO vo = service.createRelease(PUID, UID, fo);
+
+        assertEquals(Long.valueOf(600L), vo.getReleaseId());
+        verify(prodReleaseService).createRelease(eq(PUID), eq(UID), any(ProdReleaseCreateFO.class), eq(true));
+    }
+
+    @Test
+    public void createRelease_skipOutboundAbsentOrFalse_passesFalse() {
+        // null (absent — callers that don't know the flag) and explicit false both map to false:
+        // open create keeps firing outbound as before (console entry never exposes the flag).
+        when(prodReleaseService.createRelease(eq(PUID), eq(UID), any(ProdReleaseCreateFO.class), eq(false)))
+            .thenReturn(600L);
+
+        DbChangeReleaseCreateFO absent = new DbChangeReleaseCreateFO();
+        absent.setTicketIds(List.of(100L));
+        service.createRelease(PUID, UID, absent);
+
+        DbChangeReleaseCreateFO explicitFalse = new DbChangeReleaseCreateFO();
+        explicitFalse.setTicketIds(List.of(101L));
+        explicitFalse.setSkipOutbound(false);
+        service.createRelease(PUID, UID, explicitFalse);
+
+        verify(prodReleaseService, times(2))
+            .createRelease(eq(PUID), eq(UID), any(ProdReleaseCreateFO.class), eq(false));
+        verify(prodReleaseService, never())
+            .createRelease(anyString(), anyString(), any(ProdReleaseCreateFO.class), eq(true));
     }
 
     // ==================== Helpers ====================
