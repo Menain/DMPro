@@ -48,6 +48,19 @@
           </div>
         </section>
 
+        <!-- 钉钉审批桥接出站面板(task 10-09,design §3.1):发布单审批工单为 External 通道才呈现;数据经 queryApprovalBaseInfo(approvalId) 随 loadDetail 带出,零新轮询器 -->
+        <section v-if="showBridgeOutbound" class="page-section bridge-outbound-section">
+          <div class="page-section__title">{{ $t('ding-qiao-biao-ti') }}</div>
+          <DingBridgeOutboundPanel
+            :outbound-status="approvalBaseInfo.outboundStatus"
+            :outbound-error="approvalBaseInfo.outboundError"
+            :flow-id="approvalBaseInfo.approIdentity"
+            :reissuing="bridgeReissuing"
+            :can-reissue="canReissueFlow"
+            @reissue="handleReissueFlow"
+          />
+        </section>
+
         <Alert v-if="ghostReplayHint" type="warning" show-icon class="gov-ghost-replay-hint">
           {{ $t('gov-release-ghost-replay-hint') }}
         </Alert>
@@ -256,12 +269,13 @@
 <script>
 import { mapState } from 'vuex';
 import ReadOnlyEditor from '@/components/editor/ReadOnlyEditor';
+import DingBridgeOutboundPanel from '@/components/function/DingBridgeOutboundPanel.vue';
 import formatError from '@/services/formatError';
 import { GOV_EVENT_TYPE_I18N_KEYS, GOV_EVENT_ICONS, RELEASE_STATUS_I18N_KEYS } from './govEventConstants';
 
 export default {
   name: 'DbChangeReleaseDetail',
-  components: { ReadOnlyEditor },
+  components: { ReadOnlyEditor, DingBridgeOutboundPanel },
   data() {
     return {
       releaseId: null,
@@ -281,7 +295,10 @@ export default {
       resubmitCandidates: [],
       resubmitCandidatesLoading: false,
       resubmitting: false,
-      cancelling: false
+      cancelling: false,
+      // 钉钉审批桥接(task 10-09):发布单审批工单的 base info(含 outbound 字段)+ 重发 in-flight
+      approvalBaseInfo: null,
+      bridgeReissuing: false
     };
   },
   computed: {
@@ -291,6 +308,15 @@ export default {
     },
     canRetry() {
       return this.myAuth.includes('RDP_WORKER_ORDER_EXECUTE');
+    },
+    // ---- 钉钉审批桥接出站面板(task 10-09,design §3.1/§4) ----
+    // 适用性判定:审批工单为 External 通道才呈现(其余通道 outbound 列恒 NULL)
+    showBridgeOutbound() {
+      return this.approvalBaseInfo?.approType === 'External';
+    },
+    // 权限镜像 reissueFlow 端点注解(HIGH + REQUEST/APPROVE 任一);状态守卫由面板内部置灰呈现
+    canReissueFlow() {
+      return this.myAuth.includes('RDP_WORKER_ORDER_REQUEST') || this.myAuth.includes('RDP_WORKER_ORDER_APPROVE');
     },
     isPrimaryOrMaintainer() {
       const info = this.userInfo || {};
@@ -359,9 +385,46 @@ export default {
         });
         if (res.success) {
           this.detail = res.data;
+          await this.loadApprovalOutbound();
         }
       } finally {
         this.loading = false;
+      }
+    },
+    // 审批工单 base info(含 outbound 状态)——静默加载:无 approvalId / 无权限 / 请求失败
+    // 均置 null,面板隐藏,不影响发布单详情主体呈现
+    async loadApprovalOutbound() {
+      const approvalId = this.detail?.approvalId;
+      if (!approvalId) {
+        this.approvalBaseInfo = null;
+        return;
+      }
+      try {
+        const res = await this.$services.rdpTicketQueryTicketBaseInfo({
+          data: { ticketId: approvalId, refreshCache: false },
+          modal: false
+        });
+        this.approvalBaseInfo = res.success && res.data ? res.data : null;
+      } catch {
+        this.approvalBaseInfo = null;
+      }
+    },
+    // 手动重发钉钉桥接出站发起(task 10-09,design §4):后端同步语义——成功即 STARTED;
+    // 五类拒绝由后端 i18n 错误经标准错误弹窗直达操作者,前端不重复映射文案
+    async handleReissueFlow() {
+      const approvalId = this.detail?.approvalId;
+      if (this.bridgeReissuing || !approvalId) {
+        return;
+      }
+      this.bridgeReissuing = true;
+      try {
+        const res = await this.$services.dmTicketReissueFlow({ data: { ticketId: approvalId } });
+        if (res.success) {
+          this.$Message.success(this.$t('ding-qiao-chong-xin-fa-qi-cheng-gong'));
+          await this.loadApprovalOutbound();
+        }
+      } finally {
+        this.bridgeReissuing = false;
       }
     },
     goToTicket(ticketId) {
@@ -964,6 +1027,15 @@ export default {
       font-size: 13px;
       margin-top: 4px;
     }
+  }
+}
+
+// 钉钉审批桥接出站面板(task 10-09):浅底分区(少线框,与工单详情面板同款)
+.bridge-outbound-section {
+  .ding-bridge-outbound {
+    background: var(--surface-soft, #f8fafc);
+    padding: 16px 24px;
+    border-radius: 10px;
   }
 }
 </style>

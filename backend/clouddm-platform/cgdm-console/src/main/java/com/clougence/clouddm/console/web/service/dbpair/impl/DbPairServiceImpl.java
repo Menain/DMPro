@@ -326,6 +326,9 @@ public class DbPairServiceImpl implements DbPairService {
         DmDsDO prodDs = dsMapper.queryDsIdentityById(pair.getProdDsId());
         if (prodDs != null) {
             vo.setProdDsName(prodDs.getInstanceDesc() != null ? prodDs.getInstanceDesc() : prodDs.getInstanceId());
+            // additive (task 10-09 R6): expose the prod env id so the v2 submit page can resolve
+            // the env's approval channel via the existing fetchTicketParamForSec chain
+            vo.setProdEnvId(prodDs.getDsEnvId());
             if (prodDs.getDsEnvId() != null) {
                 DmSysEnvDO prodEnv = envMapper.selectById(prodDs.getDsEnvId());
                 if (prodEnv != null) {

@@ -32,5 +32,7 @@ export const ticketApi = {
   rdpTicketCreateDataSourceAuthTicket: '/api/entry/approval/createDataSourceAuthApproval',
   rdpTicketQueryDataSourceAuthTicketDetail: '/api/entry/approval/queryDataSourceAuthApprovalDetail',
   rdpTicketApproval: '/api/entry/approval/approval',
-  rdpTicketQueryTicketBaseInfo: '/api/entry/approval/queryApprovalBaseInfo'
+  rdpTicketQueryTicketBaseInfo: '/api/entry/approval/queryApprovalBaseInfo',
+  // 钉钉审批桥接出站(task 10-09):手动重新发起,FO={ticketId}(=dm_approval.id)
+  dmTicketReissueFlow: '/api/entry/approval/reissueFlow'
 };

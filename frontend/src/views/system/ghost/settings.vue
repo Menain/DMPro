@@ -134,6 +134,65 @@
               </Button>
             </div>
           </Form>
+
+          <!-- 区块三:钉钉审批桥接(task 10-09,design §3.2)——四 KV,区块级独立保存;草稿物理隔离(同名键碰撞教训):独立 bridgeDraftValues 模型,保存/恢复只提交本区块键;认证令牌 isSecret——加密存储不回显,留空保持不变 -->
+          <Form
+            ref="bridgeForm"
+            :key="'b' + revision"
+            :model="bridgeDraftValues"
+            :rules="bridgeRules"
+            label-position="top"
+            class="ghost-settings__form"
+          >
+            <section class="page-section ghost-settings__section">
+              <div class="page-section__title">{{ $t('ding-qiao-biao-ti') }}</div>
+              <p class="ghost-settings__hint">{{ $t('ding-qiao-kuai-ti-shi') }}</p>
+              <div class="ghost-settings__fields">
+                <FormItem :label="$t('ding-qiao-fu-wu-di-zhi')" prop="dingBridgeBaseUrl">
+                  <PreferenceSettingField
+                    :field="bridgeBaseUrlField"
+                    :model-value="bridgeDraftValues.dingBridgeBaseUrl"
+                    @update:model-value="setBridgeDraftValue('dingBridgeBaseUrl', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('ding-qiao-fu-wu-di-zhi-ti-shi') }}</p>
+                </FormItem>
+                <FormItem :label="$t('ding-qiao-ren-zheng-ling-pai')" prop="dingBridgeAuthToken">
+                  <PreferenceSettingField
+                    :field="bridgeAuthTokenField"
+                    :model-value="bridgeDraftValues.dingBridgeAuthToken"
+                    :configured="bridgeTokenConfigured"
+                    @update:model-value="setBridgeDraftValue('dingBridgeAuthToken', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('ding-qiao-ren-zheng-ling-pai-ti-shi') }}</p>
+                </FormItem>
+                <FormItem :label="$t('ding-qiao-chao-shi')" prop="dingBridgeTimeoutMs">
+                  <PreferenceSettingField
+                    :field="bridgeTimeoutField"
+                    :model-value="bridgeDraftValues.dingBridgeTimeoutMs"
+                    @update:model-value="setBridgeDraftValue('dingBridgeTimeoutMs', $event)"
+                  />
+                </FormItem>
+                <FormItem :label="$t('ding-qiao-chu-zhan-kai-guan')" prop="dingBridgeOutboundEnable">
+                  <PreferenceSettingField
+                    :field="bridgeEnableField"
+                    :model-value="bridgeDraftValues.dingBridgeOutboundEnable"
+                    @update:model-value="setBridgeDraftValue('dingBridgeOutboundEnable', $event)"
+                  />
+                  <p class="ghost-settings__help">{{ $t('ding-qiao-chu-zhan-kai-guan-ti-shi') }}</p>
+                </FormItem>
+              </div>
+            </section>
+
+            <div class="ghost-settings__actions">
+              <Button :loading="restoring" :disabled="loading || saving" @click="handleRestoreBridgeDefaults">
+                {{ $t('fen-pi-hui-fu-mo-ren') }}
+              </Button>
+              <Button :disabled="!dirtyBridge || loading || saving || restoring" @click="resetBridgeBlock">{{ $t('qu-xiao') }}</Button>
+              <Button type="primary" :loading="saving" :disabled="!dirtyBridge || loading || restoring" @click="handleSaveBridge">
+                {{ $t('bao-cun') }}
+              </Button>
+            </div>
+          </Form>
         </template>
 
         <div v-else-if="!loading" class="ghost-settings__empty">{{ $t('preference-load-failed') }}</div>
@@ -207,7 +266,11 @@ const KV_LABEL_KEYS = {
   dmlBatchSize: 'fen-pi-dan-pi-hang-shu',
   dmlBatchIntervalMs: 'fen-pi-pi-jian-ge',
   dmlLagThresholdSec: 'fen-pi-yan-chi-yu-zhi',
-  dmlBatchTimeoutSec: 'fen-pi-dan-pi-chao-shi'
+  dmlBatchTimeoutSec: 'fen-pi-dan-pi-chao-shi',
+  dingBridgeBaseUrl: 'ding-qiao-fu-wu-di-zhi',
+  dingBridgeAuthToken: 'ding-qiao-ren-zheng-ling-pai',
+  dingBridgeTimeoutMs: 'ding-qiao-chao-shi',
+  dingBridgeOutboundEnable: 'ding-qiao-chu-zhan-kai-guan'
 };
 const SCALAR_KV_KEYS = [KV_AUTO_ROUTE, KV_SIZE_MB, KV_ROW_THRESHOLD, KV_ALERT_PUSH];
 const GHOST_ALL_KEYS = [...SCALAR_KV_KEYS, ...OPTION_KEYS];
@@ -279,6 +342,38 @@ const DML_NUMBER_FIELDS = [
   },
   { key: KV_DML_TIMEOUT_SEC, widget: 'number', labelKey: KV_LABEL_KEYS[KV_DML_TIMEOUT_SEC], min: 10, max: 3600, unitKey: 'preference-unit-seconds' }
 ];
+
+// The four DingTalk approval bridge RootUserConfig KVs (task 10-09 design §3.2, RootUserConfig
+// dingBridge* block). BRIDGE_KV_DEFAULTS is the typed mirror of the @UserConfigDef defaultValue
+// entries (same last-resort fallback contract). Restoring defaults BLANKS the four rows — a blank
+// value falls back to the backend fail-safe reads (switch fails CLOSED, blank baseUrl skips all
+// outbound calls, timeout defaults to 10000ms).
+const KV_BRIDGE_BASE_URL = 'dingBridgeBaseUrl';
+const KV_BRIDGE_AUTH_TOKEN = 'dingBridgeAuthToken';
+const KV_BRIDGE_TIMEOUT_MS = 'dingBridgeTimeoutMs';
+const KV_BRIDGE_OUTBOUND_ENABLE = 'dingBridgeOutboundEnable';
+const BRIDGE_KV_KEYS = [KV_BRIDGE_BASE_URL, KV_BRIDGE_AUTH_TOKEN, KV_BRIDGE_TIMEOUT_MS, KV_BRIDGE_OUTBOUND_ENABLE];
+const BRIDGE_KV_DEFAULTS = {
+  dingBridgeBaseUrl: '',
+  dingBridgeAuthToken: '',
+  dingBridgeTimeoutMs: 10000,
+  dingBridgeOutboundEnable: false
+};
+
+// Bridge block fields — the timeout range mirrors the WhiteListServiceForBasic/Full
+// dingBridgeTimeoutMs Range(1000, 60000); the token is isSecret (never echoed — the draft stays
+// blank, `configured` drives the keep-unchanged placeholder, tencentCloudSecretKey precedent).
+const BRIDGE_BASE_URL_FIELD = { key: KV_BRIDGE_BASE_URL, widget: 'text', labelKey: KV_LABEL_KEYS[KV_BRIDGE_BASE_URL] };
+const BRIDGE_AUTH_TOKEN_FIELD = { key: KV_BRIDGE_AUTH_TOKEN, widget: 'password', labelKey: KV_LABEL_KEYS[KV_BRIDGE_AUTH_TOKEN] };
+const BRIDGE_TIMEOUT_FIELD = {
+  key: KV_BRIDGE_TIMEOUT_MS,
+  widget: 'number',
+  labelKey: KV_LABEL_KEYS[KV_BRIDGE_TIMEOUT_MS],
+  min: 1000,
+  max: 60000,
+  unitKey: 'fen-pi-dan-wei-hao-miao'
+};
+const BRIDGE_ENABLE_FIELD = { key: KV_BRIDGE_OUTBOUND_ENABLE, widget: 'switch', labelKey: KV_LABEL_KEYS[KV_BRIDGE_OUTBOUND_ENABLE] };
 
 // mins mirror the standalone launch form precedent (b38c752f GhostLaunchForm); the backend applies
 // no range validation inside the JSON blob, so no invented maxima — InputNumber clamps at min.
@@ -412,14 +507,17 @@ export default {
       restoring: false,
       revision: 0,
       configMeta: {},
-      // two PHYSICALLY SEPARATE draft models — the gh-ost JSON options and the B7 KVs share a key
+      // three PHYSICALLY SEPARATE draft models — the gh-ost JSON options and the B7 KVs share a key
       // name (dmlBatchSize: gh-ost's --dml-batch-size inside ghostDefaultOptions vs the top-level
       // B7 batch-size KV). A single flat draft would let one block's value overwrite/cross-dirty
-      // the other (violating 区块级独立保存互不干扰), so each block owns its own draft/original.
+      // the other (violating 区块级独立保存互不干扰), so each block owns its own draft/original —
+      // the bridge block (task 10-09) follows the same isolation.
       originalValues: {},
       draftValues: {},
       dmlOriginalValues: {},
       dmlDraftValues: {},
+      bridgeOriginalValues: {},
+      bridgeDraftValues: {},
       optionsJsonInvalid: false,
       optionsStoredBlank: true,
       autoRouteField: AUTO_ROUTE_FIELD,
@@ -430,7 +528,11 @@ export default {
       ghostBoolFields: GHOST_BOOL_FIELDS,
       cutOverTypes: CUT_OVER_TYPES,
       dmlAutoRouteField: DML_AUTO_ROUTE_FIELD,
-      dmlNumberFields: DML_NUMBER_FIELDS
+      dmlNumberFields: DML_NUMBER_FIELDS,
+      bridgeBaseUrlField: BRIDGE_BASE_URL_FIELD,
+      bridgeAuthTokenField: BRIDGE_AUTH_TOKEN_FIELD,
+      bridgeTimeoutField: BRIDGE_TIMEOUT_FIELD,
+      bridgeEnableField: BRIDGE_ENABLE_FIELD
     };
   },
   computed: {
@@ -465,6 +567,23 @@ export default {
         return false;
       }
       return DML_KV_KEYS.some((key) => this.dmlDraftValues[key] !== this.dmlOriginalValues[key]);
+    },
+    bridgeRules() {
+      const rules = {};
+      rules[KV_BRIDGE_TIMEOUT_MS] = [{ trigger: 'change', validator: this.buildNumberValidator(BRIDGE_TIMEOUT_FIELD) }];
+      return rules;
+    },
+    dirtyBridge() {
+      if (!this.loaded) {
+        return false;
+      }
+      return BRIDGE_KV_KEYS.some((key) => this.bridgeDraftValues[key] !== this.bridgeOriginalValues[key]);
+    },
+    // isSecret 回显口径(tencentCloudSecretKey 消费面先例):已存储且非空 → 空草稿输入框
+    // 呈现「已配置,留空保持不变」占位
+    bridgeTokenConfigured() {
+      const meta = this.configMeta[KV_BRIDGE_AUTH_TOKEN];
+      return Boolean(meta && meta.secret && meta.configured);
     }
   },
   mounted() {
@@ -505,7 +624,7 @@ export default {
           configMap[config.configName] = config;
         });
         const configMeta = {};
-        [...SCALAR_KV_KEYS, KV_OPTIONS, ...DML_KV_KEYS].forEach((key) => {
+        [...SCALAR_KV_KEYS, KV_OPTIONS, ...DML_KV_KEYS, ...BRIDGE_KV_KEYS].forEach((key) => {
           configMeta[key] = configMap[key] || null;
         });
         this.configMeta = configMeta;
@@ -537,11 +656,23 @@ export default {
         };
         this.dmlOriginalValues = dmlValues;
         this.dmlDraftValues = { ...dmlValues };
+        // The bridge KVs live in their OWN draft model as well (草稿物理隔离). The auth token is
+        // isSecret — the server never echoes it: draft/original both stay '' (blank = keep
+        // unchanged; typing a new value is the only way to dirty the row).
+        const bridgeValues = {
+          dingBridgeBaseUrl: String(rawOf(configMeta[KV_BRIDGE_BASE_URL], '')),
+          dingBridgeAuthToken: '',
+          dingBridgeTimeoutMs: parseInteger(rawOf(configMeta[KV_BRIDGE_TIMEOUT_MS], ''), BRIDGE_KV_DEFAULTS.dingBridgeTimeoutMs),
+          dingBridgeOutboundEnable: parseBool(rawOf(configMeta[KV_BRIDGE_OUTBOUND_ENABLE], ''), BRIDGE_KV_DEFAULTS.dingBridgeOutboundEnable)
+        };
+        this.bridgeOriginalValues = bridgeValues;
+        this.bridgeDraftValues = { ...bridgeValues };
         this.loaded = true;
         this.revision += 1;
         await this.$nextTick();
         this.$refs.ghostForm?.clearValidate?.();
         this.$refs.dmlForm?.clearValidate?.();
+        this.$refs.bridgeForm?.clearValidate?.();
       } finally {
         this.loading = false;
       }
@@ -551,6 +682,9 @@ export default {
     },
     setDmlDraftValue(key, value) {
       this.dmlDraftValues[key] = value;
+    },
+    setBridgeDraftValue(key, value) {
+      this.bridgeDraftValues[key] = value;
     },
     // block-scoped cancel: only THIS block's own draft reverts (the other block is untouched)
     resetDraft() {
@@ -567,19 +701,33 @@ export default {
         this.$refs.dmlForm?.clearValidate?.();
       });
     },
-    // reload after a block-scoped save/restore while PRESERVING the OTHER block's draft
-    // (区块级独立保存互不干扰: saving/restoring one block never discards the other's edits).
-    // load() rebuilds both drafts from the server; we snapshot the other block's in-progress
-    // draft and restore it over the reload so its unsaved edits survive.
-    async reloadKeepingDml() {
-      const preserved = { ...this.dmlDraftValues };
-      await this.load();
-      this.dmlDraftValues = preserved;
+    resetBridgeBlock() {
+      this.bridgeDraftValues = { ...this.bridgeOriginalValues };
+      this.revision += 1;
+      this.$nextTick(() => {
+        this.$refs.bridgeForm?.clearValidate?.();
+      });
     },
-    async reloadKeepingGhost() {
-      const preserved = { ...this.draftValues };
+    // reload after a block-scoped save/restore while PRESERVING the OTHER blocks' drafts
+    // (区块级独立保存互不干扰: saving/restoring one block never discards another's edits).
+    // load() rebuilds all three drafts from the server; we snapshot the other blocks'
+    // in-progress drafts and restore them over the reload so their unsaved edits survive.
+    async reloadKeepingOthers(savedBlock) {
+      const preserved = {
+        ghost: { ...this.draftValues },
+        dml: { ...this.dmlDraftValues },
+        bridge: { ...this.bridgeDraftValues }
+      };
       await this.load();
-      this.draftValues = preserved;
+      if (savedBlock !== 'ghost') {
+        this.draftValues = preserved.ghost;
+      }
+      if (savedBlock !== 'dml') {
+        this.dmlDraftValues = preserved.dml;
+      }
+      if (savedBlock !== 'bridge') {
+        this.bridgeDraftValues = preserved.bridge;
+      }
     },
     collectGhostWrites() {
       const writes = [];
@@ -605,6 +753,15 @@ export default {
       DML_KV_KEYS.forEach((key) => {
         if (this.dmlDraftValues[key] !== this.dmlOriginalValues[key]) {
           writes.push({ key, value: String(this.dmlDraftValues[key]) });
+        }
+      });
+      return writes;
+    },
+    collectBridgeWrites() {
+      const writes = [];
+      BRIDGE_KV_KEYS.forEach((key) => {
+        if (this.bridgeDraftValues[key] !== this.bridgeOriginalValues[key]) {
+          writes.push({ key, value: String(this.bridgeDraftValues[key]).trim() });
         }
       });
       return writes;
@@ -647,7 +804,7 @@ export default {
         if (!failed) {
           this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
         }
-        await this.reloadKeepingDml();
+        await this.reloadKeepingOthers('ghost');
       } finally {
         this.saving = false;
       }
@@ -666,7 +823,26 @@ export default {
         if (!failed) {
           this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
         }
-        await this.reloadKeepingGhost();
+        await this.reloadKeepingOthers('dml');
+      } finally {
+        this.saving = false;
+      }
+    },
+    async handleSaveBridge() {
+      if (!this.dirtyBridge || this.saving || this.restoring) {
+        return;
+      }
+      const valid = await this.$refs.bridgeForm.validate();
+      if (!valid) {
+        return;
+      }
+      this.saving = true;
+      try {
+        const failed = await this.runUpserts(this.collectBridgeWrites());
+        if (!failed) {
+          this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
+        }
+        await this.reloadKeepingOthers('bridge');
       } finally {
         this.saving = false;
       }
@@ -695,7 +871,7 @@ export default {
           return;
         }
         this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
-        await this.reloadKeepingDml();
+        await this.reloadKeepingOthers('ghost');
       } finally {
         this.restoring = false;
       }
@@ -730,13 +906,47 @@ export default {
         if (!failed) {
           this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
         }
-        await this.reloadKeepingGhost();
+        await this.reloadKeepingOthers('dml');
+      } finally {
+        this.restoring = false;
+      }
+    },
+    handleRestoreBridgeDefaults() {
+      // 恢复默认仅清本区块:blanks the four bridge KV rows — blank falls back to the backend
+      // fail-safe defaults (baseUrl 空=出站整体跳过、超时 10000、开关关闭=止血),令牌一并清空
+      let content = this.$t('ding-qiao-hui-fu-mo-ren-ti-shi');
+      if (this.dirtyBridge) {
+        content += ` ${this.$t('fen-pi-hui-fu-mo-ren-diu-qi')}`;
+      }
+      this.$Modal.confirm({
+        title: this.$t('fen-pi-hui-fu-mo-ren-que-ren'),
+        content,
+        okText: this.$t('que-ren'),
+        cancelText: this.$t('qu-xiao'),
+        onOk: () => this.doRestoreBridgeDefaults()
+      });
+    },
+    async doRestoreBridgeDefaults() {
+      this.restoring = true;
+      try {
+        let failed = 0;
+        for (const key of BRIDGE_KV_KEYS) {
+          const res = await this.$services.rdpUserConfigUpsertUserConfigs({ data: this.buildUpsertData(key, ''), modal: false });
+          if (!res.success) {
+            failed += 1;
+            this.reportItemFailure(key, res);
+          }
+        }
+        if (!failed) {
+          this.$Message.success(this.$t('pei-zhi-yi-xiu-gai-cheng-gong'));
+        }
+        await this.reloadKeepingOthers('bridge');
       } finally {
         this.restoring = false;
       }
     },
     confirmDiscardIfNeeded() {
-      if (!this.dirtyGhost && !this.dirtyDml) {
+      if (!this.dirtyGhost && !this.dirtyDml && !this.dirtyBridge) {
         return Promise.resolve(true);
       }
       return new Promise((resolve) => {
@@ -751,7 +961,7 @@ export default {
       });
     },
     handleBeforeUnload(event) {
-      if (!this.dirtyGhost && !this.dirtyDml) {
+      if (!this.dirtyGhost && !this.dirtyDml && !this.dirtyBridge) {
         return;
       }
       event.preventDefault();

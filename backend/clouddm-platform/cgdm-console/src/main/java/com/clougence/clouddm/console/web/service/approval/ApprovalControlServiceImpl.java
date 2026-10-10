@@ -419,6 +419,10 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         vo.setApproType(approvalDO.getApproType());
         vo.setApproBiz(approvalDO.getApproBiz());
         vo.setApproIdentity(approvalDO.getApproIdentity());
+        // DingTalk bridge outbound passthrough (task 10-09, additive): NULL for every non-External
+        // row by construction — only External rows ever transition out of NULL (design §3.1)
+        vo.setOutboundStatus(approvalDO.getOutboundStatus());
+        vo.setOutboundError(approvalDO.getOutboundError());
         vo.setApproTemplateName(approvalDO.getApproTemplateName());
         vo.setDescription(approvalDO.getDescription());
         vo.setStatusMessage(approvalDO.getStatusMessage());

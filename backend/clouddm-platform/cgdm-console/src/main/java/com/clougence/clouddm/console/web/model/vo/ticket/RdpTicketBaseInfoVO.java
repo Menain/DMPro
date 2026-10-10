@@ -69,4 +69,12 @@ public class RdpTicketBaseInfoVO {
     private Long                      releaseId;
     private String                    releaseNo;
 
+    // DingTalk bridge outbound extension (task 10-09, design §3.1) — additive passthrough of the
+    // dm_approval outbound columns. Only External-channel rows ever carry values; every other row
+    // keeps them NULL in DB (the frontend hides the panel by approType). approIdentity (already
+    // above) doubles as the flowId display. Console-only: the open /tickets/detail VO maps
+    // field-by-field into OpenDbChangeTicketDetailVO and never picks these up (frozen open surface).
+    private String                    outboundStatus;   // NULL/NOT_STARTED | STARTING | STARTED | FAILED
+    private String                    outboundError;    // latest failure cause (truncated at write time)
+
 }

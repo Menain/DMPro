@@ -185,6 +185,19 @@
         </div>
       </section>
 
+      <!-- 钉钉审批桥接出站面板(task 10-09,design §3.1):仅 External 通道行呈现;状态随 getTicketDetail 既有刷新链(含 5s 自动刷新)带出,零新轮询器 -->
+      <section v-if="showBridgeOutbound" class="page-section bridge-outbound-section">
+        <div class="page-section__title">{{ $t('ding-qiao-biao-ti') }}</div>
+        <DingBridgeOutboundPanel
+          :outbound-status="ticketDetail.outboundStatus"
+          :outbound-error="ticketDetail.outboundError"
+          :flow-id="ticketDetail.approIdentity"
+          :reissuing="bridgeReissuing"
+          :can-reissue="canReissueFlow"
+          @reissue="handleReissueFlow"
+        />
+      </section>
+
       <section v-if="ticketType === 'DM_PROD_RELEASE' && releaseSummary" class="page-section gov-release-summary-section">
         <div class="page-section__title">{{ $t('gov-release-summary-title') }}</div>
         <div class="gov-release-summary-card">
@@ -1016,6 +1029,7 @@ import copyMixin from '@/mixins/copyMixin';
 import { isCk, isMongoDB, RULE_WARN_LEVEL } from '@/utils';
 import GhostGroupPanel from './components/GhostGroupPanel.vue';
 import DmlBatchGroupPanel from './components/DmlBatchGroupPanel.vue';
+import DingBridgeOutboundPanel from '@/components/function/DingBridgeOutboundPanel.vue';
 import { SEGMENT_STATUS_I18N, segmentRangeI18n } from '@/const/ghost';
 import { segmentTypeBadgeI18n, mapDmlBatchSegmentError } from '@/const/dmlBatch';
 
@@ -1091,7 +1105,8 @@ export default {
   components: {
     ReadOnlyEditor,
     GhostGroupPanel,
-    DmlBatchGroupPanel
+    DmlBatchGroupPanel,
+    DingBridgeOutboundPanel
   },
   mixins: [copyMixin],
   data() {
@@ -1310,7 +1325,9 @@ export default {
         resolution: 'RERUN_BATCH'
       },
       dmlResolutionGroup: null,
-      dmlResolutionSeg: null
+      dmlResolutionSeg: null,
+      // 钉钉审批桥接(task 10-09):手动重发 in-flight 标记
+      bridgeReissuing: false
     };
   },
   async mounted() {
@@ -1336,6 +1353,17 @@ export default {
     // permission bit (canGhostExec is deliberately the single gate — zero new frontend auth keys).
     canGhostExec() {
       return this.myAuth.includes('DM_GHOST_EXEC');
+    },
+    // ---- 钉钉审批桥接出站面板(task 10-09,design §3.1/§4) ----
+    // 适用性判定:仅 External 通道行呈现(其余 approType 的 outbound 列恒 NULL,面板隐藏)
+    showBridgeOutbound() {
+      return this.ticketDetail.approType === 'External';
+    },
+    // 权限镜像 reissueFlow 端点注解(HIGH + REQUEST/APPROVE 任一,cancel/close 同档)——
+    // 决定按钮可见性;STARTED/STARTING 的状态守卫(ALREADY_STARTED/IN_FLIGHT)由面板内部
+    // 置灰呈现(const/dingBridge.canReissueBridgeFlow 镜像)
+    canReissueFlow() {
+      return this.myAuth.includes('RDP_WORKER_ORDER_REQUEST') || this.myAuth.includes('RDP_WORKER_ORDER_APPROVE');
     },
     // B7 N3 confirm-dialog gate: any group of this ticket carries a DML_BATCH segment (plan ∨
     // runtime) → the transaction switch is disabled (批间独立提交, the server force is the
@@ -2630,6 +2658,24 @@ export default {
         }
       } catch {
         this.releaseSummary = null;
+      }
+    },
+    // 手动重发钉钉桥接出站发起(task 10-09,design §4):后端同步语义——成功即 STARTED;
+    // 五类拒绝(DISABLED/not-found/CHANNEL_MISMATCH/ALREADY_STARTED/IN_FLIGHT)由后端 i18n
+    // 错误经标准错误弹窗直达操作者,前端不重复映射文案
+    async handleReissueFlow() {
+      if (this.bridgeReissuing) {
+        return;
+      }
+      this.bridgeReissuing = true;
+      try {
+        const res = await this.$services.dmTicketReissueFlow({ data: { ticketId: this.ticketId } });
+        if (res.success) {
+          this.$Message.success(this.$t('ding-qiao-chong-xin-fa-qi-cheng-gong'));
+          await this.getTicketDetail();
+        }
+      } finally {
+        this.bridgeReissuing = false;
       }
     },
     goToRelease(releaseId) {
@@ -5053,6 +5099,16 @@ export default {
     font-size: 14px;
     font-weight: 500;
     color: #181d26;
+  }
+}
+
+// 钉钉审批桥接出站面板(task 10-09):浅底分区(少线框,release-summary-card 同款);
+// 目标是子组件根节点,scoped 下父作用域属性可达,无需 :deep
+.bridge-outbound-section {
+  .ding-bridge-outbound {
+    background: var(--surface-soft, #f8fafc);
+    padding: 16px 24px;
+    border-radius: 10px;
   }
 }
 </style>

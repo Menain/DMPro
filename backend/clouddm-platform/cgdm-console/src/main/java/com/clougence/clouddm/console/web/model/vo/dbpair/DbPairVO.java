@@ -33,6 +33,10 @@ public class DbPairVO {
     private Long   prodDsId;
     private String prodDsName;
     private String prodEnvName;
+    // env id of the prod datasource (task 10-09 R6, additive) — lets the v2 submit page resolve
+    // the env's approval channel through the existing fetchTicketParamForSec chain, mirroring the
+    // backend submit-time resolution (first group's ds env → querySqlTicketInfoParam)
+    private Long   prodEnvId;
     private String prodDbName;
     private String status;
     private String remark;

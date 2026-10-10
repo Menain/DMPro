@@ -21,6 +21,9 @@ export default {
       MODE_VIA_RELEASE: 'VIA_RELEASE',
       ticketType: 'PRE_DDL',
       approvalMode: 'DIRECT',
+      // R6(task 10-09,design §6):审批通道类型(环境参数 SQL_TICKET_INFO 的 type)——
+      // 由首个选中映射库的 PROD 环境解析,驱动 DIRECT 选项文案联动;空 = 未知/未配置
+      envApprovalType: '',
       pairList: [],
       serviceList: [],
       selectedPairIds: [],
@@ -56,9 +59,38 @@ export default {
         value: p.id,
         label: `${p[dsField]}/${p[field]}（${p[envField] || '-'}）`
       }));
+    },
+    // R6(task 10-09):PROD_DML 的审批通道由首个组的 PROD 数据源环境决定(与后端 submit 的
+    // firstDs.dsEnvId → querySqlTicketInfoParam 决议逐位同源);仅 PROD_DML 需要解析
+    firstProdEnvId() {
+      if (this.ticketType !== this.TYPE_PROD_DML) {
+        return null;
+      }
+      const pair = this.pairList.find((p) => p.id === this.selectedPairIds[0]);
+      return pair?.prodEnvId || null;
+    },
+    // External 环境 → DIRECT 选项文案显性化为「钉钉审批(外部流程)」;Internal/未配置/其他
+    // 通道保持既有键,文案逐位不变(回归 pin)
+    directModeLabelKey() {
+      if (this.envApprovalType === 'External') {
+        return 'gov-v2-approval-mode-direct-external';
+      }
+      return 'gov-v2-approval-mode-direct';
+    },
+    directModeDescKey() {
+      if (this.envApprovalType === 'External') {
+        return 'gov-v2-approval-mode-direct-external-desc';
+      }
+      return 'gov-v2-approval-mode-direct-desc';
     }
   },
   watch: {
+    firstProdEnvId: {
+      immediate: true,
+      handler() {
+        this.loadEnvApprovalType();
+      }
+    },
     selectedPairIds(ids) {
       const map = {};
       ids.forEach((id) => {
@@ -99,6 +131,26 @@ export default {
       const res = await this.$services.dbChangeV2AvailableServices({ data: {} });
       if (res.success) {
         this.serviceList = res.data || [];
+      }
+    },
+    // R6(task 10-09):解析首个选中映射库 PROD 环境的审批通道——走既有环境参数查询链
+    // (fetchTicketParamForSec,ticket.vue 先例),单次查询、随选择变化触发,不新增轮询器;
+    // 失败静默降级为空(文案回落既有键,行为与现状一致)
+    async loadEnvApprovalType() {
+      this.envApprovalType = '';
+      const envId = this.firstProdEnvId;
+      if (!envId) {
+        return;
+      }
+      const res = await this.$services.dmEnvParamFetchTicketParamForSec({
+        data: { envId, paramKey: 'ticket_info' },
+        modal: false
+      });
+      if (this.firstProdEnvId !== envId) {
+        return;
+      }
+      if (res.success && res.data) {
+        this.envApprovalType = res.data.type || '';
       }
     },
     applyAutoTitle() {
@@ -367,11 +419,12 @@ export default {
           <div v-if="ticketType === TYPE_PROD_DML" class="v2-approval-mode-section">
             <span class="v2-label">{{ $t('gov-v2-approval-mode') }}</span>
             <RadioGroup v-model="approvalMode" size="small">
-              <Radio :label="MODE_DIRECT">{{ $t('gov-v2-approval-mode-direct') }}</Radio>
+              <!-- R6(task 10-09,design §6):DIRECT 文案随环境通道联动——External 环境显性化为「钉钉审批(外部流程)」,其余通道键名与文案逐位不变(回归 pin) -->
+              <Radio :label="MODE_DIRECT">{{ $t(directModeLabelKey) }}</Radio>
               <Radio :label="MODE_VIA_RELEASE">{{ $t('gov-v2-approval-mode-via-release') }}</Radio>
             </RadioGroup>
             <div class="v2-approval-mode-desc">
-              <span v-if="approvalMode === MODE_DIRECT">{{ $t('gov-v2-approval-mode-direct-desc') }}</span>
+              <span v-if="approvalMode === MODE_DIRECT">{{ $t(directModeDescKey) }}</span>
               <span v-else>{{ $t('gov-v2-approval-mode-via-release-desc') }}</span>
             </div>
             <div v-if="approvalMode === MODE_VIA_RELEASE" class="v2-mixed-order-hint">

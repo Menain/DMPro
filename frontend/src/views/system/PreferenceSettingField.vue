@@ -25,6 +25,16 @@
       <span v-if="field.unitKey" class="preference-setting-field__unit">{{ $t(field.unitKey) }}</span>
     </div>
 
+    <!-- isSecret 凭据类 KV(如 dingBridgeAuthToken):密码型输入;回显口径由 configured 属性驱动(已配置 + 留空 = 保持不变,tencentCloudSecretKey 消费面先例) -->
+    <Input
+      v-else-if="field.widget === 'password'"
+      v-model="innerValue"
+      type="password"
+      :disabled="disabled"
+      :placeholder="inputPlaceholder"
+      autocomplete="new-password"
+    />
+
     <Input v-else v-model="innerValue" :disabled="disabled" :placeholder="inputPlaceholder" />
 
     <div v-if="field.specialValueKey" class="preference-setting-field__special">
