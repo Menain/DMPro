@@ -2335,6 +2335,7 @@
   "risk-level-medium": "Medium",
   "risk-level-high": "High",
   "risk-level-critical": "Critical",
+  "risk-level-rows-unestimated": "Rows Not Estimable",
   "impact-scope": "Impact Scope",
   "cha-xun-she-zhi": "Query settings",
   "dai-ban": "TODO",

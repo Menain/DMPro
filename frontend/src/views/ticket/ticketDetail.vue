@@ -109,6 +109,7 @@
                 <Tag v-else-if="ticketDetail.riskLevel === 'HIGH'" color="warning">{{ $t('risk-level-high') }}</Tag>
                 <Tag v-else-if="ticketDetail.riskLevel === 'MEDIUM'" color="info">{{ $t('risk-level-medium') }}</Tag>
                 <Tag v-else color="default">{{ $t('risk-level-low') }}</Tag>
+                <Tag v-if="ticketDetail.rowsEstimated === false" color="default">{{ $t('risk-level-rows-unestimated') }}</Tag>
               </span>
             </div>
             <div v-if="ticketDetail.serviceName" class="ticket-meta-item">
@@ -2296,6 +2297,7 @@ export default {
               this.ticketDetail.rollBackSqlGenerated = resQuery.data?.rollBackSqlGenerated || false;
               this.ticketDetail.riskLevel = resQuery.data?.riskLevel || '';
               this.ticketDetail.impactScopeText = resQuery.data?.impactScopeText || '';
+              this.ticketDetail.rowsEstimated = resQuery.data?.rowsEstimated ?? null;
               this.ticketDetail.contentType = resQuery.data?.contentType || 'INLINE';
               this.ticketDetail.attachmentId = resQuery.data?.attachmentId;
               this.ticketDetail.attachmentFileName = resQuery.data?.attachmentFileName || '';

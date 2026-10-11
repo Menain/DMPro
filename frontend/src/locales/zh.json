@@ -2237,6 +2237,7 @@
   "risk-level-medium": "中",
   "risk-level-high": "高",
   "risk-level-critical": "极高",
+  "risk-level-rows-unestimated": "行数不可估算",
   "impact-scope": "影响范围",
   "dai-ban": "待办",
   "zhi-du": "只读",

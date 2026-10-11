@@ -265,4 +265,4 @@
 - 钉钉审批流推送和回调需 PROD 环境配置真实钉钉应用（AppKey/AppSecret），本地无法安全模拟时标记 SKIP，仅验证到 promotion 创建与确认入口可见。
 - PRE 自动执行需 sidecar worker 在线（`AutoExecScheduleService`），worker 不可用时 SKIP 自动执行步骤，但前置提交与页面渲染验证仍可执行。
 - 路径 B 测试需 PROD 环境 `GOV_DML_DIRECT=on`，未配置时 SKIP 路径 B 套件。
-- PG 数据源路径 B 的 `expectedAffectedRows` 恒为 0（已知约束，非缺陷），PG 环境下行阈值分级自然失效，SKIP 行数阈值验证。
+- PG 数据源路径 B 的 `expectedAffectedRows` 为 NULL（估算不可得，已知约束，非缺陷；task 10-11 起不再伪装为 0，工单详情风险区对估算不可得显示「行数不可估算」标注），PG 环境下行阈值分级自然失效，SKIP 行数阈值验证。

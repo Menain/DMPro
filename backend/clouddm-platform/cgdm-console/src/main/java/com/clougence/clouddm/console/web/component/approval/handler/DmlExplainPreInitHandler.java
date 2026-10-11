@@ -117,16 +117,33 @@ public class DmlExplainPreInitHandler extends AbstractPreInitHandler {
             }
         }
 
-        long expectedAffectedRows = results.stream()//
-            .map(DmlExplainResultMO::getEstimatedAffectedRows)
-            .filter(Objects::nonNull)
-            .mapToLong(Long::longValue)
-            .sum();
+        Long expectedAffectedRows = sumEstimatedAffectedRows(results);
         context.getApprovalDal().approvalMapper().updateExpectedAffectedRows(context.getApproval().getId(), expectedAffectedRows);
 
         // Risk level writeback (design D2: PRE_INIT completion → final level with rows).
         // Re-reads ticketInfo, re-assesses with estimatedRows, writes back final riskLevel/impactScope.
         writeBackFinalRiskLevel(context, expectedAffectedRows);
+    }
+
+    /**
+     * Null-preserving aggregation (task 10-11 M1; aligned with the v2 submit-writeback semantics
+     * in GovTicketV2ServiceImpl): every per-statement estimate null (e.g. PG DML — the EXPLAIN SPI
+     * deliberately excludes DML) or no DML result at all → null, NEVER a fake 0; partial nulls →
+     * sum of the non-null estimates. The expected_affected_rows column is nullable — NULL keeps
+     * "unknown" distinguishable from a true zero-row estimate. Rating behavior is unchanged:
+     * levelByRows(null) == levelByRows(0) == LOW (plan-b ruling, design §3).
+     */
+    static Long sumEstimatedAffectedRows(List<DmlExplainResultMO> results) {
+        Long total = null;
+        for (DmlExplainResultMO result : results) {
+            if (result.getEstimatedAffectedRows() != null) {
+                if (total == null) {
+                    total = 0L;
+                }
+                total += result.getEstimatedAffectedRows();
+            }
+        }
+        return total;
     }
 
     private static ExplainPlanSpi findExplainSpi(DataSourceType dsType) {
@@ -141,7 +158,7 @@ public class DmlExplainPreInitHandler extends AbstractPreInitHandler {
      * the estimated row count, and updates riskLevel/impactScope/impactScopeText in ticketInfo.
      * Follows the releaseId/releaseNo writeback precedent (ProdReleaseServiceImpl pattern).
      */
-    private void writeBackFinalRiskLevel(PreInitContext context, long expectedAffectedRows) {
+    private void writeBackFinalRiskLevel(PreInitContext context, Long expectedAffectedRows) {
         try {
             DmApprovalDO approval = context.getApproval();
             // Re-read latest ticketInfo (may have changed since createSqlTicket)

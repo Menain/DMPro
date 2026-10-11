@@ -48,6 +48,9 @@ public class DmQueryTicketVO {
     // Risk level + impact scope (design D4/D5: exposed for detail-page display)
     private String                      riskLevel;
     private String                      impactScopeText;
+    // Row-estimate availability (task 10-11 M3): false = affected-rows estimate unavailable
+    // (e.g. PG DML — EXPLAIN SPI unsupported); null = legacy rows without impactScope.
+    private Boolean                     rowsEstimated;
     private String                      ticketMessage;
     private boolean                     autoExec;
     private List<TicketRuleCheckResult> checkedList;

@@ -611,6 +611,8 @@ public enum I18nDmMsgKeys {
     GOV_TICKET_V2_DML_NO_KEY_REJECT,
     /** 路由公告黄旗:将以分批限流方式执行(键/批大小/预计批数) */
     DML_BATCH_ROUTE_ANNOUNCE,
+    /** 路由公告黄旗(估算不可得、按表规模兜底判定):口径注明 {1} 为表规模而非预估影响行数(task 10-11 M5,仅文案,路由行为零变化) */
+    DML_BATCH_ROUTE_ANNOUNCE_TABLE_SCALE,
     /** 形状门不支持灰提示(多表/CTE/注释/LIMIT…),直接执行 */
     DML_BATCH_SHAPE_UNSUPPORTED,
     /** 键型不支持黄旗(复合键/浮点/exotic),直接执行+长锁/超时风险 */

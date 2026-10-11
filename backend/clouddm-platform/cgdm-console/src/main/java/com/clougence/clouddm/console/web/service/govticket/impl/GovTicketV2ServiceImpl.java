@@ -2424,8 +2424,14 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             vo.setBatchSize(params.getBatchSize());
             long batches = Math.max(1L, (signalRows + params.getBatchSize() - 1) / params.getBatchSize());
             vo.setApproxBatches(batches);
+            // Announcement caliber (task 10-11 M5, copy-only): when the per-statement estimate was
+            // unavailable and signalRows fell back to the probed TABLE SCALE, say so — the number
+            // must not masquerade as an affected-rows estimate. Routing decision is untouched.
+            String announceKey = stmtRows != null
+                ? I18nDmMsgKeys.DML_BATCH_ROUTE_ANNOUNCE.name()
+                : I18nDmMsgKeys.DML_BATCH_ROUTE_ANNOUNCE_TABLE_SCALE.name();
             StringBuilder announce = new StringBuilder(DmI18nUtils.getMessage(
-                I18nDmMsgKeys.DML_BATCH_ROUTE_ANNOUNCE.name(), table, display(signalRows), display(threshold),
+                announceKey, table, display(signalRows), display(threshold),
                 probe.getKeyColumn(), String.valueOf(params.getBatchSize()), String.valueOf(batches)));
             if (!idempotent) {
                 announce.append('\n').append(DmI18nUtils.getMessage(

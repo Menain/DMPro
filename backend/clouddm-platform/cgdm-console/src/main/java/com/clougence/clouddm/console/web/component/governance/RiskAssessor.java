@@ -294,7 +294,11 @@ public final class RiskAssessor {
         scope.setDdlCount(ddlCount);
         scope.setDmlCount(dmlCount);
 
-        if (estimatedRows != null && estimatedRows > 0) {
+        // rowsEstimated means exactly "an estimate value exists" (task 10-11 M2): a TRUE zero-row
+        // estimate is a real estimate (rowsEstimated=true, readableText prints 预估影响0行); only
+        // null (estimate unavailable, e.g. PG DML) marks the row dimension as unknown. Rating is
+        // untouched — levelByRows(null) == levelByRows(0) == LOW (plan-b ruling).
+        if (estimatedRows != null) {
             scope.setEstimatedRows(estimatedRows);
             scope.setRowsEstimated(true);
         } else {

@@ -95,7 +95,7 @@
     - 工单卡在 `WAIT_APPROVAL`：检查 PRE 环境 `GOV_ROLE=PRE` 是否配置、推进器 `GovPipelineScheduler` 是否运行（1s 守护循环）、审批模板是否为 Internal 自动模板。
     - 工单卡在 `WAIT_EXEC`：检查 sidecar worker 是否在线、`AutoExecScheduleService` 是否运行（5s 扫描循环）。
     - 规则审计失败：工单回 `REJECTED`，检查 `dm_sec_rules` 规则集与 `check_spec_id` 环境绑定。
-    - DML Explain 失败（PG 环境）：PG SPI 不支持 INSERT/UPDATE/DELETE 的行估算，`expectedAffectedRows` 恒为 0，不阻断提交（已知约束非缺陷）。
+    - DML Explain 失败（PG 环境）：PG SPI 不支持 INSERT/UPDATE/DELETE 的行估算，`expectedAffectedRows` 落 NULL（未知，不再伪装为 0——task 10-11），不阻断提交（已知约束非缺陷）；工单详情风险区显示「行数不可估算」标注，风险等级不因未知升级。
 
 ### Step 4 · 全部成功 → 冻结 Revision
 
@@ -214,7 +214,7 @@
     1. 选择逻辑库，路径 B 表单渲染（接口返回 `govDmlDirect=on` 且 `govRole=PROD` 时可见）。
     2. 在 DML 编辑器输入 D05 SQL，在回滚编辑器输入回滚 SQL。
     3. 填写描述，点击"提交直发生产 DML"。
-- 预期状态：后端判定仅 DML（parser `BehaviorAction` 逐句判定，含 DDL/MIXED 则拒绝）、EXPLAIN 阈值分级（MySQL: `expectedAffectedRows` 非零评估；PG: SPI 不支持→0→永不拒绝）、同事务创建 6 对象（revision + promotion + PROD 工单 + task + event ×2）。
+- 预期状态：后端判定仅 DML（parser `BehaviorAction` 逐句判定，含 DDL/MIXED 则拒绝）、EXPLAIN 阈值分级（MySQL: `expectedAffectedRows` 真实估算评估；PG: SPI 不支持→估算不可得 NULL→永不拒绝；task 10-11 语义，旧「→0」钉死已修订）、同事务创建 6 对象（revision + promotion + PROD 工单 + task + event ×2）。
 - 预期事件：`GovEventType.DIRECT_DML_SUBMIT`（`event_data` 含 revisionId、promotionId、estimatedRows、riskLevel）。
 - 失败排查：
     - 表单不可见：检查 PROD 环境 `GOV_DML_DIRECT=on` 是否配置、逻辑库 PROD 绑定是否存在。
@@ -354,7 +354,7 @@
 
 1. **规则集路由**：为 PG 环境配置一套与 MySQL 对等的规则集（含 PG 特有项：`CREATE INDEX CONCURRENTLY` / `ADD COLUMN NOT NULL DEFAULT` / `TRUNCATE`/`DROP` 分级），通过 `check_spec_id` 环境绑定。提交 PG 方言 SQL → 规则审计按 PG 规则集路由。
 2. **Preflight 元数据**：`realTimeFetchVersion` 返回 PostgreSQL 版本字符串（如 `PostgreSQL 15.4`）；`realTimeFetchSelectObject` 查询 PG 系统目录表。四项检查行为与 MySQL 一致（connectivity / table_exists / ddl_dep / dml_target）。
-3. **DML Explain 降级**：PG `PgExplainPlanSpi` 显式排除 INSERT/UPDATE/DELETE/MERGE → `supportByQueryType` 返回 false → `expectedAffectedRows` 恒为 0。路径 B 提交 PG DML → 阈值评估走 0 行分支 → 永不拒绝提交。`GOV_DML_ROW_LIMIT` 行阈值对 PG 自然失效（已知约束非缺陷）。
+3. **DML Explain 降级**：PG `PgExplainPlanSpi` 显式排除 INSERT/UPDATE/DELETE/MERGE → `supportByQueryType` 返回 false → `expectedAffectedRows` 落 NULL（估算不可得的未知值，不再写 0——task 10-11；风险等级仍按语句/规则维度评估，行数未知不升级）。路径 B 提交 PG DML → 阈值评估走估算不可得分支 → 永不拒绝提交。`GOV_DML_ROW_LIMIT` 行阈值对 PG 自然失效（已知约束非缺陷）。
 4. **成分路由事务语义**：PG DDL 支持事务性（与 MySQL DDL 隐式提交不同），但 D15 成分路由统一守卫：事务模式只对纯 DML 工单开放，含 DDL 一律逐条 autocommit。PG 环境 DDL 工单 → `transactional=false` + `errorStrategy=NONE`。
 
 ### MySQL 环境对照
@@ -394,5 +394,5 @@
 - 钉钉审批流推送和回调需 PROD 环境配置真实钉钉应用（AppKey/AppSecret），本地无法安全模拟时 SKIP，仅验证到 promotion 创建与确认入口可见。
 - PRE 自动执行需 sidecar worker 在线，worker 不可用时 SKIP 自动执行步骤。
 - 路径 B 测试需 PROD 环境 `GOV_DML_DIRECT=on`，未配置时 SKIP 路径 B 套件。
-- PG 数据源路径 B 的 `expectedAffectedRows` 恒为 0（已知约束），PG 环境下行阈值分级自然失效，SKIP 行数阈值验证。
+- PG 数据源路径 B 的 `expectedAffectedRows` 为 NULL（估算不可得，已知约束；task 10-11 起不再伪装为 0），PG 环境下行阈值分级自然失效，SKIP 行数阈值验证。
 - 真实环境篡改 `dm_db_change_revision` / `dm_exec_auto_task` 表数据需在隔离测试环境进行，不得在生产环境操作。

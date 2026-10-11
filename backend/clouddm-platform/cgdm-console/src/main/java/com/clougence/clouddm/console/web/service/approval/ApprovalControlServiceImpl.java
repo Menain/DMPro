@@ -53,6 +53,7 @@ import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.AutoExecService;
 import com.clougence.clouddm.console.web.component.execute.model.AutoExecCreateMO;
+import com.clougence.clouddm.console.web.component.governance.ImpactScope;
 import com.clougence.clouddm.console.web.constants.DmConfirmActionType;
 import com.clougence.clouddm.console.web.constants.RdpTicketProcessActivityStatus;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
@@ -770,6 +771,14 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             vo.setRollBackSqlGenerated(ticketInfo.getRollBackSqlGenerated());
             vo.setRiskLevel(ticketInfo.getRiskLevel());
             vo.setImpactScopeText(ticketInfo.getImpactScopeText());
+            // rowsEstimated passthrough (task 10-11 M3): the detail page marks "affected-rows
+            // estimate unavailable" off this flag; legacy rows without impactScope stay null.
+            if (StringUtils.isNotEmpty(ticketInfo.getImpactScope())) {
+                ImpactScope scope = JsonUtils.toObj(ticketInfo.getImpactScope(), ImpactScope.class);
+                if (scope != null) {
+                    vo.setRowsEstimated(scope.getRowsEstimated());
+                }
+            }
         }
         return vo;
     }

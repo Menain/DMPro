@@ -363,6 +363,34 @@ public class RiskAssessorTest {
     }
 
     @Test
+    public void trueZeroRows_isEstimated_notUnknown() {
+        // Task 10-11 M2: a TRUE zero-row estimate is a real estimate — rowsEstimated=true,
+        // estimatedRows=0 (before M2 the >0 guard conflated it with "unknown"); rating stays LOW
+        RiskAssessment ra = RiskAssessor.assess(
+            List.of(types(SplitQueryType.UPDATE)),
+            null, 0L, defaultConfig(), "dev", "MySQL", Collections.emptyList());
+        assertEquals(RiskLevel.LOW, ra.getLevel());
+        ImpactScope scope = ra.getScope();
+        assertEquals(Long.valueOf(0L), scope.getEstimatedRows());
+        assertTrue(scope.getRowsEstimated());
+        assertTrue(ra.getReadableText().contains("预估影响0行"));
+    }
+
+    @Test
+    public void nullRows_scopeMarksUnknown() {
+        // null = estimate unavailable (e.g. PG DML) → rowsEstimated=false, no rows in the text;
+        // rating unchanged (LOW — plan-b: unknown neither upgrades nor masquerades as 0)
+        RiskAssessment ra = RiskAssessor.assess(
+            List.of(types(SplitQueryType.UPDATE)),
+            null, null, defaultConfig(), "dev", "MySQL", Collections.emptyList());
+        assertEquals(RiskLevel.LOW, ra.getLevel());
+        ImpactScope scope = ra.getScope();
+        assertNull(scope.getEstimatedRows());
+        assertFalse(scope.getRowsEstimated());
+        assertFalse(ra.getReadableText().contains("预估影响"));
+    }
+
+    @Test
     public void readableText_containsLevelAndSummary() {
         RiskAssessment ra = RiskAssessor.assess(
             List.of(types(SplitQueryType.DELETE)),
