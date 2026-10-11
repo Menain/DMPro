@@ -25,6 +25,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
@@ -59,6 +60,11 @@ import com.clougence.utils.JsonUtils;
  * T13: refreshApprovalStatus refactoring regression — DingTalk callback path
  * still works identically after the switch block was extracted to
  * applyExternalApprovalResult.
+ * <p>
+ * 10-11 rejected-command-audit: every guard rejection additionally persists an
+ * EXTERNAL_COMMAND_REJECTED event (R1) without changing the throw / zero-side-effect
+ * semantics (R2) — asserted on the three guard reasons, the replay path (R4) and the
+ * audit-failure degradation path (A3).
  */
 public class ExternalCommandTest {
 
@@ -101,6 +107,9 @@ public class ExternalCommandTest {
         ReflectionTestUtils.setField(service, "imSenderService", imSenderService);
         ReflectionTestUtils.setField(service, "systemDal", mock(SystemDal.class));
         ReflectionTestUtils.setField(service, "authDal", mock(AuthDal.class));
+        // REQUIRES_NEW template of the rejected-command audit rides this manager (10-11 R2):
+        // the bare mock makes getTransaction/commit no-ops — the insert runs inline.
+        ReflectionTestUtils.setField(service, "txManager", mock(PlatformTransactionManager.class));
     }
 
     // ==================== T4: Three-state command migration ====================
@@ -235,6 +244,21 @@ public class ExternalCommandTest {
         // Zero side effects: no process status change, no handler callback
         verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
         assertFalse("approvalApproved should NOT be called", testHandler.approvedCalled);
+
+        // 10-11 R1: the guard rejection itself IS audited — STATUS_MISMATCH, command=approve
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        assertEquals(Long.valueOf(TICKET_ID), event.getTicketId());
+        assertEquals(OPERATOR, event.getOperatorUid());
+        assertEquals(ApprovalStatus.WAIT_CONFIRM.name(), event.getFromStatus());
+        assertNull("a rejected command never moves the ticket", event.getToStatus());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("EXTERNAL_COMMAND", data.get("via"));
+        assertEquals("approve", data.get("command"));
+        assertEquals("STATUS_MISMATCH", data.get("reason"));
+        assertEquals(ApprovalStatus.WAIT_CONFIRM.name(), data.get("ticketStatus"));
     }
 
     @Test
@@ -250,6 +274,17 @@ public class ExternalCommandTest {
             // ok
         }
         verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+
+        // 10-11 R1: END_STATUS rejection audited with the command name and the status that rejected it
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        assertEquals(ApprovalStatus.FINISHED.name(), event.getFromStatus());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("approve", data.get("command"));
+        assertEquals("END_STATUS", data.get("reason"));
+        assertEquals(ApprovalStatus.FINISHED.name(), data.get("ticketStatus"));
     }
 
     @Test
@@ -265,6 +300,16 @@ public class ExternalCommandTest {
             // ok
         }
         verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+
+        // 10-11 R1: CHANNEL_MISMATCH rejection audited, carrying the actual channel as approType
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("approve", data.get("command"));
+        assertEquals("CHANNEL_MISMATCH", data.get("reason"));
+        assertEquals(ApprovalType.DingTalk.name(), data.get("approType"));
     }
 
     @Test
@@ -291,6 +336,86 @@ public class ExternalCommandTest {
             // ok — guard rejects
         }
         assertFalse("second approve should NOT call handler", testHandler.approvedCalled);
+
+        // 10-11 R4: the duplicate command's rejection is audited too — insert #1 was the
+        // success event (EXTERNAL_APPROVED), insert #2 is the rejection of the replay.
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper, times(2)).insert(eventCaptor.capture());
+        DmDbChangeEventDO rejectedEvent = eventCaptor.getAllValues().get(1);
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), rejectedEvent.getEventType());
+        Map<String, Object> data = JsonUtils.toObj(rejectedEvent.getEventData(), Map.class);
+        assertEquals("approve", data.get("command"));
+        assertEquals("STATUS_MISMATCH", data.get("reason"));
+    }
+
+    @Test
+    public void guardRejection_recordsFlowId_andOmitsApproverComment() {
+        // R1: externalFlowId (若携带) enters the rejected-event payload — a stale-round callback's
+        // flow identity is exactly the forensic value. approver/comment are execution attributions
+        // of an ACCEPTED command — a rejected one records only the audit fields (payload discipline:
+        // no credentials / signature parameters either, by construction of the event builder).
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.FINISHED);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, "alice", "late approval", "stale-flow-789");
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for end-status ticket");
+        } catch (ErrorMessageException ex) {
+            // ok — guard rejects
+        }
+
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertEquals("stale-flow-789", data.get("externalFlowId"));
+        assertFalse(data.containsKey("approver"));
+        assertFalse(data.containsKey("comment"));
+    }
+
+    @Test
+    public void cancelOnEndStatus_recordsRejectedEventWithCancelCommand() {
+        // Command-name mapping for the cancel leg (TERMINATED → cancel) on the guard path
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.CANCELED);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.TERMINATED, meta);
+            fail("Expected ErrorMessageException for end-status ticket");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("cancel", data.get("command"));
+        assertEquals("END_STATUS", data.get("reason"));
+        // zero state side effects (R2)
+        verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+        assertFalse(testHandler.canceledCalled);
+    }
+
+    @Test
+    public void rejectionAuditFailure_neverSwallowsTheGuardThrow() {
+        // A3/R2: the audit write is best-effort — its failure must not replace or suppress the
+        // rejection, and must not add state side effects.
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.FINISHED);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+        when(eventMapper.insert(any(DmDbChangeEventDO.class))).thenThrow(new RuntimeException("audit db down"));
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException even when the audit insert fails");
+        } catch (ErrorMessageException ex) {
+            // ok — the rejection is the contract; audit degradation is log-only
+        }
+        verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+        assertFalse(testHandler.approvedCalled);
     }
 
     // ==================== T13: refreshApprovalStatus refactoring regression ====================

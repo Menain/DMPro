@@ -174,8 +174,8 @@ public class DbChangeOpenApi extends BasicApi {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
 
-        log.info("[DbChangeOpenApi] ticketReject request id={}, uid={}, ticketId={}, approver={}",
-            requestId, uid, fo.getTicketId(), fo.getApprover());
+        log.info("[DbChangeOpenApi] ticketReject request id={}, uid={}, ticketId={}, approver={}, externalFlowId={}",
+            requestId, uid, fo.getTicketId(), fo.getApprover(), fo.getExternalFlowId());
 
         govOpenApiService.rejectTicket(puid, uid, fo);
 
@@ -192,8 +192,8 @@ public class DbChangeOpenApi extends BasicApi {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         String requestId = (String) request.getAttribute(OpenApiSessionManager.OPEN_API_REQUEST_ID);
 
-        log.info("[DbChangeOpenApi] ticketCancel request id={}, uid={}, ticketId={}, approver={}",
-            requestId, uid, fo.getTicketId(), fo.getApprover());
+        log.info("[DbChangeOpenApi] ticketCancel request id={}, uid={}, ticketId={}, approver={}, externalFlowId={}",
+            requestId, uid, fo.getTicketId(), fo.getApprover(), fo.getExternalFlowId());
 
         govOpenApiService.cancelTicket(puid, uid, fo);
 

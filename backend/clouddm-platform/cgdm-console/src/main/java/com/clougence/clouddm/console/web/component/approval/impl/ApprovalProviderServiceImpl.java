@@ -19,8 +19,11 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.clougence.clouddm.api.common.exception.ErrorMessageException;
 import com.clougence.clouddm.console.web.component.approval.ApprovalFlowService;
@@ -82,6 +85,14 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
     private static final Set<ApprovalProvider> DEPRECATED_DIRECT_CHANNELS =
         Set.of(ApprovalProvider.DingTalk, ApprovalProvider.Feishu, ApprovalProvider.Wechat);
 
+    /**
+     * Guard-rejection reasons recorded in EXTERNAL_COMMAND_REJECTED eventData
+     * (10-11 rejected-command-audit): end status / not WAIT_APPROVAL / not the External channel.
+     */
+    private static final String REJECT_REASON_END_STATUS       = "END_STATUS";
+    private static final String REJECT_REASON_STATUS_MISMATCH  = "STATUS_MISMATCH";
+    private static final String REJECT_REASON_CHANNEL_MISMATCH = "CHANNEL_MISMATCH";
+
     @Resource
     private SystemDal                               systemDal;
     @Resource
@@ -94,6 +105,8 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
     private ApprovalStateService                    approvalStateService;
     @Resource
     private DbChangeEventDal                        dbChangeEventDal;
+    @Resource
+    private PlatformTransactionManager            txManager;
 
     private final Map<ApprovalBiz, ApprovalHandler> approvalHandlers;
 
@@ -412,18 +425,24 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
 
         // Guards — only for the command path (meta != null). The callback path
         // (meta == null) already checked isEndStatus/External in refreshApprovalStatus.
+        // Every rejection is audited BEFORE the throw (10-11 rejected-command-audit R1):
+        // late / duplicate / stale-round callbacks leave a durable EXTERNAL_COMMAND_REJECTED
+        // trail; the throw semantics and the zero-state-side-effect contract are unchanged (R2).
         if (meta != null) {
             if (ApprovalStatus.isEndStatus(ticket.getTicketStatus())) {
+                appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_END_STATUS);
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nRdpMsgKeys.GOV_OPEN_COMMAND_INVALID_STATUS.name(),
                     ticketId, ticket.getTicketStatus(), status.name()));
             }
             if (ticket.getTicketStatus() != ApprovalStatus.WAIT_APPROVAL) {
+                appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_STATUS_MISMATCH);
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nRdpMsgKeys.GOV_OPEN_COMMAND_INVALID_STATUS.name(),
                     ticketId, ticket.getTicketStatus(), status.name()));
             }
             if (ticket.getApproType() != ApprovalType.External) {
+                appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_CHANNEL_MISMATCH);
                 throw new ErrorMessageException(DmI18nUtils.getMessage(
                     I18nRdpMsgKeys.GOV_OPEN_COMMAND_CHANNEL_MISMATCH.name(),
                     ticketId, ticket.getApproType()));
@@ -580,6 +599,75 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
         eventDO.setEventData(JsonUtils.toJson(data));
 
         this.dbChangeEventDal.eventMapper().insert(eventDO);
+    }
+
+    /**
+     * Audit trail for a command rejected by the {@link #applyExternalApprovalResult} guards
+     * (10-11 rejected-command-audit R1) — before this, a late / duplicate / stale-round callback
+     * left ZERO durable trace (the throw preceded any event write; only the approve endpoint logged).
+     * <p>
+     * Transaction boundary (R2): the guard is about to throw INSIDE the surrounding REQUIRED tx,
+     * whose rollback would erase a same-tx insert — so the event rides its OWN REQUIRES_NEW
+     * transaction (the DingBridgeOutboundService.inNewTx pattern; programmatic template because a
+     * self-invoked @Transactional method would bypass the proxy). The inner tx touches ONLY
+     * dm_db_change_event — never the dm_approval row this tx holds under selectByIdForUpdate —
+     * so the suspension cannot deadlock, and the insert commits before the throw propagates.
+     * Audit failure degrades to a warn log: it must never swallow the rejection (the throw IS
+     * the contract) nor add state side effects.
+     * <p>
+     * Payload discipline: NO credentials / signature parameters — command name, rejection reason,
+     * the ticket status that rejected it (+approType on channel mismatch), externalFlowId when
+     * carried; caller identity = operator_uid column (same shape as {@link #appendExternalCommandEvent};
+     * ticketId-only like the success events — release-side retrieval goes through
+     * dm_prod_release.approval_id → ticketId).
+     */
+    private void appendRejectedCommandEvent(DmApprovalDO ticket, ApprovalInstanceStatus status,
+                                             ExternalCommandMeta meta, String reason) {
+        try {
+            DmDbChangeEventDO eventDO = new DmDbChangeEventDO();
+            eventDO.setTicketId(ticket.getId());
+            eventDO.setEventType(GovEventType.EXTERNAL_COMMAND_REJECTED.name());
+            eventDO.setFromStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
+            // toStatus stays null — a rejected command NEVER moves the ticket.
+            eventDO.setOperatorUid(meta.getOperatorUid());
+
+            Map<String, Object> data = new HashMap<>();
+            data.put("via", "EXTERNAL_COMMAND");
+            data.put("command", mapToCommandName(status));
+            data.put("reason", reason);
+            if (eventDO.getFromStatus() != null) {
+                data.put("ticketStatus", eventDO.getFromStatus());
+            }
+            if (REJECT_REASON_CHANNEL_MISMATCH.equals(reason) && ticket.getApproType() != null) {
+                data.put("approType", ticket.getApproType().name());
+            }
+            if (StringUtils.isNotBlank(meta.getExternalFlowId())) {
+                data.put("externalFlowId", meta.getExternalFlowId());
+            }
+            eventDO.setEventData(JsonUtils.toJson(data));
+
+            TransactionTemplate template = new TransactionTemplate(txManager);
+            template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            template.execute(txStatus -> this.dbChangeEventDal.eventMapper().insert(eventDO));
+        } catch (Throwable t) {
+            log.warn("ticketId={}: external command rejected (reason={}) but the audit event failed to persist",
+                ticket.getId(), reason, t);
+        }
+    }
+
+    /** Open-command name for EXTERNAL_COMMAND_REJECTED eventData (defensive fallback = status name). */
+    private String mapToCommandName(ApprovalInstanceStatus status) {
+        switch (status) {
+            case COMPLETED:
+                return "approve";
+            case REFUSE:
+                return "reject";
+            case CANCELED:
+            case TERMINATED:
+                return "cancel";
+            default:
+                return status.name().toLowerCase();
+        }
     }
 
     private void failedTicket(DmApprovalDO ticket) {

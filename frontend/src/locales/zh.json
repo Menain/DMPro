@@ -4567,6 +4567,7 @@
   "gov-event-type-EXTERNAL_APPROVED": "外部审批通过",
   "gov-event-type-EXTERNAL_REJECTED": "外部审批拒绝",
   "gov-event-type-EXTERNAL_CANCELED": "外部审批撤销",
+  "gov-event-type-EXTERNAL_COMMAND_REJECTED": "外部命令被拒",
   "gov-release-status-APPROVING": "审批中",
   "gov-release-status-APPROVED": "待确认",
   "gov-release-status-EXECUTING": "执行中",

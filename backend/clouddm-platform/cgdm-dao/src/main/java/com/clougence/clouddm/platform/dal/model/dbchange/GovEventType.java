@@ -65,6 +65,15 @@ public enum GovEventType {
     /** External command: cancel — ticket WAIT_APPROVAL→CANCELED (operator_uid = service account; eventData{via,approver,comment,externalFlowId}). */
     EXTERNAL_CANCELED,
     /**
+     * External command REJECTED by the tri-state guards (10-11 rejected-command-audit) — a
+     * late / duplicate / stale-round approve|reject|cancel hit an end status, a non-WAIT_APPROVAL
+     * status, or a non-External channel: the command throws with ZERO state side effect. Distinct
+     * from EXTERNAL_REJECTED, which records the approver's business decision to reject.
+     * operator_uid = service account; eventData{via,command,reason,ticketStatus[,approType][,externalFlowId]};
+     * written in its own REQUIRES_NEW tx so it survives the guard throw's rollback.
+     */
+    EXTERNAL_COMMAND_REJECTED,
+    /**
      * B6 M1 (R15): a threshold-exceeding change that CANNOT run lock-free was detected at the
      * authoritative submit/resubmit precheck — the ticket proceeds on the direct chain and an
      * IM alert push was triggered (operator_uid = submitter; eventData{scene,tables[],...}).

@@ -4585,6 +4585,7 @@
   "gov-event-type-EXTERNAL_APPROVED": "External Approved",
   "gov-event-type-EXTERNAL_REJECTED": "External Rejected",
   "gov-event-type-EXTERNAL_CANCELED": "External Cancelled",
+  "gov-event-type-EXTERNAL_COMMAND_REJECTED": "External Command Rejected",
   "gov-release-status-APPROVING": "Approving",
   "gov-release-status-APPROVED": "Approved",
   "gov-release-status-EXECUTING": "Executing",

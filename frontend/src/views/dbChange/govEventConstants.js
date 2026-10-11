@@ -11,7 +11,8 @@
  *   CORRECTION, FAIL_NOTIFIED, PROMOTION_CREATED, GATE_DENY, STATUS_SYNC,
  *   GUARD_PASS, GUARD_DENY, AUTO_CONFIRM, DIRECT_DML_SUBMIT, DIRECT_DML_DENY
  * Plus the v2/release-era additions (RELEASE_*, TICKET_RETURNED, TICKET_VIA_RELEASE_DONE, ...)
- * and the open-command-era approval tri-state (EXTERNAL_APPROVED/REJECTED/CANCELED).
+ * and the open-command-era approval tri-state (EXTERNAL_APPROVED/REJECTED/CANCELED) with its
+ * guard-rejection audit twin (EXTERNAL_COMMAND_REJECTED).
  */
 export const GOV_EVENT_TYPE_I18N_KEYS = {
   SUBMIT: 'gov-event-type-SUBMIT',
@@ -50,7 +51,8 @@ export const GOV_EVENT_TYPE_I18N_KEYS = {
   TICKET_VIA_RELEASE_DONE: 'gov-event-type-TICKET_VIA_RELEASE_DONE',
   EXTERNAL_APPROVED: 'gov-event-type-EXTERNAL_APPROVED',
   EXTERNAL_REJECTED: 'gov-event-type-EXTERNAL_REJECTED',
-  EXTERNAL_CANCELED: 'gov-event-type-EXTERNAL_CANCELED'
+  EXTERNAL_CANCELED: 'gov-event-type-EXTERNAL_CANCELED',
+  EXTERNAL_COMMAND_REJECTED: 'gov-event-type-EXTERNAL_COMMAND_REJECTED'
 };
 
 export const GOV_EVENT_ICONS = {
@@ -90,7 +92,8 @@ export const GOV_EVENT_ICONS = {
   TICKET_VIA_RELEASE_DONE: 'ios-checkbox-outline',
   EXTERNAL_APPROVED: 'ios-checkmark-circle-outline',
   EXTERNAL_REJECTED: 'ios-close-circle-outline',
-  EXTERNAL_CANCELED: 'ios-remove-circle-outline'
+  EXTERNAL_CANCELED: 'ios-remove-circle-outline',
+  EXTERNAL_COMMAND_REJECTED: 'ios-warning-outline'
 };
 
 /**
