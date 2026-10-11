@@ -25,20 +25,24 @@ import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
  * production structure, detecting out-of-band drift (e.g. a DBA manually altered
  * the production table after the pre-release execution).
  * <p>
- * Semantics:
+ * Semantics (ADR-011):
  * <ul>
  *   <li><b>Exclusive table</b> (touched by only this stmt in its release group):
  *       full equivalence diff — fingerprint equality ⇔ BLOCK-level structural
  *       equality. BLOCK-level differences → BLOCK. WARN-level only (ENGINE,
- *       comment) → WARN (pass with warning).</li>
- *   <li><b>Shared table</b> (touched by >1 stmt in the group): degraded to WARN
- *       — ordered replay makes the pre-before baseline ambiguous.</li>
- *   <li><b>No snapshot</b>: WARN_SKIP (RELEASE_SCHEMA_SNAPSHOT_MISSING event).</li>
+ *       comment — D6) → PASS + ENGINE_COMMENT_DRIFT note (ruled design degradation).</li>
+ *   <li><b>Shared table</b> (touched by >1 stmt in the group — D5): PASS +
+ *       SHARED_TABLE_BASELINE note — ordered replay makes the pre-before baseline ambiguous.</li>
+ *   <li><b>No snapshot</b> (D2 fork): the WHOLE release has zero snapshot rows (pre-A legacy
+ *       shape) → PASS + SNAPSHOT_MISSING_LEGACY note (one-time documented pass); the release
+ *       has rows but this stmt has none (capture-chain gap on a new release) → UNVERIFIABLE.</li>
  *   <li><b>exists_flag=0</b>: production should not have the table — existence → BLOCK.</li>
  * </ul>
  * <p>
- * Design principle: 宁漏勿误 — any exception or timeout → WARN_SKIP, never BLOCK.
- * Escape hatch: govReleaseSchemaDiffBlock=false → BLOCK degrades to WARN.
+ * Design principle (ADR-011, fail-closed — SUPERSEDES the former 宁漏勿误 fail-open regime):
+ * any exception or timeout (live-schema fetch failure, DS/levels failure) → UNVERIFIABLE
+ * (denial). Break-glass: govReleaseSchemaDiffBlock=false degrades UNVERIFIABLE to the legacy
+ * WARN_SKIP at the single engine exit — confirmed BLOCK drift is NEVER degraded.
  */
 public interface ReleaseSchemaDiffService {
 
@@ -46,7 +50,7 @@ public interface ReleaseSchemaDiffService {
      * Run the schema drift diff for a single release stmt.
      *
      * @param stmt the frozen release statement (prodDsId, prodDbName, sqlContent, id)
-     * @return PASS / BLOCK / WARN_SKIP conclusion; never null, never throws
+     * @return PASS (optionally with Notes) / BLOCK / UNVERIFIABLE conclusion; never null, never throws
      */
     PrecheckConclusion diff(DmProdReleaseStmtDO stmt);
 }

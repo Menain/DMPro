@@ -92,6 +92,7 @@ public class ProdReleaseServiceImplTest {
     private DmDbChangeEventMapper    eventMapper;
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService;
+    private com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService schemaGateOverrideService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -156,6 +157,9 @@ public class ProdReleaseServiceImplTest {
         // Sub-task A: diff service (default pass — no drift)
         releaseSchemaDiffService = mock(com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService.class);
         when(releaseSchemaDiffService.diff(any())).thenReturn(PrecheckConclusion.pass());
+        // ADR-011: governed override consumption (default: nothing consumable → denials stand)
+        schemaGateOverrideService = mock(com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.class);
+        when(schemaGateOverrideService.findAndConsume(anyLong(), anyLong(), anyString(), any())).thenReturn(null);
 
         dbChangeEventDal = mock(DbChangeEventDal.class);
         eventMapper = mock(DmDbChangeEventMapper.class);
@@ -180,6 +184,7 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(service, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
         ReflectionTestUtils.setField(service, "releaseSchemaDiffService", releaseSchemaDiffService);
+        ReflectionTestUtils.setField(service, "schemaGateOverrideService", schemaGateOverrideService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
     }
 
@@ -825,8 +830,14 @@ public class ProdReleaseServiceImplTest {
         verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
     }
 
+    /**
+     * ADR-011 pin flip (was startExecution_precheckWarnSkip_proceedsWithJobAndEvent): the
+     * dispatch gate is now fail-closed — UNVERIFIABLE (the engine's replacement for the former
+     * WARN_SKIP infra-failure outcomes) DENIES with the dedicated event type and the distinct
+     * exec_detail wording; NO job is created.
+     */
     @Test
-    public void startExecution_precheckWarnSkip_proceedsWithJobAndEvent() {
+    public void startExecution_precheckUnverifiable_marksStmtFailedNoJob() {
         long releaseId = 551L;
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
@@ -836,18 +847,166 @@ public class ProdReleaseServiceImplTest {
         when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
         when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
 
-        // Precheck returns WARN_SKIP
+        // Precheck returns UNVERIFIABLE (ADR-011: former WARN_SKIP infra outcomes)
         when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
-            PrecheckConclusion.warnSkip("worker unreachable"));
+            PrecheckConclusion.unverifiable("worker unreachable"));
 
         service.startExecution(releaseId, UID);
 
-        // Verify skipped event written
+        // Stmt FAILED with the UNVERIFIABLE wording (not the legacy "skipped:" text)
+        verify(stmtMapper).updateExecStatus(eq(651L), eq("FAILED"), contains("Cannot verify"));
+        // Dedicated GATE_UNVERIFIABLE event (NOT PRECHECK_FAILED — remediation owners differ)
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && "RELEASE_SCHEMA_PRECHECK_SKIPPED".equals(e.getEventType())
-                && UID.equals(e.getOperatorUid())));
-        // Verify job created (proceeded despite warning)
+            e != null && "RELEASE_SCHEMA_GATE_UNVERIFIABLE".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())
+                && e.getEventData().contains("PRECHECK")));
+        // No job created — fail-closed
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    /**
+     * ADR-011 governed override at the dispatch gate: a consumable grant downgrades the
+     * UNVERIFIABLE denial to a pass — GATE_OVERRIDE event carries the grantor trail
+     * (reason/expiry/operator) and the job IS created.
+     */
+    @Test
+    public void startExecution_precheckUnverifiable_withOverride_consumesAndProceeds() {
+        long releaseId = 553L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(653L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.unverifiable("worker unreachable"));
+
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO();
+        override.setId(88L);
+        override.setReleaseId(releaseId);
+        override.setGateType("PRECHECK");
+        override.setOperatorUid("dba-001");
+        override.setReason("infra window approved by ops");
+        override.setExpireAt(new Date(System.currentTimeMillis() + 3600_000L));
+        when(schemaGateOverrideService.findAndConsume(eq(releaseId), eq(653L), eq("PRECHECK"), any()))
+            .thenReturn(override);
+
+        service.startExecution(releaseId, UID);
+
+        // Override event with reason/operator trail
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_OVERRIDE".equals(e.getEventType())
+                && e.getEventData().contains("dba-001")
+                && e.getEventData().contains("infra window approved by ops")
+                && e.getEventData().contains("UNVERIFIABLE")));
+        // Denial event NOT written, stmt NOT failed, job created (downgraded to pass)
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_UNVERIFIABLE".equals(e.getEventType())));
+        verify(stmtMapper, never()).updateExecStatus(eq(653L), eq("FAILED"), any());
         verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+    }
+
+    /**
+     * ADR-011: the diff gate consumes overrides under its OWN gateType (DIFF) — one grant
+     * releases exactly one gate class; the PRECHECK denial of the same stmt would need a
+     * second grant (strictness per design §3).
+     */
+    @Test
+    public void startExecution_diffUnverifiable_withOverride_consumesDiffGateOnly() {
+        long releaseId = 554L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(654L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        // Precheck passes; diff gate denies
+        when(releaseSchemaDiffService.diff(any())).thenReturn(
+            PrecheckConclusion.unverifiable("live schema fetch failed"));
+
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO();
+        override.setId(89L);
+        override.setReleaseId(releaseId);
+        override.setGateType("DIFF");
+        override.setOperatorUid("dba-002");
+        override.setReason("drift probe window");
+        override.setExpireAt(new Date(System.currentTimeMillis() + 3600_000L));
+        when(schemaGateOverrideService.findAndConsume(eq(releaseId), eq(654L), eq("DIFF"), any()))
+            .thenReturn(override);
+
+        service.startExecution(releaseId, UID);
+
+        // The DIFF gate looked for a DIFF override (gateType separation pinned)
+        verify(schemaGateOverrideService).findAndConsume(eq(releaseId), eq(654L), eq("DIFF"), any());
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_OVERRIDE".equals(e.getEventType())
+                && e.getEventData().contains("DIFF")));
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+    }
+
+    /**
+     * ADR-011 S-face regularization: a PASS carrying uncertain notes proceeds but leaves the
+     * RELEASE_SCHEMA_PRECHECK_UNCERTAIN trail (formerly silent fail-open).
+     */
+    @Test
+    public void startExecution_precheckPassWithNotes_writesUncertainEventAndProceeds() {
+        long releaseId = 555L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(655L, releaseId, "PENDING");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.passWithNotes(List.of(
+                new PrecheckConclusion.Note(PrecheckConclusion.Note.UNKNOWN_STMT_TYPE,
+                    "Unclassified statement at sql#1 — not verified: GRANT SELECT ..."))));
+
+        service.startExecution(releaseId, UID);
+
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_PRECHECK_UNCERTAIN".equals(e.getEventType())
+                && e.getEventData().contains("UNKNOWN_STMT_TYPE")));
+        verify(stmtMapper, never()).updateExecStatus(eq(655L), eq("FAILED"), any());
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+    }
+
+    /** ADR-011: retryReleaseStmt re-runs the same fail-closed gate (three-gate consistency). */
+    @Test
+    public void retryReleaseStmt_unverifiable_marksFailedNoRebuild() {
+        long stmtId = 926L;
+        long releaseId = 927L;
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(stmtId, releaseId, "FAILED");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setPrimaryUid(PUID);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = mock(com.clougence.clouddm.platform.dal.model.datasource.DmDsDO.class);
+        when(prodDs.getInstanceId()).thenReturn("inst-1");
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(prodDs);
+
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.unverifiable("Failed to fetch DS config: timeout"));
+
+        service.retryReleaseStmt(PUID, UID, stmtId);
+
+        verify(stmtMapper).updateExecStatus(eq(stmtId), eq("FAILED"), contains("Cannot verify"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_UNVERIFIABLE".equals(e.getEventType())
+                && UID.equals(e.getOperatorUid())));
+        verify(stmtMapper, never()).updateExecStatus(eq(stmtId), eq("PENDING"), any());
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
     }
 
     @Test

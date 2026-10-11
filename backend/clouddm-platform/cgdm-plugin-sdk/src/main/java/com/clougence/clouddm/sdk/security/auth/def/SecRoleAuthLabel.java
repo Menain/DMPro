@@ -220,6 +220,16 @@ public interface SecRoleAuthLabel {
     @AuthLabel(order = 5, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_DB_PAIR_MANAGE, tag = SecSysRole.DBA_ROLE_NAME)
     String GOV_DB_PAIR_MANAGE              = "GOV_DB_PAIR_MANAGE";
 
+    /**
+     * ADR-011: grant/list/revoke a governed schema-gate override (a denial of the production
+     * release precheck/diff gate downgraded to pass — reason mandatory, expiry ≤ 7 days,
+     * single-use consumption). Actually wired at GovReleaseController overrideGrant/List/Revoke
+     * (@RequestAuth) + releaseDetail.vue myAuth gating — heeding the PROD_PROMOTE
+     * "defined but never enforced" precedent.
+     */
+    @AuthLabel(order = 6, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE, tag = SecSysRole.DBA_ROLE_NAME)
+    String GOV_SCHEMA_GATE_OVERRIDE        = "GOV_SCHEMA_GATE_OVERRIDE";
+
     // ================================ CAT_DM_OPS ==============================================
 
     @AuthLabel(order = 0, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SESSION_READ, tag = { SecSysRole.DBA_ROLE_NAME,

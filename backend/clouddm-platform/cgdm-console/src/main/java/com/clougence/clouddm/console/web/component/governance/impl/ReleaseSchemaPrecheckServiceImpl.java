@@ -58,8 +58,14 @@ import lombok.extern.slf4j.Slf4j;
  * SplitQueryType, extracts table/column/index names via lightweight regex, fetches live
  * production schema via DsSchemaService, and evaluates per-operation preconditions.
  * <p>
- * All exceptions are caught and converted to WARN_SKIP — the service never throws.
- * Design principle: 宁漏勿误.
+ * Fail-closed (ADR-011, supersedes 宁漏勿误): the service never throws; every "cannot prove
+ * safe" outcome (missing input, DS/config/levels failure, split failure, live-schema fetch
+ * failure, engine catch-all — P1~P9) returns UNVERIFIABLE so the gate denies dispatch.
+ * Regex/classification extraction gaps (S1~S5) are UNCERTAIN: PASS + notes (the gate records
+ * a RELEASE_SCHEMA_PRECHECK_UNCERTAIN event). The check LOGIC itself is untouched — only the
+ * disposal of "could not determine" outcomes changed. Break-glass: the registered switch
+ * govReleaseSchemaPrecheckBlock=false degrades UNVERIFIABLE back to legacy WARN_SKIP at the
+ * SINGLE exit point below (confirmed BLOCK violations are never degraded).
  */
 @Slf4j
 @Service
@@ -71,7 +77,14 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     /** Qualified name: one or more identifiers separated by dots. */
     private static final String QIDENT = "(" + IDENT + "(?:\\s*\\.\\s*" + IDENT + ")*)";
 
-    /** System config key for BLOCK/WARN mode switch (escape hatch). Default: BLOCK. */
+    /**
+     * System config key of the fail-closed master switch (ADR-011 M6: registered in the
+     * RootUserConfig @UserConfigDef whitelist — UI + HIGH audit channel, no longer a hidden
+     * direct-DB row). Semantics: true (default, also on null/read failure) = fail-closed —
+     * UNVERIFIABLE denies dispatch. false = platform-level break-glass — UNVERIFIABLE degrades
+     * to legacy WARN_SKIP (old fail-open behavior). Confirmed BLOCK is NEVER degraded by this
+     * switch (the old escape hatch that could downgrade proven violations is removed, ADR-011).
+     */
     private static final String CONFIG_BLOCK_MODE = "govReleaseSchemaPrecheckBlock";
 
     /**
@@ -146,23 +159,27 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
 
     @Override
     public PrecheckConclusion precheck(DmProdReleaseStmtDO stmt) {
+        PrecheckConclusion conclusion;
         if (stmt == null || stmt.getProdDsId() == null || StringUtils.isBlank(stmt.getSqlContent())) {
-            return PrecheckConclusion.warnSkip("stmt missing required fields (prodDsId or sqlContent)");
-        }
-        try {
-            PrecheckConclusion conclusion = doPrecheck(stmt);
-            // Escape hatch: if BLOCK mode is disabled, convert BLOCK to WARN_SKIP
-            if (conclusion.isBlock() && !isBlockMode()) {
-                return PrecheckConclusion.warnSkip(
-                    "Schema precheck violations detected but BLOCK mode is disabled. Violations: "
-                        + conclusion.toDetailText());
+            // P1 — data integrity broken, cannot prove safe (ADR-011: BLOCK-class denial)
+            conclusion = PrecheckConclusion.unverifiable("stmt missing required fields (prodDsId or sqlContent)");
+        } else {
+            try {
+                conclusion = doPrecheck(stmt);
+            } catch (Exception e) {
+                // P8/P9 — engine catch-all + deliberate live-schema-fetch rethrow land here
+                log.warn("[ReleaseSchemaPrecheck] Unexpected error for stmt id={}, prodDsId={}, prodDbName={}",
+                    stmt.getId(), stmt.getProdDsId(), stmt.getProdDbName(), e);
+                conclusion = PrecheckConclusion.unverifiable("Precheck engine error: " + e.getMessage());
             }
-            return conclusion;
-        } catch (Exception e) {
-            log.warn("[ReleaseSchemaPrecheck] Unexpected error for stmt id={}, prodDsId={}, prodDbName={}",
-                stmt.getId(), stmt.getProdDsId(), stmt.getProdDbName(), e);
-            return PrecheckConclusion.warnSkip("Precheck engine error: " + e.getMessage());
         }
+        // Break-glass single-point收口 (ADR-011 M6): switch false → UNVERIFIABLE degrades to the
+        // legacy WARN_SKIP fail-open path. The former "BLOCK → WARN_SKIP" downgrade is REMOVED —
+        // a confirmed violation can no longer be silenced by a global switch.
+        if (conclusion.isUnverifiable() && !isBlockMode()) {
+            return PrecheckConclusion.warnSkip(conclusion.getSkipReason());
+        }
+        return conclusion;
     }
 
     // ==================== core engine ====================
@@ -199,23 +216,23 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     }
 
     private PrecheckConclusion doPrecheck(DmProdReleaseStmtDO stmt) {
-        // 1. Resolve DS identity and config
+        // 1. Resolve DS identity and config (P2/P3/P4 — fail-closed: cannot prove safe → deny)
         DmDsDO dsDO = dsDal.dsMapper().queryDsIdentityById(stmt.getProdDsId());
         if (dsDO == null) {
-            return PrecheckConclusion.warnSkip("Production datasource not found: " + stmt.getProdDsId());
+            return PrecheckConclusion.unverifiable("Production datasource not found: " + stmt.getProdDsId());
         }
 
         DataSourceConfig dsConfig;
         try {
             dsConfig = configService.fetchDsConfigFromExists(stmt.getProdDsId());
         } catch (Exception e) {
-            return PrecheckConclusion.warnSkip("Failed to fetch DS config: " + e.getMessage());
+            return PrecheckConclusion.unverifiable("Failed to fetch DS config: " + e.getMessage());
         }
         if (dsConfig == null) {
-            return PrecheckConclusion.warnSkip("DS config is null for prodDsId: " + stmt.getProdDsId());
+            return PrecheckConclusion.unverifiable("DS config is null for prodDsId: " + stmt.getProdDsId());
         }
 
-        // 2. Build levelsParam (same as createReleaseStmtJob L359-364)
+        // 2. Build levelsParam (same as createReleaseStmtJob L359-364) — P5
         DsLevels dsLevels;
         try {
             List<String> levels = new ArrayList<>();
@@ -224,27 +241,28 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             levels.add(stmt.getProdDbName());
             dsLevels = configService.parseLevels(levels);
         } catch (Exception e) {
-            return PrecheckConclusion.warnSkip("Failed to parse levels: " + e.getMessage());
+            return PrecheckConclusion.unverifiable("Failed to parse levels: " + e.getMessage());
         }
         Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam = dsLevels.levelsParam();
 
-        // 3. Split SQL (same splitter as execution path)
+        // 3. Split SQL (same splitter as execution path) — P6/P7
         List<SplitScript> scripts;
         try (StringReader reader = new StringReader(stmt.getSqlContent());
              Stream<SplitScript> stream = analysisService.analysisSplitStream(
                  dsConfig, reader, Collections.emptyList(), 1, 0)) {
             scripts = stream.toList();
         } catch (Exception e) {
-            return PrecheckConclusion.warnSkip("SQL split failed: " + e.getMessage());
+            return PrecheckConclusion.unverifiable("SQL split failed: " + e.getMessage());
         }
         if (scripts.isEmpty()) {
-            return PrecheckConclusion.warnSkip("SQL split produced no scripts");
+            return PrecheckConclusion.unverifiable("SQL split produced no scripts");
         }
 
         // 4. Evaluate each script
         SchemaDeltaModel delta = new SchemaDeltaModel();
         Map<String, RdbTable> liveCache = new HashMap<>();
         List<SchemaViolation> violations = new ArrayList<>();
+        List<PrecheckConclusion.Note> notes = new ArrayList<>();
 
         for (int i = 0; i < scripts.size(); i++) {
             SplitScript script = scripts.get(i);
@@ -259,41 +277,48 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
 
             switch (kind) {
                 case CREATE_TABLE:
-                    evaluateCreateTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateCreateTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case DROP_TABLE:
-                    evaluateDropTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateDropTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case RENAME_TABLE:
-                    evaluateRenameTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateRenameTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case TRUNCATE:
-                    evaluateTruncate(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateTruncate(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case ALTER_TABLE_MULTI:
-                    evaluateAlterTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateAlterTable(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case CREATE_INDEX:
-                    evaluateCreateIndex(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateCreateIndex(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case DROP_INDEX:
-                    evaluateDropIndexStandalone(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateDropIndexStandalone(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case DML:
-                    evaluateDml(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations);
+                    evaluateDml(sql, sqlIndex, head, delta, liveCache, dsDO, levelsParam, violations, notes);
                     break;
                 case UNKNOWN:
                 default:
-                    // Cannot classify — 宁漏勿误: don't block
+                    // S1 — cannot classify: UNCERTAIN → pass + event (ADR-011 regularization of
+                    // the former silent fail-open; an extraction gap is not a violation, BLOCK
+                    // would误伤 legitimate GRANT/PROCEDURE-style scripts)
                     log.debug("[ReleaseSchemaPrecheck] Unclassified SQL at sql#{}: {}", sqlIndex, head);
+                    notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.UNKNOWN_STMT_TYPE,
+                        "Unclassified statement at sql#" + sqlIndex + " — not verified: " + head));
                     break;
             }
         }
 
-        if (violations.isEmpty()) {
-            return PrecheckConclusion.pass();
+        if (!violations.isEmpty()) {
+            return PrecheckConclusion.block(violations);
         }
-        return PrecheckConclusion.block(violations);
+        if (!notes.isEmpty()) {
+            return PrecheckConclusion.passWithNotes(notes);
+        }
+        return PrecheckConclusion.pass();
     }
 
     // ==================== classification ====================
@@ -349,11 +374,14 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateCreateTable(String sql, int sqlIndex, String head,
                                     SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                     DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                    List<SchemaViolation> violations) {
+                                    List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_CREATE_TABLE.matcher(sql);
         if (!m.find()) {
             log.debug("[ReleaseSchemaPrecheck] CREATE_TABLE regex did not match sql#{}: {}", sqlIndex, head);
-            return; // can't extract table name — 宁漏勿误
+            // S2 — extraction gap ≠ violation: UNCERTAIN → pass + event (ADR-011)
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "CREATE TABLE name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
+            return;
         }
         String tableName = lastComponent(m.group(1));
         boolean ifNotExists = sql.toUpperCase().contains("IF NOT EXISTS");
@@ -374,9 +402,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateDropTable(String sql, int sqlIndex, String head,
                                     SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                     DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                    List<SchemaViolation> violations) {
+                                    List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_DROP_TABLE.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "DROP TABLE name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String tableName = lastComponent(m.group(1));
@@ -397,9 +427,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateRenameTable(String sql, int sqlIndex, String head,
                                      SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                      DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                     List<SchemaViolation> violations) {
+                                     List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_RENAME_TABLE.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "RENAME TABLE name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String oldName = lastComponent(m.group(1));
@@ -421,9 +453,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateTruncate(String sql, int sqlIndex, String head,
                                   SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                   DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                  List<SchemaViolation> violations) {
+                                  List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_TRUNCATE.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "TRUNCATE table name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String tableName = lastComponent(m.group(1));
@@ -437,9 +471,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateCreateIndex(String sql, int sqlIndex, String head,
                                      SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                      DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                     List<SchemaViolation> violations) {
+                                     List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_CREATE_INDEX.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "CREATE INDEX name/table extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String indexName = stripId(m.group(1));
@@ -472,9 +508,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateDropIndexStandalone(String sql, int sqlIndex, String head,
                                              SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                              DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                             List<SchemaViolation> violations) {
+                                             List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_DROP_INDEX.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "DROP INDEX name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String indexName = stripId(m.group(1));
@@ -492,15 +530,17 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             }
             delta.applyDropIndex(tableName, indexName);
         } else {
-            // No ON table clause — can't verify, 宁漏勿误
+            // S3 — no ON table clause, can't verify: UNCERTAIN → pass + event (ADR-011)
             log.debug("[ReleaseSchemaPrecheck] DROP INDEX without ON clause at sql#{}: {}", sqlIndex, head);
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "DROP INDEX without ON clause at sql#" + sqlIndex + " — target table unknown, not verified: " + head));
         }
     }
 
     private void evaluateDml(String sql, int sqlIndex, String head,
                             SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                             DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                            List<SchemaViolation> violations) {
+                            List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         // Try INSERT, UPDATE, DELETE patterns
         String tableName = null;
         Matcher mi = P_INSERT.matcher(sql);
@@ -520,7 +560,10 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             }
         }
         if (tableName == null) {
-            return; // can't extract — 宁漏勿误
+            // S2 — can't extract target table: UNCERTAIN → pass + event (ADR-011)
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "DML target table extraction failed at sql#" + sqlIndex + " — not verified: " + head));
+            return;
         }
         boolean exists = checkTableExists(tableName, delta, liveCache, dsDO, levelsParam);
         if (!exists) {
@@ -534,9 +577,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
     private void evaluateAlterTable(String sql, int sqlIndex, String head,
                                     SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                     DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                    List<SchemaViolation> violations) {
+                                    List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         Matcher m = P_ALTER_TABLE.matcher(sql);
         if (!m.find()) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                "ALTER TABLE name extraction failed at sql#" + sqlIndex + " — not verified: " + head));
             return;
         }
         String tableName = lastComponent(m.group(1));
@@ -552,14 +597,14 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             String trimmed = clause.trim();
             if (trimmed.isEmpty()) continue;
             evaluateAlterSubClause(trimmed, tableName, sqlIndex, head,
-                delta, liveCache, dsDO, levelsParam, violations);
+                delta, liveCache, dsDO, levelsParam, violations, notes);
         }
     }
 
     private void evaluateAlterSubClause(String clause, String tableName, int sqlIndex, String head,
                                        SchemaDeltaModel delta, Map<String, RdbTable> liveCache,
                                        DmDsDO dsDO, Map<com.clougence.schema.umi.struts.UmiTypes, Object> levelsParam,
-                                       List<SchemaViolation> violations) {
+                                       List<SchemaViolation> violations, List<PrecheckConclusion.Note> notes) {
         String upper = clause.toUpperCase();
 
         // RENAME TO <new>
@@ -576,6 +621,9 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
                         "target table to not exist", "exists"));
                 }
                 delta.applyRenameTable(tableName, newName);
+            } else {
+                notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.NAME_EXTRACTION_GAP,
+                    "ALTER RENAME target extraction failed at sql#" + sqlIndex + " — not verified: " + truncate(clause, 80)));
             }
             return;
         }
@@ -710,8 +758,19 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             return;
         }
 
-        // Unclassified sub-clause — 宁漏勿误
+        // S4 — FOREIGN KEY add/drop is excluded from index verification (FK symbols live in
+        // foreignKeys, not indices/uniqueKeys/pk; checking them as indices would falsely BLOCK).
+        // UNCERTAIN → pass + event (ADR-011 regularization of the former silent skip).
+        if ((upper.startsWith("ADD") || upper.startsWith("DROP")) && upper.contains("FOREIGN")) {
+            notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.FOREIGN_KEY_EXCLUDED,
+                "FOREIGN KEY clause at sql#" + sqlIndex + " excluded from verification: " + truncate(clause, 80)));
+            return;
+        }
+
+        // S5 — unclassified sub-clause: UNCERTAIN → pass + event (ADR-011)
         log.debug("[ReleaseSchemaPrecheck] Unclassified ALTER sub-clause: {}", clause);
+        notes.add(new PrecheckConclusion.Note(PrecheckConclusion.Note.UNCLASSIFIED_SUBCLAUSE,
+            "Unclassified ALTER sub-clause at sql#" + sqlIndex + " — not verified: " + truncate(clause, 80)));
     }
 
     // ==================== existence checks (liveSchema ⊕ delta) ====================
@@ -783,10 +842,11 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
             }
         } catch (Exception e) {
             log.warn("[ReleaseSchemaPrecheck] Failed to fetch live schema for table {}: {}", tableName, e.getMessage());
-            // Schema fetch failure is an infrastructure error — propagate so the outer
-            // try-catch in precheck() converts it to WARN_SKIP (fail-open: 宁漏勿误).
+            // P9 — schema fetch failure is an infrastructure error: propagate so the single
+            // exit in precheck() converts it to UNVERIFIABLE (fail-closed, ADR-011: cannot
+            // fetch evidence ⇒ cannot prove safe ⇒ do not dispatch; retry re-runs the gate).
             // Returning null here would cause checkTableExists to report "table missing",
-            // which could falsely BLOCK a legitimate release.
+            // which would falsely mark a legitimate release as a confirmed violation.
             throw new RuntimeException("Failed to fetch live schema for table " + tableName, e);
         }
         liveCache.put(tableName, rdbTable);
@@ -809,12 +869,17 @@ public class ReleaseSchemaPrecheckServiceImpl implements ReleaseSchemaPrecheckSe
         return !NON_COLUMN_KEYWORDS.contains(firstWord); // bareword column name
     }
 
+    /**
+     * Fail-closed master switch (ADR-011 semantics): true = UNVERIFIABLE denies dispatch.
+     * false = platform break-glass — UNVERIFIABLE degrades to legacy WARN_SKIP.
+     * Default and read-failure both stay true (fail-closed on an unreadable switch).
+     */
     private boolean isBlockMode() {
         try {
             Boolean block = systemDal.fetchSystemConf(CONFIG_BLOCK_MODE, Boolean.class);
             return block == null || block;
         } catch (Exception e) {
-            return true; // default BLOCK
+            return true; // default fail-closed
         }
     }
 

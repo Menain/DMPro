@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOverrideMapper">
+
+    <resultMap id="dmGovSchemaGateOverrideDO" type="com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="release_id" property="releaseId"/>
+        <result column="stmt_id" property="stmtId"/>
+        <result column="gate_type" property="gateType"/>
+        <result column="operator_uid" property="operatorUid"/>
+        <result column="reason" property="reason"/>
+        <result column="expire_at" property="expireAt"/>
+        <result column="consumed" property="consumed"/>
+        <result column="consumed_at" property="consumedAt"/>
+        <result column="consumed_detail" property="consumedDetail"/>
+        <result column="revoked" property="revoked"/>
+        <result column="revoked_at" property="revokedAt"/>
+        <result column="revoked_by" property="revokedBy"/>
+    </resultMap>
+
+    <sql id="dmGovSchemaGateOverride">
+        id,
+        gmt_create,
+        gmt_modified,
+        release_id,
+        stmt_id,
+        gate_type,
+        operator_uid,
+        reason,
+        expire_at,
+        consumed,
+        consumed_at,
+        consumed_detail,
+        revoked,
+        revoked_at,
+        revoked_by
+    </sql>
+
+    <select id="findConsumableStmtLevel" resultMap="dmGovSchemaGateOverrideDO">
+        SELECT
+            <include refid="dmGovSchemaGateOverride"/>
+        FROM
+            dm_gov_schema_gate_override
+        WHERE
+            release_id = #{releaseId}
+            AND stmt_id = #{stmtId}
+            AND gate_type = #{gateType}
+            AND consumed = 0
+            AND revoked = 0
+            <![CDATA[ AND expire_at > #{now} ]]>
+        ORDER BY
+            id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findConsumableReleaseLevel" resultMap="dmGovSchemaGateOverrideDO">
+        SELECT
+            <include refid="dmGovSchemaGateOverride"/>
+        FROM
+            dm_gov_schema_gate_override
+        WHERE
+            release_id = #{releaseId}
+            AND stmt_id IS NULL
+            AND gate_type = #{gateType}
+            AND consumed = 0
+            AND revoked = 0
+            <![CDATA[ AND expire_at > #{now} ]]>
+        ORDER BY
+            id DESC
+        LIMIT 1
+    </select>
+
+    <update id="consumeCas">
+        UPDATE
+            dm_gov_schema_gate_override
+        SET
+            consumed = 1,
+            consumed_at = #{consumedAt},
+            consumed_detail = #{consumedDetail}
+        WHERE
+            id = #{id}
+            AND consumed = 0
+            AND revoked = 0
+    </update>
+
+    <update id="revokeCas">
+        UPDATE
+            dm_gov_schema_gate_override
+        SET
+            revoked = 1,
+            revoked_at = #{revokedAt},
+            revoked_by = #{revokedBy}
+        WHERE
+            id = #{id}
+            AND consumed = 0
+            AND revoked = 0
+    </update>
+
+    <select id="queryByReleaseId" resultMap="dmGovSchemaGateOverrideDO">
+        SELECT
+            <include refid="dmGovSchemaGateOverride"/>
+        FROM
+            dm_gov_schema_gate_override
+        WHERE
+            release_id = #{releaseId}
+        ORDER BY
+            id DESC
+    </select>
+
+</mapper>

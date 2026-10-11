@@ -49,12 +49,17 @@ import com.clougence.schema.umi.struts.Value;
 import com.clougence.schema.umi.struts.constraint.NonNull;
 
 /**
- * Unit tests for ReleaseSchemaDiffServiceImpl (sub-task A, layer 4: diff matrix).
+ * Unit tests for ReleaseSchemaDiffServiceImpl (sub-task A, layer 4: diff matrix;
+ * pins flipped per ADR-011 fail-closed reversal).
  * <p>
  * Covers: exclusive table {equal→PASS, type change→BLOCK, nullability→BLOCK,
- * only ENGINE/comment→WARN}, exists_flag=0 {prod absent→PASS, prod present→BLOCK},
- * shared→WARN degradation, no snapshot→SNAPSHOT_MISSING, exception→WARN_SKIP,
- * switch false→BLOCK becomes WARN.
+ * only ENGINE/comment→PASS+ENGINE_COMMENT_DRIFT note (D6 ruled degradation)},
+ * exists_flag=0 {prod absent→PASS, prod present→BLOCK},
+ * shared→PASS+SHARED_TABLE_BASELINE note (D5), no snapshot D2 fork {legacy release→
+ * PASS+SNAPSHOT_MISSING_LEGACY note, new release→UNVERIFIABLE}, exception→UNVERIFIABLE (D7),
+ * missing fields/DS/levels→UNVERIFIABLE (D1/D3/D4),
+ * switch false: confirmed BLOCK stays BLOCK (D8 downgrade removed) while UNVERIFIABLE
+ * degrades to legacy WARN_SKIP (break-glass single point).
  */
 public class ReleaseSchemaDiffServiceImplTest {
 
@@ -184,23 +189,70 @@ public class ReleaseSchemaDiffServiceImplTest {
             .thenReturn(null);
     }
 
-    // ==================== no snapshot → WARN_SKIP ====================
+    // ==================== D2 fork: no snapshot (ADR-011 pin flip) ====================
 
+    /** Legacy pre-A release (whole release has zero snapshot rows) → one-time documented pass. */
     @Test
-    public void diff_noSnapshot_warnSkip() {
+    public void diff_noSnapshot_legacyRelease_passesWithNote() {
         when(schemaMapper.queryByReleaseStmtId(anyLong())).thenReturn(new ArrayList<>());
+        when(schemaMapper.queryByReleaseId(anyLong())).thenReturn(new ArrayList<>());
         PrecheckConclusion c = service.diff(buildStmt());
-        assertTrue(c.isWarnSkip());
-        assertNotNull(c.getSkipReason());
-        assertTrue(c.getSkipReason().contains("No pre-before schema snapshot"));
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.SNAPSHOT_MISSING_LEGACY));
     }
 
     @Test
-    public void diff_nullSnapshots_warnSkip() {
+    public void diff_nullSnapshots_legacyRelease_passesWithNote() {
         when(schemaMapper.queryByReleaseStmtId(anyLong())).thenReturn(null);
+        when(schemaMapper.queryByReleaseId(anyLong())).thenReturn(null);
         PrecheckConclusion c = service.diff(buildStmt());
-        assertTrue(c.isWarnSkip());
-        assertTrue(c.getSkipReason().contains("No pre-before schema snapshot"));
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.SNAPSHOT_MISSING_LEGACY));
+    }
+
+    /** New release whose capture chain broke (release HAS rows, this stmt has none) → deny. */
+    @Test
+    public void diff_noSnapshot_newRelease_unverifiable() {
+        when(schemaMapper.queryByReleaseStmtId(anyLong())).thenReturn(new ArrayList<>());
+        // Another stmt of the same release DID get snapshots → not the legacy shape
+        when(schemaMapper.queryByReleaseId(anyLong()))
+            .thenReturn(List.of(buildSnapshot("other_table", true, false)));
+        PrecheckConclusion c = service.diff(buildStmt());
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.isDeny());
+        assertTrue(c.getSkipReason().contains("capture-chain gap"));
+        assertTrue(c.toDetailText().contains("Cannot verify"));
+    }
+
+    // ==================== D1/D3/D4: fail-closed denials ====================
+
+    @Test
+    public void diff_stmtMissingFields_unverifiable() {
+        DmProdReleaseStmtDO stmt = new DmProdReleaseStmtDO();
+        stmt.setId(1L); // prodDsId missing
+        PrecheckConclusion c = service.diff(stmt);
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.getSkipReason().contains("missing required fields"));
+    }
+
+    @Test
+    public void diff_dsNotFound_unverifiable() {
+        when(schemaMapper.queryByReleaseStmtId(anyLong()))
+            .thenReturn(List.of(buildSnapshot("users", true, false)));
+        when(dsMapper.queryDsIdentityById(PROD_DS_ID)).thenReturn(null);
+        PrecheckConclusion c = service.diff(buildStmt());
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.getSkipReason().contains("datasource not found"));
+    }
+
+    @Test
+    public void diff_levelsParseFails_unverifiable() {
+        when(schemaMapper.queryByReleaseStmtId(anyLong()))
+            .thenReturn(List.of(buildSnapshot("users", true, false)));
+        when(configService.parseLevels(anyList())).thenThrow(new RuntimeException("bad levels"));
+        PrecheckConclusion c = service.diff(buildStmt());
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.getSkipReason().contains("parse levels"));
     }
 
     // ==================== exclusive table: equal → PASS ====================
@@ -263,10 +315,10 @@ public class ReleaseSchemaDiffServiceImplTest {
         assertTrue(c.isBlock());
     }
 
-    // ==================== exclusive: only WARN-level change → WARN ====================
+    // ==================== D6: only WARN-level change → PASS + note (ADR-011) ====================
 
     @Test
-    public void diff_exclusiveOnlyEngineChange_warn() {
+    public void diff_exclusiveOnlyEngineChange_passesWithNote() {
         RdbTable snapTable = buildTable("users");
         String fp = SchemaFingerprintUtils.fingerprint(snapTable);
         String json = SchemaFingerprintUtils.canonicalJson(snapTable);
@@ -279,8 +331,10 @@ public class ReleaseSchemaDiffServiceImplTest {
         mockLiveTable("users", liveTable);
 
         PrecheckConclusion c = service.diff(buildStmt());
-        // fingerprint (BLOCK-only) matches, but canonical JSON differs (ENGINE changed)
-        assertTrue(c.isWarnSkip());
+        // fingerprint (BLOCK-only) matches, canonical JSON differs (ENGINE changed) —
+        // D6 is a ruled design degradation (fingerprint excludes ENGINE/comments): PASS + note
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.ENGINE_COMMENT_DRIFT));
     }
 
     // ==================== exists_flag=0 semantics ====================
@@ -318,10 +372,10 @@ public class ReleaseSchemaDiffServiceImplTest {
         assertTrue(c.isBlock());
     }
 
-    // ==================== shared table → WARN degradation ====================
+    // ==================== D5: shared table → PASS + note (ADR-011) ====================
 
     @Test
-    public void diff_sharedTable_warn() {
+    public void diff_sharedTable_passesWithNote() {
         RdbTable snapTable = buildTable("users");
         String fp = SchemaFingerprintUtils.fingerprint(snapTable);
         String json = SchemaFingerprintUtils.canonicalJson(snapTable);
@@ -329,14 +383,16 @@ public class ReleaseSchemaDiffServiceImplTest {
         mockSnapshotList(buildSnapshot("users", true, true, fp, json));
         // Don't mock live table — should not be fetched for shared tables
         PrecheckConclusion c = service.diff(buildStmt());
-        assertTrue(c.isWarnSkip());
+        // D5 is a ruled design degradation (ordered replay makes the baseline ambiguous): PASS + note
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.SHARED_TABLE_BASELINE));
         verifyNoInteractions(dsSchemaService);
     }
 
-    // ==================== exception → WARN_SKIP (fail-open) ====================
+    // ==================== D7: exception → UNVERIFIABLE (fail-closed, ADR-011 pin flip) ====================
 
     @Test
-    public void diff_exception_warnSkip() {
+    public void diff_exception_unverifiable() {
         RdbTable snapTable = buildTable("users");
         String fp = SchemaFingerprintUtils.fingerprint(snapTable);
         String json = SchemaFingerprintUtils.canonicalJson(snapTable);
@@ -346,13 +402,15 @@ public class ReleaseSchemaDiffServiceImplTest {
             .thenThrow(new RuntimeException("worker unreachable"));
 
         PrecheckConclusion c = service.diff(buildStmt());
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.isDeny());
     }
 
-    // ==================== switch false → BLOCK becomes WARN ====================
+    // ==================== switch semantics (ADR-011 M6 redefinition) ====================
 
+    /** D8 downgrade REMOVED: a confirmed drift BLOCKs regardless of the switch. */
     @Test
-    public void diff_switchFalse_blockBecomesWarn() {
+    public void diff_switchFalse_confirmedDriftStillBlocks() {
         when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class))).thenReturn(false);
 
         RdbTable snapTable = buildTable("users");
@@ -371,7 +429,24 @@ public class ReleaseSchemaDiffServiceImplTest {
         mockLiveTable("users", liveTable);
 
         PrecheckConclusion c = service.diff(buildStmt());
-        // BLOCK → degraded to WARN when switch is off
+        assertTrue(c.isBlock());
+    }
+
+    /** Break-glass: switch false degrades UNVERIFIABLE back to the legacy WARN_SKIP pass path. */
+    @Test
+    public void diff_switchFalse_unverifiableBecomesWarnSkip() {
+        when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class))).thenReturn(false);
+
+        RdbTable snapTable = buildTable("users");
+        String fp = SchemaFingerprintUtils.fingerprint(snapTable);
+        String json = SchemaFingerprintUtils.canonicalJson(snapTable);
+
+        mockSnapshotList(buildSnapshot("users", true, false, fp, json));
+        when(dsSchemaService.realTimeFetchSelectObject(any(), any(), anyString()))
+            .thenThrow(new RuntimeException("worker unreachable"));
+
+        PrecheckConclusion c = service.diff(buildStmt());
         assertTrue(c.isWarnSkip());
+        assertFalse(c.isDeny());
     }
 }

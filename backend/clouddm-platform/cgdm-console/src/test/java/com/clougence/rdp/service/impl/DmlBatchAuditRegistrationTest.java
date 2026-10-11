@@ -184,6 +184,115 @@ public class DmlBatchAuditRegistrationTest {
         }
     }
 
+    // ==================== ADR-011: schema-gate override registration pins ====================
+    // (task 10-11-schema-gate-fail-closed — same registration-discipline character as the B7
+    // pins above: enum + whitelist + label三语 + ACTUAL WIRING, heeding the PROD_PROMOTE
+    // "defined but never enforced" precedent)
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void adr011_auditTypes_enumAndInitWhitelistRegistered() {
+        assertEquals(AuditType.GOV_SCHEMA_GATE_OVERRIDE_GRANT, AuditType.valueOf("GOV_SCHEMA_GATE_OVERRIDE_GRANT"));
+        assertEquals(AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE, AuditType.valueOf("GOV_SCHEMA_GATE_OVERRIDE_REVOKE"));
+
+        RdpOpAuditServiceImpl impl = new RdpOpAuditServiceImpl();
+        ReflectionTestUtils.invokeMethod(impl, "init");
+        List<AuditType> auditTypes = (List<AuditType>) ReflectionTestUtils.getField(impl, "auditTypes");
+        assertNotNull(auditTypes);
+        assertTrue("GOV_SCHEMA_GATE_OVERRIDE_GRANT must be whitelisted (missing = audit page silently drops it)",
+            auditTypes.contains(AuditType.GOV_SCHEMA_GATE_OVERRIDE_GRANT));
+        assertTrue("GOV_SCHEMA_GATE_OVERRIDE_REVOKE must be whitelisted",
+            auditTypes.contains(AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE));
+    }
+
+    @Test
+    public void adr011_auditTypeLabels_threeLanguagesInSync() throws Exception {
+        for (String file : new String[] { "rdp/static/i18n/label.properties",
+                                          "rdp/static/i18n/label_en_US.properties",
+                                          "rdp/static/i18n/label_zh_CN.properties" }) {
+            Properties props = loadUtf8(file);
+            assertNotNull(file + " must carry GOV_SCHEMA_GATE_OVERRIDE_GRANT",
+                props.getProperty("GOV_SCHEMA_GATE_OVERRIDE_GRANT"));
+            assertNotNull(file + " must carry GOV_SCHEMA_GATE_OVERRIDE_REVOKE",
+                props.getProperty("GOV_SCHEMA_GATE_OVERRIDE_REVOKE"));
+        }
+    }
+
+    @Test
+    public void adr011_roleAuthLabel_dbaTaggedAndThreeFileI18n() throws Exception {
+        // Constant + @AuthLabel registration face: tag=DBA → the GlobalAuthInfoSpi reflection
+        // scan puts it into the DBA system-role default set automatically (0 extra code);
+        // an EMPTY tag would silently grant it to ALL inner roles — pinned non-empty here.
+        assertEquals("GOV_SCHEMA_GATE_OVERRIDE",
+            com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.GOV_SCHEMA_GATE_OVERRIDE);
+        java.lang.reflect.Field field = com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.class
+            .getField("GOV_SCHEMA_GATE_OVERRIDE");
+        com.clougence.clouddm.sdk.security.auth.AuthLabel ann = field
+            .getAnnotation(com.clougence.clouddm.sdk.security.auth.AuthLabel.class);
+        assertNotNull("GOV_SCHEMA_GATE_OVERRIDE must carry @AuthLabel", ann);
+        assertEquals(com.clougence.clouddm.sdk.security.auth.def.SecAuthCategory.CAT_RDP_DB_CHANGE_GOVERN,
+            ann.category());
+        assertEquals(com.clougence.clouddm.sdk.security.auth.def.SecAuthI18nKeys.AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE,
+            ann.i18nKey());
+        assertTrue("tag must be non-empty and carry DBA (empty tag = granted to ALL inner roles)",
+            List.of(ann.tag()).contains(com.clougence.clouddm.sdk.security.auth.def.SecSysRole.DBA_ROLE_NAME));
+
+        // 三文件同步硬约定 (missing entry = startup log.error noise + raw key shown in UI)
+        for (String file : new String[] { "META-INF/rdp/sdk/i18n/rdp-auth-label.properties",
+                                          "META-INF/rdp/sdk/i18n/rdp-auth-label_zh_CN.properties",
+                                          "META-INF/rdp/sdk/i18n/rdp-auth-label_en_US.properties" }) {
+            Properties props = loadUtf8(file);
+            String value = props.getProperty("AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE");
+            assertNotNull(file + " must carry AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE", value);
+            assertFalseBlank(value, file + " AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE");
+        }
+    }
+
+    @Test
+    public void adr011_overrideEndpoints_actuallyWiredWithLabel() throws Exception {
+        // A5 接线 pin: ALL THREE override endpoints carry @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE)
+        // (RefRoleSet default strategy) — a grant without the label 406s in JwtManager.testAuth
+        // for sub-accounts (primary/maintainer short-circuit is the platform-wide convention).
+        for (String name : new String[] { "overrideGrant", "overrideList", "overrideRevoke" }) {
+            java.lang.reflect.Method method = findControllerMethod(name);
+            com.clougence.clouddm.console.web.global.jwtsession.RequestAuth auth = method
+                .getAnnotation(com.clougence.clouddm.console.web.global.jwtsession.RequestAuth.class);
+            assertNotNull(name + " must carry @RequestAuth", auth);
+            assertTrue(name + " must enforce GOV_SCHEMA_GATE_OVERRIDE",
+                List.of(auth.value()).contains(
+                    com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.GOV_SCHEMA_GATE_OVERRIDE));
+        }
+    }
+
+    @Test
+    public void adr011_failClosedSwitches_registeredInRootUserConfig() throws Exception {
+        // M6/A6 pin: both formerly-hidden switches are @UserConfigDef-registered (whitelist
+        // admission for upsertUserConfigs → UI + UPDATE_SYSTEM_CONFIG HIGH audit channel),
+        // default true = fail-closed, BOOLEAN web op.
+        assertSwitchDef("govReleaseSchemaPrecheckBlock");
+        assertSwitchDef("govReleaseSchemaDiffBlock");
+    }
+
+    private static void assertSwitchDef(String fieldName) throws Exception {
+        java.lang.reflect.Field field = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
+            .getDeclaredField(fieldName);
+        com.clougence.clouddm.console.web.component.config.UserConfigDef def = field
+            .getAnnotation(com.clougence.clouddm.console.web.component.config.UserConfigDef.class);
+        assertNotNull(fieldName + " must be registered via @UserConfigDef", def);
+        assertEquals(fieldName, def.name());
+        assertEquals("fail-closed default must stay true", "true", def.defaultValue());
+    }
+
+    private static java.lang.reflect.Method findControllerMethod(String name) {
+        for (java.lang.reflect.Method m : com.clougence.rdp.controller.GovReleaseController.class
+            .getDeclaredMethods()) {
+            if (m.getName().equals(name)) {
+                return m;
+            }
+        }
+        throw new AssertionError("GovReleaseController." + name + " endpoint missing");
+    }
+
     private static void assertFalseBlank(String value, String what) {
         assertTrue(what + " must not be blank", value != null && !value.trim().isEmpty());
     }

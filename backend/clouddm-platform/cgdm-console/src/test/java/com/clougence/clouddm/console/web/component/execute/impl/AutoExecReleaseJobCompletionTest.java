@@ -70,6 +70,7 @@ public class AutoExecReleaseJobCompletionTest {
     private ProdReleaseStateMachine  releaseStateMachine;
     private ApprovalStateService     approvalStateService;
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
+    private com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService schemaGateOverrideService;
 
     private static final String UID = "uid-operator";
 
@@ -104,6 +105,9 @@ public class AutoExecReleaseJobCompletionTest {
         com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService
             = mock(com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService.class);
         when(releaseSchemaDiffService.diff(any())).thenReturn(PrecheckConclusion.pass());
+        // ADR-011: governed override consumption (default: nothing consumable → denials stand)
+        schemaGateOverrideService = mock(com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.class);
+        when(schemaGateOverrideService.findAndConsume(anyLong(), anyLong(), anyString(), any())).thenReturn(null);
 
         TicketDbStmtDal ticketDbStmtDal = mock(TicketDbStmtDal.class);
         com.clougence.clouddm.platform.dal.mapper.govticket.DmTicketDbStmtMapper ticketStmtMapper
@@ -117,6 +121,7 @@ public class AutoExecReleaseJobCompletionTest {
         ReflectionTestUtils.setField(autoExecService, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(autoExecService, "releaseSchemaPrecheckService", releaseSchemaPrecheckService);
         ReflectionTestUtils.setField(autoExecService, "releaseSchemaDiffService", releaseSchemaDiffService);
+        ReflectionTestUtils.setField(autoExecService, "schemaGateOverrideService", schemaGateOverrideService);
         ReflectionTestUtils.setField(autoExecService, "execDal", execDal);
         ReflectionTestUtils.setField(autoExecService, "ticketDbStmtDal", ticketDbStmtDal);
     }
@@ -676,8 +681,15 @@ public class AutoExecReleaseJobCompletionTest {
         // The BLOCK return before reaching it is verified by the PARTIAL_FAILED transit.
     }
 
+    /**
+     * ADR-011 pin flip (was chainedPrecheckWarnSkip_writesEvent): the chain-advance gate is now
+     * fail-closed — an UNVERIFIABLE conclusion (the engine's replacement for the former
+     * WARN_SKIP infra-failure outcomes) DENIES: next stmt FAILED + dedicated
+     * RELEASE_SCHEMA_GATE_UNVERIFIABLE event ("unverifiable" ≠ "violation") + chain stopped +
+     * release PARTIAL_FAILED immediately (gate-point semantics preserved).
+     */
     @Test
-    public void handleReleaseJobCompletion_chainedPrecheckWarnSkip_writesEvent() {
+    public void handleReleaseJobCompletion_chainedPrecheckUnverifiable_marksFailedStopsChain() {
         long releaseId = 1021L;
         long stmtId = 2022L;
         long nextId = 2023L;
@@ -701,22 +713,90 @@ public class AutoExecReleaseJobCompletionTest {
         DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
         when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
 
-        // Precheck returns WARN_SKIP — but createReleaseStmtJob requires heavy deps.
-        // We can't fully test the proceed path without mocking dsDal/configService/analysisService.
-        // Instead, verify the WARN_SKIP event is written before the createReleaseStmtJob call.
-        // createReleaseStmtJob will throw (null deps) — the event is already written by then.
+        // Precheck returns UNVERIFIABLE (ADR-011: former WARN_SKIP infra outcomes)
         when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
-            PrecheckConclusion.warnSkip("worker unreachable"));
+            PrecheckConclusion.unverifiable("worker unreachable"));
+
+        // After denial marks next FAILED, all terminal: stmt SUCCESS + next FAILED
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        DmProdReleaseStmtDO failedNext = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "FAILED");
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt, failedNext));
+
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-4021");
+        when(approvalMapper.queryById(4021L)).thenReturn(approval);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        // Denial: FAILED with the UNVERIFIABLE detail wording (not the legacy "skipped:" text)
+        verify(stmtMapper).updateExecStatus(eq(nextId), eq("FAILED"), contains("Cannot verify"));
+        // Dedicated UNVERIFIABLE event (NOT PRECHECK_FAILED — remediation owners differ)
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_UNVERIFIABLE".equals(e.getEventType())
+                && e.getEventData() != null && e.getEventData().contains("PRECHECK")));
+        // Chain stopped → release PARTIAL_FAILED immediately
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+    }
+
+    /**
+     * ADR-011 chain-advance override consumption: a consumable grant downgrades the denial to a
+     * pass — GATE_OVERRIDE event (grantor trail in eventData) and the chain proceeds to job
+     * creation (which throws here on unmocked heavy deps — the event is already written by then,
+     * mirroring the pre-flip warnSkip test technique).
+     */
+    @Test
+    public void handleReleaseJobCompletion_chainedUnverifiable_withOverride_proceeds() {
+        long releaseId = 1022L;
+        long stmtId = 2024L;
+        long nextId = 2025L;
+        long jobId = 3022L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
+
+        when(releaseSchemaPrecheckService.precheck(any())).thenReturn(
+            PrecheckConclusion.unverifiable("worker unreachable"));
+
+        // Consumable override exists for the PRECHECK gate
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO();
+        override.setId(77L);
+        override.setReleaseId(releaseId);
+        override.setGateType("PRECHECK");
+        override.setOperatorUid("dba-001");
+        override.setReason("infra window approved by ops");
+        override.setExpireAt(new java.util.Date(System.currentTimeMillis() + 3600_000L));
+        when(schemaGateOverrideService.findAndConsume(eq(releaseId), eq(nextId), eq("PRECHECK"), any()))
+            .thenReturn(override);
 
         try {
             autoExecService.handleReleaseJobCompletion(jobId, true, null);
         } catch (Exception e) {
-            // Expected: createReleaseStmtJob will fail due to unmocked deps
+            // Expected: createReleaseStmtJob fails on unmocked heavy deps AFTER the gate passed
         }
 
-        // Verify WARN_SKIP event was written (before createReleaseStmtJob failed)
+        // Override event with the grantor trail; denial event NOT written; stmt NOT failed
         verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
-            e != null && "RELEASE_SCHEMA_PRECHECK_SKIPPED".equals(e.getEventType())));
+            e != null && "RELEASE_SCHEMA_GATE_OVERRIDE".equals(e.getEventType())
+                && e.getEventData() != null && e.getEventData().contains("dba-001")
+                && e.getEventData().contains("infra window approved by ops")));
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_SCHEMA_GATE_UNVERIFIABLE".equals(e.getEventType())));
+        verify(stmtMapper, never()).updateExecStatus(eq(nextId), eq("FAILED"), any());
     }
 
     // ==================== helpers ====================

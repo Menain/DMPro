@@ -15,6 +15,8 @@
  */
 package com.clougence.rdp.controller;
 
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.GOV_SCHEMA_GATE_OVERRIDE;
+
 import java.util.List;
 
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.clougence.clouddm.api.common.rpc.ResWebData;
 import com.clougence.clouddm.api.common.rpc.ResWebDataUtils;
+import com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService;
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseCreateFO;
@@ -34,10 +37,18 @@ import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmi
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseRetryStmtFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideGrantFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideListFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideRevokeFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
+import com.clougence.clouddm.console.web.model.vo.prodrelease.SchemaGateOverrideVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
+import com.clougence.clouddm.platform.dal.model.ResourceType;
+import com.clougence.clouddm.platform.dal.model.monitor.AuditType;
+import com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel;
+import com.clougence.rdp.service.RdpOpAuditService;
 
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
@@ -46,7 +57,9 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * Production release controller — create (RefAnyOnes), list/detail (RefAnyOnes + tenant filter),
- * retryStmt/returnStmt (RefPrimaryOrMaintainer — processing side only).
+ * retryStmt/returnStmt (RefPrimaryOrMaintainer — processing side only), override grant/list/revoke
+ * (GOV_SCHEMA_GATE_OVERRIDE — ADR-011 governed schema-gate override, actually wired here +
+ * releaseDetail.vue myAuth gating, heeding the PROD_PROMOTE "defined but never enforced" precedent).
  */
 @RestController
 @RequestMapping(value = DmControllerUrlPrefix.CONSOLE_PREFIX)
@@ -55,6 +68,10 @@ public class GovReleaseController {
 
     @Resource
     private ProdReleaseService prodReleaseService;
+    @Resource
+    private SchemaGateOverrideService schemaGateOverrideService;
+    @Resource
+    private RdpOpAuditService rdpOpAuditService;
 
     @RequestAuth(strategy = RequestAuth.AuthStrategy.RefAnyOnes)
     @RequestMapping(value = "/govrelease/create", method = RequestMethod.POST)
@@ -128,6 +145,45 @@ public class GovReleaseController {
         String uid = (String) request.getAttribute(RdpUserService.UID);
         boolean isMaintainer = Boolean.TRUE.equals(request.getAttribute(RdpUserService.IS_MAINTAINER));
         prodReleaseService.cancelRelease(puid, uid, isMaintainer, fo.getReleaseId());
+        return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== ADR-011 governed schema-gate override ====================
+    // Dedicated label (GOV_SCHEMA_GATE_OVERRIDE, tag=DBA) on ALL THREE endpoints — the
+    // "define but never wire" PROD_PROMOTE precedent is explicitly heeded. Tenant check
+    // (puid == release.primaryUid) lives in the service; grant/revoke additionally carry a
+    // SecurityLevel.HIGH operation audit (new AuditTypes). Hash drift is NOT overridable —
+    // the override covers exactly the PRECHECK/DIFF schema gate classes.
+
+    @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE)
+    @RequestMapping(value = "/govrelease/overrideGrant", method = RequestMethod.POST)
+    public ResWebData<?> overrideGrant(@Valid @RequestBody SchemaGateOverrideGrantFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        long overrideId = schemaGateOverrideService.grant(puid, uid, fo);
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            fo.getReleaseId(), fo, SecurityLevel.HIGH, AuditType.GOV_SCHEMA_GATE_OVERRIDE_GRANT,
+            ResourceType.PURE_URL, "release:" + fo.getReleaseId());
+        return ResWebDataUtils.buildSuccess(overrideId);
+    }
+
+    @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE)
+    @RequestMapping(value = "/govrelease/overrideList", method = RequestMethod.POST)
+    public ResWebData<?> overrideList(@Valid @RequestBody SchemaGateOverrideListFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        List<SchemaGateOverrideVO> data = schemaGateOverrideService.list(puid, fo.getReleaseId());
+        return ResWebDataUtils.buildSuccess(data);
+    }
+
+    @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE)
+    @RequestMapping(value = "/govrelease/overrideRevoke", method = RequestMethod.POST)
+    public ResWebData<?> overrideRevoke(@Valid @RequestBody SchemaGateOverrideRevokeFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        schemaGateOverrideService.revoke(puid, uid, fo.getId());
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            fo.getId(), fo, SecurityLevel.HIGH, AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE,
+            ResourceType.PURE_URL, "override:" + fo.getId());
         return ResWebDataUtils.buildSuccess();
     }
 }

@@ -131,7 +131,19 @@ public enum AuditType {
      * identical to DML_BATCH_EXECUTE. Written even when the alert push is disabled / has no
      * messenger (alertPushed=false — 留痕与告警解耦).
      */
-    DML_BATCH_REJECT;
+    DML_BATCH_REJECT,
+    //******* SCHEMA GATE OVERRIDE (ADR-011, task 10-11-schema-gate-fail-closed) *******
+    /**
+     * Grant of a governed schema-gate override (dm_gov_schema_gate_override row): a permissioned
+     * DBA (GOV_SCHEMA_GATE_OVERRIDE label) authorizes one future gate denial of ONE gate class
+     * (PRECHECK|DIFF) to be downgraded to pass — reason mandatory, expiry ≤ 7 days, single-use
+     * consumption. HIGH; resId = releaseId; obj = {releaseId, stmtId, gateType, reason, expireAt}.
+     * Registration: enum + RdpOpAuditServiceImpl init whitelist + explicit resourceName via the
+     * 10-arg overload (releaseNo — no ResourceType table of its own, getResourceName bypassed).
+     */
+    GOV_SCHEMA_GATE_OVERRIDE_GRANT,
+    /** Revocation of an unconsumed override grant — same trail shape as the GRANT row. */
+    GOV_SCHEMA_GATE_OVERRIDE_REVOKE;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

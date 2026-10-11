@@ -53,8 +53,10 @@ import com.clougence.schema.umi.struts.Value;
 
 /**
  * Unit tests for the schema precondition precheck engine.
- * Covers: classification, rule matrix, delta inference, degradation/WARN_SKIP,
- * and the BLOCK/WARN mode switch.
+ * Covers: classification, rule matrix, delta inference, degradation (ADR-011 fail-closed:
+ * P1~P9 → UNVERIFIABLE), S-face regularization (S1~S5 → PASS + uncertain note), and the
+ * redefined break-glass switch (false: UNVERIFIABLE → legacy WARN_SKIP; confirmed BLOCK
+ * never degraded — the P10 escape hatch is removed).
  * <p>
  * Pure Mockito + ReflectionTestUtils — no Spring context.
  */
@@ -245,15 +247,24 @@ public class ReleaseSchemaPrecheckServiceImplTest {
         assertTrue(c.isPass());
     }
 
+    /**
+     * ADR-011 S1 pin flip (was classify_unknown_warnsSkip — misleadingly named, it asserted
+     * PASS): unclassifiable statements still pass (an extraction gap is not a violation) but
+     * are no longer SILENT — the conclusion carries an UNKNOWN_STMT_TYPE note so the gate
+     * records a RELEASE_SCHEMA_PRECHECK_UNCERTAIN event.
+     */
     @Test
-    public void classify_unknown_warnsSkip() {
+    public void classify_unknown_passes_with_uncertain_note() {
         String sql = "GRANT SELECT ON t1 TO user1;";
         // Will produce UNKNOWN type → no violation, but also no issue → PASS
         mockSplit(sql, sql);
 
         PrecheckConclusion c = service.precheck(buildStmt(sql));
-        // UNKNOWN → no evaluation → PASS (no violations, not a warn-skip)
+        // UNKNOWN → no evaluation → PASS + uncertain note (S1 regularization)
         assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.UNKNOWN_STMT_TYPE));
+        // eventData carries the note trail for the gate event
+        assertTrue(c.toEventData(1L).contains("UNKNOWN_STMT_TYPE"));
     }
 
     // ==================== §8.2 Rule matrix tests ====================
@@ -739,83 +750,141 @@ public class ReleaseSchemaPrecheckServiceImplTest {
         assertTrue("ADD FOREIGN KEY must not BLOCK (garbled extraction risk)", c.isPass());
     }
 
-    // ==================== §8.4 Degradation tests ====================
+    // ==================== S-face regularization (ADR-011: silent fail-open → PASS + note) ====================
+
+    /** S3 — DROP INDEX without ON clause: target table unknown → pass + extraction-gap note. */
+    @Test
+    public void sFace_dropIndexWithoutOnClause_passesWithNote() {
+        String sql = "DROP INDEX idx1;";
+        mockSplit(sql, sql);
+
+        PrecheckConclusion c = service.precheck(buildStmt(sql));
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.NAME_EXTRACTION_GAP));
+    }
+
+    /** S4 — FOREIGN KEY clauses are excluded from index verification, now with a trail. */
+    @Test
+    public void sFace_addForeignKey_passesWithNote() {
+        String sql = "ALTER TABLE t1 ADD FOREIGN KEY (c1) REFERENCES p2 (id);";
+        mockSplit(sql, sql);
+        mockTableSchema("t1", buildTable("t1", "id", "c1"));
+
+        PrecheckConclusion c = service.precheck(buildStmt(sql));
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.FOREIGN_KEY_EXCLUDED));
+    }
+
+    /** S5 — unclassified ALTER sub-clause (e.g. DROP PARTITION): pass + note. */
+    @Test
+    public void sFace_unclassifiedAlterSubClause_passesWithNote() {
+        String sql = "ALTER TABLE t1 DROP PARTITION p0;";
+        mockSplit(sql, sql);
+        mockTableSchema("t1", buildTable("t1", "id"));
+
+        PrecheckConclusion c = service.precheck(buildStmt(sql));
+        assertTrue(c.isPass());
+        assertTrue(c.hasNote(PrecheckConclusion.Note.UNCLASSIFIED_SUBCLAUSE));
+    }
+
+    /** A clean verifiable script carries NO notes (the uncertain event stays exceptional). */
+    @Test
+    public void sFace_fullyVerifiedScript_noNotes() {
+        String sql = "CREATE TABLE t1 (id int);";
+        mockSplit(sql, sql);
+        mockTableNotFound("t1");
+
+        PrecheckConclusion c = service.precheck(buildStmt(sql));
+        assertTrue(c.isPass());
+        assertTrue(c.getNotes().isEmpty());
+    }
+
+    // ==================== §8.4 Degradation tests (ADR-011 pin flip: fail-closed) ====================
+    // P1~P9 "cannot prove safe" outcomes now return UNVERIFIABLE (deny) instead of WARN_SKIP.
 
     @Test
-    public void degradation_splitFails_warnsSkip() {
+    public void degradation_splitFails_unverifiable() {
+        // P6 — the execution-identical splitter failed: execution behavior unpredictable
         when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
             .thenThrow(new RuntimeException("split engine error"));
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
+        assertTrue(c.isDeny());
         assertTrue(c.getSkipReason().contains("split"));
+        assertTrue(c.toDetailText().contains("Cannot verify"));
     }
 
     @Test
-    public void degradation_schemaFetchFails_warnsSkip() {
+    public void degradation_schemaFetchFails_unverifiable() {
+        // P9 — live schema unfetchable: cannot fetch evidence ⇒ cannot prove safe
         String sql = "CREATE TABLE t1 (id int);";
         mockSplit(sql, sql);
         when(dsSchemaService.realTimeFetchSelectObject(any(), any(), anyString()))
             .thenThrow(new RuntimeException("RSocket timeout"));
 
         PrecheckConclusion c = service.precheck(buildStmt(sql));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
         assertTrue(c.getSkipReason().contains("Failed to fetch live schema"));
     }
 
     @Test
-    public void degradation_dsConfigFails_warnsSkip() {
+    public void degradation_dsConfigFails_unverifiable() {
+        // P3 — retryable-class transient: lands as FAILED, recovers through the retry gate
         when(configService.fetchDsConfigFromExists(PROD_DS_ID))
             .thenThrow(new RuntimeException("config error"));
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
         assertTrue(c.getSkipReason().contains("DS config"));
     }
 
     @Test
-    public void degradation_dsIdentityNull_warnsSkip() {
+    public void degradation_dsIdentityNull_unverifiable() {
+        // P2 — execution target absent
         when(dsMapper.queryDsIdentityById(PROD_DS_ID)).thenReturn(null);
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
         assertTrue(c.getSkipReason().contains("datasource"));
     }
 
     @Test
-    public void degradation_nullStmt_warnsSkip() {
+    public void degradation_nullStmt_unverifiable() {
+        // P1 — data integrity broken
         PrecheckConclusion c = service.precheck(null);
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
     }
 
     @Test
-    public void degradation_emptySql_warnsSkip() {
+    public void degradation_emptySql_unverifiable() {
         PrecheckConclusion c = service.precheck(buildStmt(""));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
     }
 
     @Test
-    public void degradation_splitEmpty_warnsSkip() {
+    public void degradation_splitEmpty_unverifiable() {
+        // P7 — zero scripts from the execution-identical splitter: "what will execute" unknown
         when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
             .thenAnswer(inv -> Stream.empty());
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
         assertTrue(c.getSkipReason().contains("no scripts"));
     }
 
     @Test
     public void degradation_neverThrows() {
-        // Even with NPE in mock setup, service should catch and return WARN_SKIP
+        // P8 — engine catch-all: still never throws, but the conclusion is now the denial
         when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
             .thenThrow(new NullPointerException("unexpected"));
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
-        assertTrue(c.isWarnSkip());
+        assertTrue(c.isUnverifiable());
         // No exception thrown
     }
 
-    // ==================== BLOCK/WARN mode switch tests ====================
+    // ==================== switch tests (ADR-011 M6 semantics redefinition) ====================
 
     @Test
     public void switch_blockMode_violationBlocks() {
@@ -827,8 +896,12 @@ public class ReleaseSchemaPrecheckServiceImplTest {
         assertTrue(c.isBlock());
     }
 
+    /**
+     * ADR-011 pin flip (was switch_warnMode_violationBecomesWarnSkip): the P10 escape hatch is
+     * REMOVED — a CONFIRMED violation can no longer be silenced by the global switch.
+     */
     @Test
-    public void switch_warnMode_violationBecomesWarnSkip() {
+    public void switch_breakGlass_confirmedViolationStillBlocks() {
         when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class))).thenReturn(false);
 
         String sql = "CREATE TABLE t1 (id int);";
@@ -836,8 +909,21 @@ public class ReleaseSchemaPrecheckServiceImplTest {
         mockTableSchema("t1", buildTable("t1", "id"));
 
         PrecheckConclusion c = service.precheck(buildStmt(sql));
+        assertTrue(c.isBlock());
+    }
+
+    /** Break-glass semantics: switch false degrades UNVERIFIABLE back to legacy WARN_SKIP. */
+    @Test
+    public void switch_breakGlass_unverifiableBecomesWarnSkip() {
+        when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class))).thenReturn(false);
+
+        when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
+            .thenThrow(new RuntimeException("split engine error"));
+
+        PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
         assertTrue(c.isWarnSkip());
-        assertTrue(c.getSkipReason().contains("BLOCK mode is disabled"));
+        assertFalse(c.isDeny());
+        assertTrue(c.getSkipReason().contains("split"));
     }
 
     @Test
@@ -850,6 +936,19 @@ public class ReleaseSchemaPrecheckServiceImplTest {
 
         PrecheckConclusion c = service.precheck(buildStmt(sql));
         assertTrue(c.isBlock());
+    }
+
+    /** Unreadable switch fails CLOSED — UNVERIFIABLE stays a denial. */
+    @Test
+    public void switch_readFailure_defaultsToFailClosed() {
+        when(systemDal.fetchSystemConf(anyString(), eq(Boolean.class)))
+            .thenThrow(new RuntimeException("conf store down"));
+
+        when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
+            .thenThrow(new RuntimeException("split engine error"));
+
+        PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
+        assertTrue(c.isUnverifiable());
     }
 
     // ==================== Identifier handling tests ====================
@@ -901,14 +1000,18 @@ public class ReleaseSchemaPrecheckServiceImplTest {
     }
 
     @Test
-    public void eventData_warnSkip_containsReason() {
+    public void eventData_unverifiable_containsReason() {
         when(analysisService.analysisSplitStream(any(), any(), any(), anyInt(), anyInt()))
             .thenThrow(new RuntimeException("split error"));
 
         PrecheckConclusion c = service.precheck(buildStmt("CREATE TABLE t1 (id int);"));
         String eventData = c.toEventData(42L);
-        assertTrue(eventData.contains("WARN_SKIP"));
+        assertTrue(eventData.contains("UNVERIFIABLE"));
         assertTrue(eventData.contains("42"));
+        // violations key name preserved (ADR-011 M1 — consumers render the whole eventData)
+        assertTrue(eventData.contains("violations"));
+        // gateType annotation overload
+        assertTrue(c.toEventData(42L, "PRECHECK").contains("PRECHECK"));
     }
 
     @Test

@@ -47,6 +47,28 @@ public enum GovEventType {
     RELEASE_SCHEMA_DRIFT,
     RELEASE_SCHEMA_DRIFT_WARN,
     RELEASE_SCHEMA_SNAPSHOT_MISSING,
+    /**
+     * ADR-011 (fail-closed): a schema gate DENIED dispatch because safety could NOT be proven
+     * (infrastructure failure, missing snapshot on a new release, parse/split failure — the
+     * UNVERIFIABLE conclusion). Distinct from RELEASE_SCHEMA_PRECHECK_FAILED / RELEASE_SCHEMA_DRIFT
+     * which record CONFIRMED violations — remediation owners differ (platform fixes infra + retry
+     * vs. author fixes SQL). eventData{stmtId,gateType,result:UNVERIFIABLE,reason,violations}.
+     */
+    RELEASE_SCHEMA_GATE_UNVERIFIABLE,
+    /**
+     * ADR-011 (governed override): a gate denial was downgraded to pass by consuming a
+     * dm_gov_schema_gate_override grant (single-use CAS consumption). operator_uid = the gate
+     * runner (SYSTEM on chain advance); the GRANTOR trail lives in eventData.
+     * eventData{stmtId,gateType,overrideId,reason,expireAt,operator,checkResult}.
+     */
+    RELEASE_SCHEMA_GATE_OVERRIDE,
+    /**
+     * ADR-011 (S1~S5 regularization): the precheck PASSED but individual scripts/clauses could
+     * not be fully verified (unclassifiable statement, regex extraction gap, FOREIGN KEY
+     * exclusion, unclassified ALTER sub-clause) — the formerly SILENT fail-open surface now
+     * leaves a trail. eventData{stmtId,gateType,result:PASS,notes[{code,message}]}.
+     */
+    RELEASE_SCHEMA_PRECHECK_UNCERTAIN,
     RELEASE_DONE,
     /** Layer 1: ticket returned to REVISION for SQL editing (operator_uid = real user). */
     TICKET_RETURNED,

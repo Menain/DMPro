@@ -384,6 +384,24 @@ public class RootUserConfig {
     private Boolean       dingBridgeOutboundEnable;
 
     /**
+     * Schema gate fail-closed master switches (ADR-011 M6, task 10-11-schema-gate-fail-closed):
+     * registration brings the two formerly HIDDEN global switches (root-owned dm_sys_user_conf
+     * rows editable only by direct DB writes — no UI, no audit) into the @UserConfigDef
+     * whitelist, so they gain the existing upsertUserConfigs channel (UI + UPDATE_SYSTEM_CONFIG
+     * HIGH audit). Keys/names unchanged — the engine read points (fetchSystemConf) are untouched.
+     * Semantics REDEFINED: true (default; null/read failure also fail closed) = fail-closed —
+     * an UNVERIFIABLE gate conclusion denies dispatch. false = platform-level break-glass —
+     * UNVERIFIABLE degrades to the legacy WARN_SKIP pass-with-event behavior. Confirmed
+     * BLOCK violations are NEVER degraded by these switches (the old escape hatch that could
+     * silence proven violations is removed). Per-release precision is the override table's job
+     * (dm_gov_schema_gate_override + GOV_SCHEMA_GATE_OVERRIDE label).
+     */
+    @UserConfigDef(name = "govReleaseSchemaPrecheckBlock", defaultValue = "true", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_GOV_SCHEMA_PRECHECK_FAIL_CLOSED, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       govReleaseSchemaPrecheckBlock;
+    @UserConfigDef(name = "govReleaseSchemaDiffBlock", defaultValue = "true", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_GOV_SCHEMA_DIFF_FAIL_CLOSED, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       govReleaseSchemaDiffBlock;
+
+    /**
      * Tencent Cloud (DBbrain)
      */
 

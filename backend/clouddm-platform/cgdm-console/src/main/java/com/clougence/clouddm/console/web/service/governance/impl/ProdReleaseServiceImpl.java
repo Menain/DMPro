@@ -131,6 +131,9 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     @Resource
     private ReleaseSchemaDiffService releaseSchemaDiffService;
+    // ADR-011: governed override consumption at the schema gates (single-use CAS)
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService schemaGateOverrideService;
     // @Lazy: GovReturnNotifyService injects ImSenderService; defensive proxy to avoid
     //   any cycle through the governance/approval component layer.
     @org.springframework.context.annotation.Lazy
@@ -389,32 +392,21 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 continue;
             }
 
-            // Gate: schema precondition check (design §6 — mirrors hash-drift behavior)
+            // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless a
+            // governed override is consumed; hash drift above stays NOT overridable)
             PrecheckConclusion precheckResult = releaseSchemaPrecheckService.precheck(first);
-            if (precheckResult.isBlock()) {
-                prodReleaseDal.stmtMapper().updateExecStatus(first.getId(), EXEC_STATUS_FAILED,
-                    precheckResult.toDetailText());
-                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
-                    null, null, uid, precheckResult.toEventData(first.getId()));
+            if (!passSchemaGate(releaseId, first, uid,
+                com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK,
+                precheckResult)) {
                 continue;
-            }
-            if (precheckResult.isWarnSkip()) {
-                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
-                    null, null, uid, precheckResult.toEventData(first.getId()));
             }
 
             // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
             PrecheckConclusion diffResult = releaseSchemaDiffService.diff(first);
-            if (diffResult.isBlock()) {
-                prodReleaseDal.stmtMapper().updateExecStatus(first.getId(), EXEC_STATUS_FAILED,
-                    diffResult.toDetailText());
-                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_DRIFT,
-                    null, null, uid, diffResult.toEventData(first.getId()));
+            if (!passSchemaGate(releaseId, first, uid,
+                com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_DIFF,
+                diffResult)) {
                 continue;
-            }
-            if (diffResult.isWarnSkip()) {
-                appendReleaseEvent(releaseId, diffWarnEventType(diffResult),
-                    null, null, uid, diffResult.toEventData(first.getId()));
             }
 
             // Create job for this stmt
@@ -526,32 +518,22 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             return;
         }
 
-        // Gate: schema precondition check (design §6)
+        // Gate: schema precondition check (design §6; ADR-011 fail-closed — a retry re-runs the
+        // gate unconditionally, so legacy PARTIAL_FAILED releases meet the new rules: deliberate
+        // friction, recovery = fix infrastructure + retry once, or a governed override)
         PrecheckConclusion precheckResult = releaseSchemaPrecheckService.precheck(stmt);
-        if (precheckResult.isBlock()) {
-            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
-                precheckResult.toDetailText());
-            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
-                null, null, uid, precheckResult.toEventData(stmt.getId()));
+        if (!passSchemaGate(stmt.getReleaseId(), stmt, uid,
+            com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK,
+            precheckResult)) {
             return;
-        }
-        if (precheckResult.isWarnSkip()) {
-            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
-                null, null, uid, precheckResult.toEventData(stmt.getId()));
         }
 
         // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
         PrecheckConclusion diffResult = releaseSchemaDiffService.diff(stmt);
-        if (diffResult.isBlock()) {
-            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
-                diffResult.toDetailText());
-            appendReleaseEvent(stmt.getReleaseId(), GovEventType.RELEASE_SCHEMA_DRIFT,
-                null, null, uid, diffResult.toEventData(stmt.getId()));
+        if (!passSchemaGate(stmt.getReleaseId(), stmt, uid,
+            com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_DIFF,
+            diffResult)) {
             return;
-        }
-        if (diffResult.isWarnSkip()) {
-            appendReleaseEvent(stmt.getReleaseId(), diffWarnEventType(diffResult),
-                null, null, uid, diffResult.toEventData(stmt.getId()));
         }
 
         // Reset stmt to PENDING
@@ -1637,6 +1619,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     /**
      * Distinguish SNAPSHOT_MISSING (no pre-before snapshot) from DRIFT_WARN
      * (shared table or WARN-level-only drift) based on the WARN_SKIP reason.
+     * Dead-code defense path only — no WARN_SKIP producer remains since ADR-011.
      */
     private static GovEventType diffWarnEventType(PrecheckConclusion conclusion) {
         String reason = conclusion.getSkipReason();
@@ -1644,6 +1627,96 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             return GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
         }
         return GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    /**
+     * ADR-011 unified schema-gate disposal for the console-side gate points (startExecution /
+     * retryReleaseStmt). The per-gate-point semantics (stop-DB-chain vs single-stmt return) stay
+     * with the callers; this helper owns deny / governed-override-consumption / event selection:
+     * <ul>
+     * <li>deny (BLOCK or UNVERIFIABLE): look for a consumable override (unexpired, unconsumed,
+     *     unrevoked — stmt-level before release-level). Found → single-use CAS consumption +
+     *     RELEASE_SCHEMA_GATE_OVERRIDE event (reason/expiry/grantor in eventData) + pass.
+     *     Not found → stmt FAILED + event: confirmed violations keep their existing types
+     *     (PRECHECK_FAILED / DRIFT), UNVERIFIABLE gets the dedicated GATE_UNVERIFIABLE type
+     *     ("unverifiable" ≠ "violation" — remediation owners differ).</li>
+     * <li>PASS with notes (S1~S5 uncertain / D2 legacy / D5 / D6): WARN-class event, then pass.</li>
+     * <li>WARN_SKIP: dead-code defense (no producer since ADR-011) — legacy event, then pass.</li>
+     * </ul>
+     * Hash drift never routes through here (integrity failure — NOT overridable, prd red line).
+     *
+     * @return true → dispatch proceeds; false → stmt marked FAILED and the denial event recorded.
+     */
+    private boolean passSchemaGate(long releaseId, DmProdReleaseStmtDO stmt, String uid,
+                                   String gateType, PrecheckConclusion result) {
+        if (result.isDeny()) {
+            com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override
+                = schemaGateOverrideService.findAndConsume(releaseId, stmt.getId(), gateType,
+                    buildGateConsumeDetail(gateType, stmt, result));
+            if (override != null) {
+                appendReleaseEvent(releaseId, GovEventType.RELEASE_SCHEMA_GATE_OVERRIDE,
+                    null, null, uid, gateOverrideEventData(override, gateType, result, stmt.getId()));
+                return true;
+            }
+            prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
+                result.toDetailText());
+            GovEventType denyEvent;
+            if (result.isBlock()) {
+                denyEvent = com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)
+                    ? GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED : GovEventType.RELEASE_SCHEMA_DRIFT;
+            } else {
+                denyEvent = GovEventType.RELEASE_SCHEMA_GATE_UNVERIFIABLE;
+            }
+            appendReleaseEvent(releaseId, denyEvent, null, null, uid,
+                result.toEventData(stmt.getId(), gateType));
+            return false;
+        }
+        if (!result.getNotes().isEmpty()) {
+            appendReleaseEvent(releaseId, gateNoteEventType(gateType, result),
+                null, null, uid, result.toEventData(stmt.getId(), gateType));
+        } else if (result.isWarnSkip()) {
+            appendReleaseEvent(releaseId,
+                com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)
+                    ? GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED : diffWarnEventType(result),
+                null, null, uid, result.toEventData(stmt.getId(), gateType));
+        }
+        return true;
+    }
+
+    /**
+     * PASS-note → WARN-class event mapping (ADR-011 M7): precheck S-face → PRECHECK_UNCERTAIN;
+     * diff D2-legacy → SNAPSHOT_MISSING (existing type, one-time documented pass); diff D5/D6 →
+     * DRIFT_WARN with the note codes as the reason subdivision (no enum explosion).
+     */
+    private static GovEventType gateNoteEventType(String gateType, PrecheckConclusion result) {
+        if (com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)) {
+            return GovEventType.RELEASE_SCHEMA_PRECHECK_UNCERTAIN;
+        }
+        if (result.hasNote(PrecheckConclusion.Note.SNAPSHOT_MISSING_LEGACY)) {
+            return GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
+        }
+        return GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    private static String buildGateConsumeDetail(String gateType, DmProdReleaseStmtDO stmt, PrecheckConclusion result) {
+        String reason = result.isBlock() ? result.toDetailText() : result.getSkipReason();
+        String detail = "gate=" + gateType + " stmt=" + stmt.getId() + " result=" + result.getType()
+            + (reason == null ? "" : " reason=" + reason);
+        return detail.length() > 512 ? detail.substring(0, 512) : detail;
+    }
+
+    private static String gateOverrideEventData(
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override,
+        String gateType, PrecheckConclusion result, long stmtId) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("stmtId", stmtId);
+        data.put("gateType", gateType);
+        data.put("overrideId", override.getId());
+        data.put("reason", override.getReason());
+        data.put("expireAt", override.getExpireAt());
+        data.put("operator", override.getOperatorUid());
+        data.put("checkResult", result.getType().name());
+        return JsonUtils.toJson(data);
     }
 
     private void appendReleaseEvent(long releaseId, GovEventType type, String fromStatus, String toStatus, String operatorUid, String eventData) {

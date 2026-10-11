@@ -32,7 +32,7 @@
 
 | 项 | 当前行为/风险 | 目标行为 |
 |---|---|---|
-| Schema 预检与漂移 | 预检或 diff 出现 `WARN_SKIP` 时记事件后仍可派发；缺快照、不可解析或基础设施异常可能无法证明生产前置条件 | 生产默认阻断无法证明安全的情况。只有显式、受权限控制、限时且有理由的 override 才可继续；记录审批人、原因、检查项和证据 |
+| Schema 预检与漂移 | 预检或 diff 出现 `WARN_SKIP` 时记事件后仍可派发；缺快照、不可解析或基础设施异常可能无法证明生产前置条件（**C4 完成态注记 2026-10-11**：fail-closed 反转已按 ADR-011 由任务 `10-11-schema-gate-fail-closed` 落地——「无法证明安全」9 类默认拒绝派发（语句 FAILED + `RELEASE_SCHEMA_GATE_UNVERIFIABLE` 事件，与确认违规事件区分）；受治理 override 上线（专用权限 `GOV_SCHEMA_GATE_OVERRIDE` + 理由必填 + 有效期 ≤7 天 + 一次性 CAS 消费 + 事件/HIGH 审计双 trail）；D5/D6 正当放行改独立事件语义、S1~S5 静默面收编 PASS+UNCERTAIN 事件、D2 缺快照新单拒绝/存量单一次性放行分叉；两个隐藏全局开关注册进 RootUserConfig 白名单（UI+审计通道），语义收窄为「UNVERIFIABLE 迁移期 break-glass」，已确认违规不再可被开关降级；hash 漂移不可 override。契约详见 governance-contracts.md「Release schema gate fail-closed + governed override」条目；真实发布单撞闸/override 实操留项目末尾统一联调） | 生产默认阻断无法证明安全的情况。只有显式、受权限控制、限时且有理由的 override 才可继续；记录审批人、原因、检查项和证据 |
 | 钉钉审批轮次 | 外部命令回调可携带 `externalFlowId`，当前服务需要核验其与本次活动审批实例/轮次严格一致；仅检查工单处于待审批不足以排除旧回调 | 强制绑定 release、approval round、active flow id；旧轮次、缺失 ID、重复/乱序事件均幂等拒绝并审计 |
 | PROD 执行计划 | PRE 可形成分段执行计划；发布端需核实生产是否复用冻结的路由计划，避免生产侧退回直发单条 SQL，导致大表 DDL 绕过 GHOST/DML_BATCH 路由 | Revision/manifest/目标库/执行器/参数全部冻结；发布前复核后按计划逐段执行。能力不支持时阻断或显式审批风险，不静默降级 |
 | DML 分批语义 | 分批不是无锁，也不是原子事务；停止或失败可能保留已完成批次，PG 影响行数估算目前存在已知降级（**C3 完成态注记 2026-10-11**：「估算未知伪装为 0」已由任务 `10-11-pg-estimation-unknown` 修复——方案 b：估算不可得时 `expected_affected_rows` 落 NULL、工单详情风险区显示「行数不可估算」、分批公告区分表规模口径；风险评级行为不变，「未知→更严格策略」属 Phase 2） | 用户确认文案、恢复入口和风险等级准确；PG 的零估算不得伪装为零影响或低风险 |
@@ -45,7 +45,7 @@
 
 | 项 | 核验判定 | 补充（好于/差于本章描述之处） |
 |---|---|---|
-| Schema 预检与漂移 | **属实** | 「宁漏勿误」是明文设计原则（`PrecheckConclusion` 注释原文）；不可分类 SQL 静默放行且不记事件；WARN 事件只写不读（无告警/门禁消费）；全局配置可将已确认 BLOCK 降级放行且降级无个案审计 |
+| Schema 预检与漂移 | **属实** | 「宁漏勿误」是明文设计原则（`PrecheckConclusion` 注释原文）；不可分类 SQL 静默放行且不记事件；WARN 事件只写不读（无告警/门禁消费）；全局配置可将已确认 BLOCK 降级放行且降级无个案审计。**该差距已于 2026-10-11 由 C4 按 ADR-011 反转（任务 `10-11-schema-gate-fail-closed`）**：默认 fail-closed + 受治理 override + 两开关改明（RootUserConfig 注册）；原注释已标 superseded，确认 BLOCK 不再可被开关降级；存量摩擦面（retry 重跑新闸）为 ADR-011 Decision 5 有意设计，联调时记录实际拦截样本 |
 | 钉钉审批轮次 | **属实** | 桥接 6 笔提交仅覆盖出站侧；入站 externalFlowId 全链路零比对，旧 flowId 打到新 ticketId 会被接受且反写 appro_identity；被拒命令零审计落库（守卫 throw 先于审计写入）；**签名校验已达标**（五参 HmacSHA1+时间戳新鲜度+body SHA-256，fail-closed，强于本文底线） |
 | PROD 执行计划 | **属实** | 代码注释自证过渡态（release-chain ghost/batch routing 属 B6/B7 的 M5 里程碑）；`DmProdReleaseStmtDO` 无 plan/route 字段；hash 门禁本身 fail-closed 但只锁文本，对路由降级无感知；双链不一致：同一生产 DML 走工单链享受 DML_BATCH 分批、走发布链退回单条直发 |
 | DML 分批语义 | **部分属实** | 分批非原子已实现且已诚实披露（前端三点明示「平台不提供自动回滚」，有检查点/UNRESOLVED/人工裁决链——好于预期）；但审批 PRE_INIT 路径将 PG 的 null 估算汇总为 0 并据此评 LOW（差于预期，且合同文档 governance-contracts.md:235 钉死该降级）；RiskLevel 枚举无 UNKNOWN。**该差距已于 2026-10-11 由 C3 修复（任务 `10-11-pg-estimation-unknown`，方案 b 用户裁决）**：PRE_INIT 汇总改 null 透传（NULL 入库，不再伪装 0），合同钉死条款同步修订；方案 b 下枚举不加 UNKNOWN、评级行为逐字节不变，未知态由伴生 rowsEstimated 标志与前端「行数不可估算」标注表达 |

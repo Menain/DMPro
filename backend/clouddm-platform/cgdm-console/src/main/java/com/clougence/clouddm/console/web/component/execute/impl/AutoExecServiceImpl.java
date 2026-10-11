@@ -157,6 +157,9 @@ public class AutoExecServiceImpl implements AutoExecService {
     private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService;
+    // ADR-011: governed override consumption at the chain-advance schema gates (single-use CAS)
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService schemaGateOverrideService;
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
@@ -573,40 +576,25 @@ public class AutoExecServiceImpl implements AutoExecService {
                     return;
                 }
 
-                // Gate: schema precondition check (design §6 — mirrors chain hash-drift behavior)
+                // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless
+                // a governed override is consumed; hash drift above stays NOT overridable)
                 com.clougence.clouddm.console.web.component.governance.PrecheckConclusion precheckResult
                     = this.releaseSchemaPrecheckService.precheck(next);
-                if (precheckResult.isBlock()) {
-                    this.prodReleaseDal.stmtMapper().updateExecStatus(next.getId(), "FAILED",
-                        precheckResult.toDetailText());
-                    appendReleaseEvent(release.getId(),
-                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED,
-                        null, "FAILED", null, precheckResult.toEventData(next.getId()));
+                if (!passChainSchemaGate(release, next,
+                    com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK,
+                    precheckResult)) {
                     aggregateReleaseCompletion(release, false);
                     return;
-                }
-                if (precheckResult.isWarnSkip()) {
-                    appendReleaseEvent(release.getId(),
-                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED,
-                        null, null, null, precheckResult.toEventData(next.getId()));
                 }
 
                 // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
                 com.clougence.clouddm.console.web.component.governance.PrecheckConclusion diffResult
                     = this.releaseSchemaDiffService.diff(next);
-                if (diffResult.isBlock()) {
-                    this.prodReleaseDal.stmtMapper().updateExecStatus(next.getId(), "FAILED",
-                        diffResult.toDetailText());
-                    appendReleaseEvent(release.getId(),
-                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_DRIFT,
-                        null, "FAILED", null, diffResult.toEventData(next.getId()));
+                if (!passChainSchemaGate(release, next,
+                    com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_DIFF,
+                    diffResult)) {
                     aggregateReleaseCompletion(release, false);
                     return;
-                }
-                if (diffResult.isWarnSkip()) {
-                    appendReleaseEvent(release.getId(),
-                        diffWarnEventType(diffResult),
-                        null, null, null, diffResult.toEventData(next.getId()));
                 }
 
                 String nextJobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
@@ -808,6 +796,7 @@ public class AutoExecServiceImpl implements AutoExecService {
     /**
      * Distinguish SNAPSHOT_MISSING (no pre-before snapshot) from DRIFT_WARN
      * (shared table or WARN-level-only drift) based on the WARN_SKIP reason.
+     * Dead-code defense path only — no WARN_SKIP producer remains since ADR-011.
      */
     private static com.clougence.clouddm.platform.dal.model.dbchange.GovEventType diffWarnEventType(
         com.clougence.clouddm.console.web.component.governance.PrecheckConclusion conclusion) {
@@ -816,6 +805,92 @@ public class AutoExecServiceImpl implements AutoExecService {
             return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
         }
         return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    /**
+     * ADR-011 unified schema-gate disposal at the chain-advance gate point (the third gate;
+     * its distinct semantics are preserved: a denial stops the chain and the release goes
+     * PARTIAL_FAILED immediately via the caller's aggregateReleaseCompletion). Same
+     * deny / governed-override-consumption / event selection as the console-side twin
+     * ProdReleaseServiceImpl.passSchemaGate — operator falls back to SYSTEM (callback scope has
+     * no user; the grantor trail lives in eventData.operator).
+     *
+     * @return true → chain proceeds; false → stmt FAILED + denial event recorded.
+     */
+    private boolean passChainSchemaGate(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                                        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                                        String gateType,
+                                        com.clougence.clouddm.console.web.component.governance.PrecheckConclusion result) {
+        if (result.isDeny()) {
+            com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override
+                = this.schemaGateOverrideService.findAndConsume(release.getId(), stmt.getId(), gateType,
+                    buildGateConsumeDetail(gateType, stmt, result));
+            if (override != null) {
+                appendReleaseEvent(release.getId(),
+                    com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_GATE_OVERRIDE,
+                    null, null, null, gateOverrideEventData(override, gateType, result, stmt.getId()));
+                return true;
+            }
+            this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "FAILED", result.toDetailText());
+            com.clougence.clouddm.platform.dal.model.dbchange.GovEventType denyEvent;
+            if (result.isBlock()) {
+                denyEvent = com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)
+                    ? com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_FAILED
+                    : com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_DRIFT;
+            } else {
+                denyEvent = com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_GATE_UNVERIFIABLE;
+            }
+            appendReleaseEvent(release.getId(), denyEvent, null, "FAILED", null,
+                result.toEventData(stmt.getId(), gateType));
+            return false;
+        }
+        if (!result.getNotes().isEmpty()) {
+            appendReleaseEvent(release.getId(), gateNoteEventType(gateType, result),
+                null, null, null, result.toEventData(stmt.getId(), gateType));
+        } else if (result.isWarnSkip()) {
+            // Dead-code defense — no WARN_SKIP producer remains since ADR-011
+            appendReleaseEvent(release.getId(),
+                com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)
+                    ? com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_SKIPPED
+                    : diffWarnEventType(result),
+                null, null, null, result.toEventData(stmt.getId(), gateType));
+        }
+        return true;
+    }
+
+    /** PASS-note → WARN-class event mapping — twin of ProdReleaseServiceImpl.gateNoteEventType. */
+    private static com.clougence.clouddm.platform.dal.model.dbchange.GovEventType gateNoteEventType(
+        String gateType, com.clougence.clouddm.console.web.component.governance.PrecheckConclusion result) {
+        if (com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK.equals(gateType)) {
+            return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_PRECHECK_UNCERTAIN;
+        }
+        if (result.hasNote(com.clougence.clouddm.console.web.component.governance.PrecheckConclusion.Note.SNAPSHOT_MISSING_LEGACY)) {
+            return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
+        }
+        return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    private static String buildGateConsumeDetail(String gateType,
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+        com.clougence.clouddm.console.web.component.governance.PrecheckConclusion result) {
+        String reason = result.isBlock() ? result.toDetailText() : result.getSkipReason();
+        String detail = "gate=" + gateType + " stmt=" + stmt.getId() + " result=" + result.getType()
+            + (reason == null ? "" : " reason=" + reason);
+        return detail.length() > 512 ? detail.substring(0, 512) : detail;
+    }
+
+    private static String gateOverrideEventData(
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovSchemaGateOverrideDO override,
+        String gateType, com.clougence.clouddm.console.web.component.governance.PrecheckConclusion result, long stmtId) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("stmtId", stmtId);
+        data.put("gateType", gateType);
+        data.put("overrideId", override.getId());
+        data.put("reason", override.getReason());
+        data.put("expireAt", override.getExpireAt());
+        data.put("operator", override.getOperatorUid());
+        data.put("checkResult", result.getType().name());
+        return JsonUtils.toJson(data);
     }
 
     // ==================== V2 job completion aggregation ====================

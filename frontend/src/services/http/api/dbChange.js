@@ -8,5 +8,8 @@ export const dbChangeApi = {
   govReleaseReturnStmt: '/api/entry/govrelease/returnStmt',
   govReleaseReturn: '/api/entry/govrelease/return',
   govReleaseResubmit: '/api/entry/govrelease/resubmit',
-  govReleaseCancel: '/api/entry/govrelease/cancel'
+  govReleaseCancel: '/api/entry/govrelease/cancel',
+  govReleaseOverrideGrant: '/api/entry/govrelease/overrideGrant',
+  govReleaseOverrideList: '/api/entry/govrelease/overrideList',
+  govReleaseOverrideRevoke: '/api/entry/govrelease/overrideRevoke'
 };

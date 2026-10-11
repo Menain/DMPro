@@ -26,13 +26,18 @@ import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
  * splits the stmt's SQL, classifies each operation, extracts table/column/index names,
  * fetches live production schema, and evaluates per-operation preconditions.
  * <p>
- * Design principle: 宁漏勿误 — parsing failures, unsupported syntax, and infrastructure
- * errors produce WARN_SKIP (never BLOCK). Only confirmed precondition violations produce BLOCK.
+ * Design principle (ADR-011, fail-closed — SUPERSEDES the former 宁漏勿误 fail-open regime):
+ * cannot prove safe ⇒ do not dispatch. Parsing failures, unsupported syntax, and infrastructure
+ * errors produce UNVERIFIABLE (denial, distinct from confirmed-violation BLOCK); extraction
+ * gaps and unclassifiable scripts (S1~S5) produce PASS carrying UNCERTAIN {@code Note}s.
+ * WARN_SKIP is only reachable through the platform break-glass switch
+ * (govReleaseSchemaPrecheckBlock=false degrading UNVERIFIABLE at the single engine exit).
  * <p>
- * The caller is responsible for writing stmt status (FAILED on BLOCK) and events
- * (RELEASE_SCHEMA_PRECHECK_FAILED / RELEASE_SCHEMA_PRECHECK_SKIPPED).
+ * The caller is responsible for the gate disposal (stmt FAILED on isDeny(), governed-override
+ * consumption, and events: RELEASE_SCHEMA_PRECHECK_FAILED / RELEASE_SCHEMA_GATE_UNVERIFIABLE /
+ * RELEASE_SCHEMA_PRECHECK_UNCERTAIN / RELEASE_SCHEMA_GATE_OVERRIDE).
  * The service itself is read-only and never throws — all exceptions are caught and
- * converted to WARN_SKIP internally.
+ * converted to UNVERIFIABLE internally.
  */
 public interface ReleaseSchemaPrecheckService {
 
@@ -40,7 +45,7 @@ public interface ReleaseSchemaPrecheckService {
      * Run the schema precondition precheck for a single release stmt.
      *
      * @param stmt the frozen release statement (prodDsId, prodDbName, sqlContent are the key fields)
-     * @return PASS / BLOCK / WARN_SKIP conclusion; never null, never throws
+     * @return PASS (optionally with Notes) / BLOCK / UNVERIFIABLE conclusion; never null, never throws
      */
     PrecheckConclusion precheck(DmProdReleaseStmtDO stmt);
 

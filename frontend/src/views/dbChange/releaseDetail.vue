@@ -154,9 +154,45 @@
                     <Button v-if="stmt.execStatus === 'FAILED' && canRetry" size="small" :loading="returning" @click="openReturnStmtModal(stmt.id)">
                       {{ $t('gov-release-return-stmt') }}
                     </Button>
+                    <!-- ADR-011 门禁 Override：仅 FAILED 语句 + GOV_SCHEMA_GATE_OVERRIDE 标签持有者可见（端点同标签强制） -->
+                    <Button v-if="stmt.execStatus === 'FAILED' && canOverride" size="small" @click="openOverrideModal(stmt)">
+                      {{ $t('gov-release-override-button') }}
+                    </Button>
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ADR-011 门禁 Override 记录：标签持有者可见（列表端点同标签强制），状态 未消费/已消费/已过期/已撤回 -->
+        <section v-if="canOverride" class="page-section">
+          <div class="page-section__title">{{ $t('gov-release-override-list-title') }}</div>
+          <div v-if="!overrides.length" class="gov-override-empty">{{ $t('gov-release-override-empty') }}</div>
+          <div v-else class="gov-override-list">
+            <div class="gov-override-row gov-override-row--head">
+              <span class="gov-override-col gov-override-col--gate">{{ $t('gov-release-override-col-gate') }}</span>
+              <span class="gov-override-col gov-override-col--scope">{{ $t('gov-release-override-col-scope') }}</span>
+              <span class="gov-override-col gov-override-col--reason">{{ $t('gov-release-override-col-reason') }}</span>
+              <span class="gov-override-col gov-override-col--operator">{{ $t('gov-release-override-col-operator') }}</span>
+              <span class="gov-override-col gov-override-col--expire">{{ $t('gov-release-override-col-expire') }}</span>
+              <span class="gov-override-col gov-override-col--status">{{ $t('gov-release-override-col-status') }}</span>
+              <span class="gov-override-col gov-override-col--action">{{ $t('gov-release-override-col-action') }}</span>
+            </div>
+            <div v-for="row in overrides" :key="row.id" class="gov-override-row">
+              <span class="gov-override-col gov-override-col--gate gov-mono">{{ row.gateType }}</span>
+              <span class="gov-override-col gov-override-col--scope">{{ overrideScopeText(row) }}</span>
+              <span class="gov-override-col gov-override-col--reason" :title="row.reason">{{ row.reason }}</span>
+              <span class="gov-override-col gov-override-col--operator">{{ row.operatorUid }}</span>
+              <span class="gov-override-col gov-override-col--expire">{{ formatDateTime(row.expireAt) }}</span>
+              <span class="gov-override-col gov-override-col--status">
+                <Tag :color="overrideStatusColor(row.status)" size="small">{{ $t(`gov-release-override-status-${row.status}`) }}</Tag>
+              </span>
+              <span class="gov-override-col gov-override-col--action">
+                <Button v-if="row.status === 'ACTIVE'" type="text" size="small" @click="handleRevokeOverride(row)">
+                  {{ $t('gov-release-override-revoke-button') }}
+                </Button>
+              </span>
             </div>
           </div>
         </section>
@@ -263,6 +299,36 @@
         <Button type="primary" :loading="resubmitting" @click="handleResubmitSubmit">{{ $t('que-ren') }}</Button>
       </template>
     </CCModal>
+
+    <!-- ADR-011 门禁 Override 授予弹窗：理由必填 + 有效期 ≤7 天 + 门禁类型/范围（交互抄 returnStmtReason 先例） -->
+    <CCModal v-model="showOverrideModal" :title="$t('gov-release-override-title')" :footer-hide="true" width="560">
+      <div class="gov-override-form">
+        <div class="gov-override-form__label">{{ $t('gov-release-override-gate-type') }}</div>
+        <RadioGroup v-model="overrideForm.gateType">
+          <Radio v-for="opt in gateTypeOptions" :key="opt.value" :label="opt.value">{{ opt.text }}</Radio>
+        </RadioGroup>
+        <div class="gov-override-form__label">{{ $t('gov-release-override-scope') }}</div>
+        <RadioGroup v-model="overrideForm.scope">
+          <Radio v-for="opt in scopeOptions" :key="opt.value" :label="opt.value" :disabled="opt.disabled">{{ opt.text }}</Radio>
+        </RadioGroup>
+        <div class="gov-override-form__label">{{ $t('gov-release-override-reason-label') }}</div>
+        <Input
+          v-model="overrideForm.reason"
+          type="textarea"
+          :rows="3"
+          :maxlength="1024"
+          show-word-limit
+          :placeholder="$t('gov-release-override-reason-placeholder')"
+        />
+        <div class="gov-override-form__label">{{ $t('gov-release-override-expire-label') }}</div>
+        <DatePicker v-model="overrideForm.expireAt" type="datetime" :options="overrideExpireOptions" />
+        <div class="gov-override-form__hint">{{ $t('gov-release-override-expire-hint') }}</div>
+      </div>
+      <template #footer>
+        <Button @click="showOverrideModal = false">{{ $t('qu-xiao') }}</Button>
+        <Button type="primary" :loading="grantingOverride" @click="handleOverrideGrantSubmit">{{ $t('que-ren') }}</Button>
+      </template>
+    </CCModal>
   </div>
 </template>
 
@@ -298,7 +364,25 @@ export default {
       cancelling: false,
       // 钉钉审批桥接(task 10-09):发布单审批工单的 base info(含 outbound 字段)+ 重发 in-flight
       approvalBaseInfo: null,
-      bridgeReissuing: false
+      bridgeReissuing: false,
+      // ADR-011 门禁 Override：记录列表 + 授予弹窗状态（一次性消费、理由必填、有效期 ≤7 天）
+      overrides: [],
+      showOverrideModal: false,
+      grantingOverride: false,
+      overrideForm: {
+        gateType: 'PRECHECK',
+        scope: 'STMT',
+        stmtId: null,
+        reason: '',
+        expireAt: null
+      },
+      overrideExpireOptions: {
+        disabledDate(date) {
+          if (!date) return false;
+          const now = Date.now();
+          return date.getTime() < now - 86400000 || date.getTime() > now + 7 * 86400000;
+        }
+      }
     };
   },
   computed: {
@@ -308,6 +392,22 @@ export default {
     },
     canRetry() {
       return this.myAuth.includes('RDP_WORKER_ORDER_EXECUTE');
+    },
+    // ADR-011 门禁 Override 权限门控（镜像后端 @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE) 三端点）
+    canOverride() {
+      return this.myAuth.includes('GOV_SCHEMA_GATE_OVERRIDE');
+    },
+    gateTypeOptions() {
+      return [
+        { value: 'PRECHECK', text: this.$t('gov-release-override-gate-PRECHECK') },
+        { value: 'DIFF', text: this.$t('gov-release-override-gate-DIFF') }
+      ];
+    },
+    scopeOptions() {
+      return [
+        { value: 'STMT', text: this.$t('gov-release-override-scope-stmt'), disabled: !this.overrideForm.stmtId },
+        { value: 'RELEASE', text: this.$t('gov-release-override-scope-release'), disabled: false }
+      ];
     },
     // ---- 钉钉审批桥接出站面板(task 10-09,design §3.1/§4) ----
     // 适用性判定:审批工单为 External 通道才呈现(其余通道 outbound 列恒 NULL)
@@ -386,10 +486,110 @@ export default {
         if (res.success) {
           this.detail = res.data;
           await this.loadApprovalOutbound();
+          this.loadOverrides();
         }
       } finally {
         this.loading = false;
       }
+    },
+    // ADR-011 门禁 Override 记录——静默加载:无标签/请求失败均置空列表,不影响详情主体呈现
+    async loadOverrides() {
+      if (!this.canOverride) {
+        this.overrides = [];
+        return;
+      }
+      try {
+        const res = await this.$services.govReleaseOverrideList({
+          data: { releaseId: Number(this.releaseId) },
+          modal: false
+        });
+        this.overrides = res.success && res.data ? res.data : [];
+      } catch {
+        this.overrides = [];
+      }
+    },
+    openOverrideModal(stmt) {
+      this.overrideForm = {
+        gateType: 'PRECHECK',
+        scope: 'STMT',
+        stmtId: stmt ? stmt.id : null,
+        reason: '',
+        expireAt: new Date(Date.now() + 24 * 3600 * 1000)
+      };
+      this.showOverrideModal = true;
+    },
+    async handleOverrideGrantSubmit() {
+      if (this.grantingOverride) {
+        return;
+      }
+      const reason = (this.overrideForm.reason || '').trim();
+      if (!reason) {
+        this.$Message.warning(this.$t('gov-release-override-reason-required'));
+        return;
+      }
+      const expireMs = this.overrideForm.expireAt ? new Date(this.overrideForm.expireAt).getTime() : NaN;
+      const now = Date.now();
+      if (isNaN(expireMs) || expireMs <= now || expireMs - now > 7 * 86400000) {
+        this.$Message.warning(this.$t('gov-release-override-expire-invalid'));
+        return;
+      }
+      this.grantingOverride = true;
+      try {
+        const data = {
+          releaseId: Number(this.releaseId),
+          gateType: this.overrideForm.gateType,
+          reason,
+          expireAt: expireMs
+        };
+        if (this.overrideForm.scope === 'STMT' && this.overrideForm.stmtId) {
+          data.stmtId = this.overrideForm.stmtId;
+        }
+        const res = await this.$services.govReleaseOverrideGrant({ data });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-release-override-grant-success'));
+          this.showOverrideModal = false;
+          await this.loadOverrides();
+        } else {
+          this.$Message.error(formatError(res.msg));
+        }
+      } finally {
+        this.grantingOverride = false;
+      }
+    },
+    handleRevokeOverride(row) {
+      this.$Modal.confirm({
+        title: this.$t('gov-release-override-revoke-button'),
+        content: this.$t('gov-release-override-revoke-confirm'),
+        onOk: async () => {
+          const res = await this.$services.govReleaseOverrideRevoke({ data: { id: row.id } });
+          if (res.success) {
+            this.$Message.success(this.$t('gov-release-override-revoke-success'));
+            await this.loadOverrides();
+          } else {
+            this.$Message.error(formatError(res.msg));
+          }
+        }
+      });
+    },
+    overrideScopeText(row) {
+      if (!row.stmtId) {
+        return this.$t('gov-release-override-scope-release');
+      }
+      // row.stmtId 是数据库主键,语句卡片区展示的是 seq——映射为同口径;
+      // 查不到(如语句已被 returnStmt 删除)回退显示主键
+      for (const group of this.detail.stmtGroups) {
+        for (const stmt of group.stmts) {
+          if (stmt.id === row.stmtId) {
+            return `${this.$t('gov-release-seq-label')}${stmt.seq}`;
+          }
+        }
+      }
+      return `${this.$t('gov-release-seq-label')}${row.stmtId}`;
+    },
+    overrideStatusColor(status) {
+      if (status === 'ACTIVE') return 'primary';
+      if (status === 'EXPIRED') return 'warning';
+      return 'default';
     },
     // 审批工单 base info(含 outbound 状态)——静默加载:无 approvalId / 无权限 / 请求失败
     // 均置 null,面板隐藏,不影响发布单详情主体呈现
@@ -809,6 +1009,86 @@ export default {
 
     &__label {
       font-size: 14px;
+      color: var(--muted, #41454d);
+    }
+  }
+
+  // ADR-011 门禁 Override:列表行沿用少线框扁平行样式(同 gov-source-ticket-row),零新色值
+  .gov-override-empty {
+    font-size: 13px;
+    color: var(--muted, #41454d);
+    background: var(--surface-soft, #f8fafc);
+    padding: 12px 16px;
+    border-radius: 6px;
+  }
+
+  .gov-override-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .gov-override-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 13px;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    &--head {
+      color: var(--muted, #41454d);
+    }
+  }
+
+  .gov-override-col {
+    min-width: 0;
+
+    &--gate {
+      flex: 0 0 100px;
+    }
+    &--scope {
+      flex: 0 0 90px;
+    }
+    &--reason {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &--operator {
+      flex: 0 0 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &--expire {
+      flex: 0 0 150px;
+    }
+    &--status {
+      flex: 0 0 80px;
+    }
+    &--action {
+      flex: 0 0 60px;
+      text-align: right;
+    }
+  }
+
+  .gov-override-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    &__label {
+      font-size: 14px;
+      color: var(--muted, #41454d);
+    }
+
+    &__hint {
+      font-size: 12px;
       color: var(--muted, #41454d);
     }
   }

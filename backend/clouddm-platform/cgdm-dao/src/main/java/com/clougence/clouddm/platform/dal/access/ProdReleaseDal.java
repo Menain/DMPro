@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.platform.dal.access;
 
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOverrideMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
@@ -24,6 +25,7 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSc
  * release table is mutable via controlled state-machine methods (transitStatus / updateApprovalId / updateGateResult).
  * stmt table has insert, select, updateExecStatus, deleteByReleaseId — no arbitrary update/delete.
  * stmt_schema table has batchInsert, queryByReleaseStmtId, queryByReleaseId.
+ * gate_override table (ADR-011) has insert/select + CAS consume/revoke only.
  */
 public interface ProdReleaseDal {
 
@@ -32,4 +34,6 @@ public interface ProdReleaseDal {
     DmProdReleaseStmtMapper stmtMapper();
 
     DmProdReleaseStmtSchemaMapper schemaMapper();
+
+    DmGovSchemaGateOverrideMapper gateOverrideMapper();
 }
