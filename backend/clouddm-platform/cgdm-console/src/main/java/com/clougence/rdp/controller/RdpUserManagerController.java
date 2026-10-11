@@ -43,6 +43,7 @@ import com.clougence.clouddm.console.web.model.fo.user.*;
 import com.clougence.clouddm.console.web.model.lo.UpdateUserRoleLO;
 import com.clougence.clouddm.console.web.model.vo.ListUserVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
+import com.clougence.clouddm.console.web.util.AuditSanitizeUtils;
 import com.clougence.clouddm.console.web.util.Sm2Utils;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
 import com.clougence.clouddm.platform.dal.model.ResourceType;
@@ -150,8 +151,10 @@ public class RdpUserManagerController {
 
         AddSubAccountMO accountMO = this.rdpUserService.addSubAccountForInternal(puid, fo);
         if (accountMO.isSuccess()) {
+            // audit a sanitized copy: fo.password has been decrypted in place above and must never reach
+            // dm_mon_op_audit.log_info or the application log (task 10-11-ds-audit-credential-sanitization)
             rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(), accountMO
-                .getSubUid(), fo, SecurityLevel.HIGH, AuditType.ADD_SUB_ACCOUNT, ResourceType.ACCOUNT);
+                .getSubUid(), AuditSanitizeUtils.sanitizedAddSubAccount(fo), SecurityLevel.HIGH, AuditType.ADD_SUB_ACCOUNT, ResourceType.ACCOUNT);
             return ResWebDataUtils.buildSuccess();
         } else {
             return ResWebDataUtils.buildError(accountMO.getErrorMsg());

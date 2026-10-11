@@ -61,6 +61,7 @@ import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.cluster.ClusterService;
 import com.clougence.clouddm.console.web.service.datasource.DmDsWebService;
 import com.clougence.clouddm.console.web.service.upload.UploadService4Certificate;
+import com.clougence.clouddm.console.web.util.AuditSanitizeUtils;
 import com.clougence.clouddm.console.web.util.DmConvertUtils;
 import com.clougence.clouddm.console.web.util.RandomStrUtils;
 import com.clougence.clouddm.console.web.util.RdpAuthUtils;
@@ -287,8 +288,10 @@ public class DmDsController {
         }
 
         ResWebData<Long> result = this.dsService.updateDs(uid, fo);
+        // audit a sanitized copy: configMap may carry credential values (password / ssl key & cert material) which
+        // must never reach dm_mon_op_audit.log_info or the application log (task 10-11-ds-audit-credential-sanitization)
         this.auditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request
-            .getRemoteAddr(), dsId, fo, SecurityLevel.HIGH, AuditType.UPDATE_DATA_SOURCE_CONFIG, ResourceType.DATASOURCE);
+            .getRemoteAddr(), dsId, AuditSanitizeUtils.sanitizedDsConfigSubmit(fo), SecurityLevel.HIGH, AuditType.UPDATE_DATA_SOURCE_CONFIG, ResourceType.DATASOURCE);
         return result;
     }
 
