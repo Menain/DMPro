@@ -18,9 +18,12 @@ package com.clougence.clouddm.sec.rules.execute.sensitive;
 import java.util.Arrays;
 import java.util.List;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * @author mode create time is 2023/05/21 13:27
  **/
+@Slf4j
 public class SenAlgorithm {
 
     public static final String        SEN_ORIGINAL  = "algorithm::ORIGINAL";
@@ -30,11 +33,37 @@ public class SenAlgorithm {
     //the bigger the index, the better,
     private static final List<String> algorithmPool = Arrays.asList(SEN_ORIGINAL, SEN_HALF_MASK, SEN_FULL_MASK);
 
+    /** C6/M2: the strength an unknown command degrades to (fail-closed normalization). */
+    private static final int          FULL_MASK_INDEX = algorithmPool.indexOf(SEN_FULL_MASK);
+
+    /**
+     * Pick the stronger of two algorithm commands ("the bigger pool index wins").
+     * <p>
+     * C6/M2 fail-closed (design §2, survey §8 A2): an UNKNOWN command string (a typo'd or
+     * stale algorithm returned by a rule script) no longer throws — it degrades to FULL_MASK
+     * strength AND is normalized to {@link #SEN_FULL_MASK}, so a typo over-masks the column
+     * (availability kept, original value never emitted) instead of failing the whole query.
+     * The normalization also guarantees the downstream dispatch always hits a known branch.
+     * <p>
+     * {@code null} input STILL throws {@link IllegalStateException} — that is a caller-contract
+     * violation, not a data-driven typo (pinned by SenAlgorithmHalfMaskTest).
+     */
     public static String chooseAlgorithm(String current, String newone) {
-        int a = poolIndexOf(current);
-        int b = poolIndexOf(newone);
-        if (a < 0 || b < 0) {
+        if (current == null || newone == null) {
             throw new IllegalStateException(current + " or " + newone + " not in algorithmPool.");
+        }
+
+        int a = poolIndexOf(current);
+        if (a < 0) {
+            log.warn("Unknown masking algorithm command '{}', fail-closed to FULL_MASK.", current);
+            current = SEN_FULL_MASK;
+            a = FULL_MASK_INDEX;
+        }
+        int b = poolIndexOf(newone);
+        if (b < 0) {
+            log.warn("Unknown masking algorithm command '{}', fail-closed to FULL_MASK.", newone);
+            newone = SEN_FULL_MASK;
+            b = FULL_MASK_INDEX;
         }
 
         if (a > b) {

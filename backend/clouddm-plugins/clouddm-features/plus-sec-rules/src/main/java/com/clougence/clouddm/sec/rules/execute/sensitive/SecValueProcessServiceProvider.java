@@ -35,10 +35,12 @@ import com.clougence.utils.CollectionUtils;
 import com.clougence.utils.StringUtils;
 
 import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * @author mode create time is 2023/05/21 13:27
  **/
+@Slf4j
 public class SecValueProcessServiceProvider implements ValueProcessService {
 
     private final static String       SEN_KEY_CFG      = SensitiveConfig.class.getSimpleName() + "-root";
@@ -229,7 +231,13 @@ public class SecValueProcessServiceProvider implements ValueProcessService {
         } else if (StringUtils.equalsIgnoreCase(str, "FULL_MASK")) {
             return SenAlgorithm.doFullMaskAlgorithm(str, cv);
         } else {
-            return cv;
+            // C6/M2 fail-closed (design §2): structurally sealed. Unreachable today — every
+            // command string passes SenAlgorithm.chooseAlgorithm first, which normalizes
+            // unknown commands to FULL_MASK — but a future pool addition missing its dispatch
+            // branch must over-mask, never leak the original value (survey §1: the old
+            // `return cv` else was the "typos leak silently" structural risk).
+            log.warn("Unknown masking algorithm command '{}', fail-closed to FULL_MASK.", str);
+            return SenAlgorithm.doFullMaskAlgorithm(str, cv);
         }
     }
 }

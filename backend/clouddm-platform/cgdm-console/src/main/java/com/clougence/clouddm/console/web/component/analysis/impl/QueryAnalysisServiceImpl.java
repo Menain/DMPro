@@ -35,12 +35,19 @@ import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.constants.RewriteTags;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
+import com.clougence.clouddm.console.web.model.vo.security.SensitiveOriginalViewObj;
 import com.clougence.clouddm.console.web.util.DmDsUtils;
 import com.clougence.clouddm.console.web.util.DsResPathObj;
+import com.clougence.clouddm.console.web.util.MaskingAuditUtils;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
+import com.clougence.clouddm.platform.dal.access.MonitorDal;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthResDO;
+import com.clougence.clouddm.platform.dal.model.monitor.DmMonBizLogDO;
+import com.clougence.clouddm.platform.dal.model.monitor.LogDependBizType;
+import com.clougence.clouddm.platform.dal.model.monitor.Loglevel;
 import com.clougence.clouddm.platform.plugin.PluginManager;
+import com.clougence.rdp.service.RdpOpAuditService;
 import com.clougence.clouddm.sdk.execute.session.QueryArg;
 import com.clougence.clouddm.sdk.execute.session.QueryRequest;
 import com.clougence.clouddm.sdk.execute.session.ResultLimit;
@@ -91,6 +98,12 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
     private SecRulesService     rulesService;
     @Resource
     private SecRulesEngine      rulesEngine;
+    /** C6/M4+M5: the NOT_BOUND observation + root-exemption trail land in dm_mon_biz_log (never-throw). */
+    @Resource
+    private MonitorDal          monitorDal;
+    /** C6/M5: the DM_DAUTH_SENSITIVE exemption audit + the DANGLING rejection audit (never-throw at every call site). */
+    @Resource
+    private RdpOpAuditService   rdpOpAuditService;
 
     @Override
     public Stream<SplitScript> analysisSplitStream(DataSourceConfig dsConfig, Reader reader, List<QueryArg> queryArgs, int baseCodeLine, int baseCodeColumn) {
@@ -187,6 +200,8 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
         private final SysObjectRegistrySpi  registry;
         private final String                currentResourcePath;
         private final String                instanceResourcePath;
+        /** C6/M3: resolved masking-binding tri-state carrier (null for root / masking-disabled — those never resolve rules). */
+        private final SecCheckerRules       maskingRules;
 
         private RequestAnalysisPlan(SqlEngineSpi sqlEngine, SqlParserParameters parameters, DataSourceConfig dsConfig, Map<UmiTypes, Object> levels, AnalysisQueryOptions options){
             this.dsConfig = dsConfig;
@@ -231,10 +246,19 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
             this.maskingEnabled = options.isEnabled(QueryAnalysisFeature.MASKING);
             this.rootUser = this.maskingEnabled && AuthDal.ROOT_USER_UID.equals(options.getCurrentUid());
             SecCheckerRules rules = this.maskingEnabled && !this.rootUser ? QueryAnalysisServiceImpl.this.rulesService.fetchCheckerRulesByDsId(options.getDsId()) : null;
+            this.maskingRules = rules;
             this.hasSensitiveRules = rules != null && rules.isValid() && CollectionUtils.isNotEmpty(rules.getSenRuleList());
             this.registry = this.hasSensitiveRules ? PluginManager.findSpi(SysObjectRegistrySpi.class, sqlEngine.name()) : null;
             this.currentResourcePath = this.hasSensitiveRules ? DmDsUtils.currentResourcePath(options.getLevels()) : null;
             this.instanceResourcePath = this.hasSensitiveRules ? DmDsUtils.instanceResourcePath(options.getLevels()) : null;
+
+            // C6/M4 (design §4): NOT_BOUND observation — once per analysis batch HERE (never in
+            // the engine's begin(): the JSON export would fire it per ROW). The query still runs
+            // unmasked (the opt-in activation contract, B3 rejected); this only makes the
+            // never-bound env visible. Never-throw, per-dsId per-day deduped.
+            if (rules != null && rules.getMaskingBindingState() == SecCheckerRules.MaskingBindingState.NOT_BOUND) {
+                QueryAnalysisServiceImpl.this.observeMaskingNotBound(rules);
+            }
         }
 
         private QueryRequest analyze(SplitScript script) {
@@ -328,9 +352,24 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
             if (!this.maskingEnabled) {
                 return;
             }
+            // C6/M3 fail-closed (design §3, B2 ruling): a DANGLING masking binding (bound but
+            // unresolvable, no valid legacy fallback) REJECTS the query at analysis time —
+            // BEFORE usingValueProcess is ever set; the engine-side conf==null path stays
+            // untouched (the sidecar never learns the tri-state). The rejection is audited
+            // first (never-throw), then the shared gate throws the i18n business error.
+            // root (maskingRules==null) keeps its existing whole-exemption by ruling.
+            if (this.maskingRules != null
+                && this.maskingRules.getMaskingBindingState() == SecCheckerRules.MaskingBindingState.DANGLING) {
+                QueryAnalysisServiceImpl.this.auditMaskingRejected(this.options.getCurrentUid(), this.maskingRules, request
+                    .getQueryId());
+                SecRulesService.ensureMaskingBindingUsable(this.maskingRules);
+            }
             request.setUsingValueProcess(true);
             if (this.rootUser) {
                 request.setUsingValueProcess(false);
+                // C6/M5 (design §5 storm protection): root exempts EVERY query → the trail lands
+                // in dm_mon_biz_log (ops side, high frequency allowed), never in op_audit.
+                QueryAnalysisServiceImpl.this.logRootMaskingExemption(this.options.getCurrentUid(), this.options.getDsId());
                 return;
             }
             if (!this.hasSensitiveRules) {
@@ -339,15 +378,15 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
 
             if (CollectionUtils.isEmpty(request.getColumnList())) {
                 QueryAnalysisServiceImpl.this.configMaskingWithoutProvenance(request, this.registry, this.parameters.version(), this.options.getCurrentUid(), this.options
-                    .getDsId(), this.currentResourcePath, this.instanceResourcePath);
+                    .getDsId(), this.currentResourcePath, this.instanceResourcePath, this.maskingRules.getOwnerUid());
             } else {
-                QueryAnalysisServiceImpl.this.configMaskingWithProvenance(request, this.options.getCurrentUid(), this.options.getDsId());
+                QueryAnalysisServiceImpl.this.configMaskingWithProvenance(request, this.options.getCurrentUid(), this.options.getDsId(), this.maskingRules.getOwnerUid());
             }
         }
     }
 
     private void configMaskingWithoutProvenance(QueryRequest request, SysObjectRegistrySpi sysObjRegistry, String dbVersion, String userUid, long dsId,//
-                                                String currentResourcePath, String instanceResourcePath) {
+                                                String currentResourcePath, String instanceResourcePath, String ownerUid) {
         List<DsResPathObj> objList = BehaviorRelations.flattenResource(sysObjRegistry, dbVersion, request.getRelations()).stream().filter(b -> {
             return b.authKind() == SecDataAuthKind.READ;
         }).map(b -> {
@@ -360,10 +399,14 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
         });
         if (allAuthorized) {
             request.setUsingValueProcess(false);
+            // C6/M5: an explicit DM_DAUTH_SENSITIVE grant suppressed masking for this query —
+            // trailed in op_audit (HIGH), obj carries paths only, never data values.
+            auditSensitiveOriginalView(ownerUid, userUid, dsId, SensitiveOriginalViewObj.EXEMPT_DAUTH_ALL_PATHS, objList
+                .stream().map(DsResPathObj::getResPath).toList(), request.getQueryId());
         }
     }
 
-    private void configMaskingWithProvenance(QueryRequest request, String userUid, long dsId) {
+    private void configMaskingWithProvenance(QueryRequest request, String userUid, long dsId, String ownerUid) {
         boolean hasEmptyColumnName = request.getColumnList().keySet().stream().anyMatch(StringUtils::isEmpty);
         if (hasEmptyColumnName) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_NOT_SUPPORT_SPECIAL_FIELD_NOT_ALIAS.name()));
@@ -390,6 +433,84 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
             return skipPaths.stream().anyMatch(path -> source.toDsResPath().startsWith(path));
         })) {
             request.setUsingValueProcess(false);
+            // C6/M5: every provenance source column is DM_DAUTH_SENSITIVE-authorized — the whole
+            // query is exempt; trailed in op_audit (HIGH), paths only, never data values.
+            auditSensitiveOriginalView(ownerUid, userUid, dsId, SensitiveOriginalViewObj.EXEMPT_DAUTH_ALL_COLUMNS, pathList, request
+                .getQueryId());
         }
+    }
+
+    /* ---------------------------------------------------------------------------------- */
+    /*  C6 masking fail-closed: observation + exemption/rejection audit (never-throw)       */
+    /* ---------------------------------------------------------------------------------- */
+
+    /**
+     * C6/M4 (design §4): the NOT_BOUND observation event — an env with NO masking spec ever
+     * bound serves unmasked results (the opt-in activation contract; B3 blanket-rejection was
+     * ruled out), but the fact becomes VISIBLE here. Analysis-time only (once per query batch,
+     * never in the engine's per-row begin()), rate-limited to one dm_mon_biz_log row per dsId
+     * per day, content = dsId/envId markers only — never SQL or data values. Never-throw:
+     * observability must not break the query.
+     */
+    private void observeMaskingNotBound(SecCheckerRules rules) {
+        try {
+            String bizId = String.valueOf(rules.getDsId());
+            List<DmMonBizLogDO> existing = this.monitorDal.bizLogMapper()
+                .queryListByBizIdAndType(bizId, LogDependBizType.MASKING_NOT_BOUND);
+            boolean loggedToday = existing != null && existing.stream().anyMatch(r -> isToday(r.getGmtCreate()));
+            if (loggedToday) {
+                return; // per-dsId per-day dedup (design §4 rate limit)
+            }
+            DmMonBizLogDO logDO = new DmMonBizLogDO(Loglevel.INFO, "[MASKING] sensitive spec NOT_BOUND for env "
+                + rules.getEnvId() + " — query results are unmasked by explicit opt-out (C6/M4 observation)",
+                LogDependBizType.MASKING_NOT_BOUND, bizId);
+            this.monitorDal.bizLogMapper().insert(logDO);
+        } catch (Exception e) {
+            log.warn("[Masking] NOT_BOUND observation failed for ds {} (query unaffected)", rules.getDsId(), e);
+        }
+    }
+
+    /**
+     * C6/M5 (design §5 storm protection): root bypasses masking on EVERY query — the trail
+     * lands in dm_mon_biz_log (ops side, high frequency allowed), NOT in op_audit. Content =
+     * uid/dsId markers only. Never-throw.
+     */
+    private void logRootMaskingExemption(String uid, long dsId) {
+        try {
+            // uid recorded per the LogDependBizType.MASKING_ROOT_EXEMPT contract (content =
+            // uid/dsId/exemption markers); it is ROOT_USER_UID by construction on this path
+            DmMonBizLogDO logDO = new DmMonBizLogDO(Loglevel.INFO, "[MASKING] root exemption for uid " + uid
+                + " — query served unmasked (C6/M5)", LogDependBizType.MASKING_ROOT_EXEMPT, String.valueOf(dsId));
+            this.monitorDal.bizLogMapper().insert(logDO);
+        } catch (Exception e) {
+            log.warn("[Masking] root-exemption trail failed for ds {} (query unaffected)", dsId, e);
+        }
+    }
+
+    /**
+     * C6/M3: the DANGLING-rejection attempt trail (SENSITIVE_MASKING_REJECTED, HIGH) — written
+     * BEFORE the i18n rejection propagates; never-throw (the rejection must not depend on the
+     * audit succeeding). Shared core: {@link MaskingAuditUtils}.
+     */
+    private void auditMaskingRejected(String uid, SecCheckerRules rules, String queryId) {
+        MaskingAuditUtils.auditRejected(this.rdpOpAuditService, rules.getOwnerUid(), uid, rules.getDsId(), rules
+            .getEnvId(), queryId);
+    }
+
+    /**
+     * C6/M5: an explicit DM_DAUTH_SENSITIVE exemption served ORIGINAL values (SENSITIVE_ORIGINAL_
+     * VIEW, HIGH) — shared core: {@link MaskingAuditUtils} (path cap + never-throw inside).
+     */
+    private void auditSensitiveOriginalView(String ownerUid, String uid, long dsId, String exemption, List<String> resPaths, String queryId) {
+        MaskingAuditUtils.auditOriginalView(this.rdpOpAuditService, ownerUid, uid, dsId, exemption, resPaths, queryId);
+    }
+
+    /** the per-day dedup predicate of the M4 observation (calendar-day granularity, system zone). */
+    private static boolean isToday(Date date) {
+        if (date == null) {
+            return false;
+        }
+        return date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            .equals(java.time.LocalDate.now());
     }
 }

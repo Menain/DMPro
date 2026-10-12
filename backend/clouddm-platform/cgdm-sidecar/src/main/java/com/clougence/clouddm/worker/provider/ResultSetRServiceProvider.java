@@ -277,6 +277,21 @@ public class ResultSetRServiceProvider implements ResultSetRService, UnifiedPost
             ColMetaData meta = rr.getMetadataInfo()[Math.toIntExact(colNumber)];
             ResultSetValue col = rr.readAsString(meta, queryInfo.getResultConf(), offset, length);
 
+            // C6/M1 fail-closed: the cache file stores ORIGINAL values (finishRecord writes the
+            // storage BEFORE doMask), so this truncated-cell full-text read used to bypass masking
+            // entirely. Wrap the single cell into a one-row rowSet and run the SAME doMask as the
+            // paging path (queryInfo.usingValueProcess is the master switch — exempt queries carry
+            // false in the file's queryInfo and keep original-value semantics by construction).
+            ResultPageDTO singleRow = new ResultPageDTO();
+            ResultSetRow row = new ResultSetRow();
+            List<ResultSetValue> cells = new ArrayList<>(1);
+            cells.add(col);
+            row.setData(cells);
+            List<ResultSetRow> rowSet = new ArrayList<>(1);
+            rowSet.add(row);
+            singleRow.setRowSet(rowSet);
+            doMask(queryInfo, new ColMetaData[] { meta }, singleRow);
+
             ResultColDTO result = new ResultColDTO();
             result.setSuccess(true);
             result.setValue(col);

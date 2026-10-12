@@ -127,4 +127,34 @@ public final class DmlBatchLiterals {
     public static boolean isBlankCursor(String rawValue) {
         return StringUtils.isBlank(rawValue);
     }
+
+    /**
+     * C6/M6 (task 10-11-masking-fail-closed, design §6 — the tiered cursor-disclosure ruling):
+     * the USER-facing display form of a raw cursor value (task statusMsg / segment summary —
+     * both rendered on frontend surfaces). The raw cursor is a real key-column VALUE from the
+     * target table, so the user side gets a correlation handle instead of the value:
+     * {@code sha256:<first 8 hex>…(len=N)} — the operator can match it against the biz_log
+     * forensics (which KEEP the raw value by ruling) without the value reaching the frontend.
+     * <p>
+     * NEVER apply this to the checkpoint cursor (functional: the resume WHERE lower bound) or
+     * to the biz_log forensics / SKIP evidence (the UNRESOLVED manual-verdict basis).
+     * Pure static, never throws (a digest failure degrades to the length-only form).
+     */
+    public static String hashedCursorForDisplay(String rawCursor) {
+        if (rawCursor == null) {
+            return null;
+        }
+        int len = rawCursor.length();
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(rawCursor.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(8);
+            for (int i = 0; i < 4; i++) {
+                hex.append(String.format("%02x", hash[i]));
+            }
+            return "sha256:" + hex + "…(len=" + len + ")";
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return "…(len=" + len + ")"; // SHA-256 is JDK-mandatory; defensive only
+        }
+    }
 }

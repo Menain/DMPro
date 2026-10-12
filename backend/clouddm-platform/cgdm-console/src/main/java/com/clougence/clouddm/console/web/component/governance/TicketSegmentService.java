@@ -954,7 +954,11 @@ public class TicketSegmentService {
         summary.put("batchesDone", cp == null ? 0L : cp.getBatchesDone());
         summary.put("rowsDone", cp == null ? 0L : cp.getRowsDone());
         if (cp != null && cp.getCursor() != null) {
-            summary.put("cursor", cp.getCursor());
+            // C6/M6: the sweep-side twin of DmlBatchAsyncTask.summary — same tiered-disclosure
+            // ruling, the frontend-visible cursor rides as its sha256 handle (the functional
+            // resume path reads the checkpoint cursor from configData, never this copy).
+            summary.put("cursor", com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals
+                .hashedCursorForDisplay(cp.getCursor()));
         }
         if (error != null) {
             summary.put("error", error);

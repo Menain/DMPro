@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.service.dmlbatch.asyntask;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -701,7 +702,13 @@ public class DmlBatchAsyncTaskTest {
             summary.capture());
         assertTrue(detail.getValue().contains("终止") || detail.getValue().contains("abort"));
         assertEquals(3L, summary.getValue().get("batchesDone")); // the partial-success scene is preserved
-        assertEquals("30", summary.getValue().get("cursor"));
+        // C6/M6 (task 10-11-masking-fail-closed): the user-side summary cursor is the sha256
+        // correlation handle — the raw key value never reaches the frontend (raw stays only in
+        // the biz_log forensics + the functional checkpoint; design §6 tiered disclosure)
+        Object summaryCursor = summary.getValue().get("cursor");
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals.hashedCursorForDisplay("30"),
+            summaryCursor);
+        assertNotEquals("30", summaryCursor);
         assertTrue(executedSqls.isEmpty());
     }
 

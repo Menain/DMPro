@@ -126,14 +126,16 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
         long envId = dsCache.getEnvId();
 
         // QUERY chain: read DM_BIND_CHECK_SPEC (behavior unchanged from original)
-        DmSecSpecDO querySpec = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_CHECK_SPEC);
+        BoundSpec queryBinding = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_CHECK_SPEC);
+        DmSecSpecDO querySpec = queryBinding.spec;
         Map<Long, SecRefererWrap> ruleOfQuery = querySpec == null
                 ? Collections.emptyMap()
                 : groupRefererByKind(resolveSecRefererList(ownerUid, querySpec.getId()), RuleKind.QUERY);
 
         // SENSITIVE chain: read DM_BIND_SENSITIVE_SPEC;
         // only when new key is unbound / spec invalid, fall back to old key spec's SENSITIVE referers
-        DmSecSpecDO senSpec = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_SENSITIVE_SPEC);
+        BoundSpec senBinding = resolveBoundSpec(ownerUid, envId, EnvParamKeys.DM_BIND_SENSITIVE_SPEC);
+        DmSecSpecDO senSpec = senBinding.spec;
         Map<Long, SecRefererWrap> ruleOfSen;
         if (senSpec != null) {
             ruleOfSen = groupRefererByKind(resolveSecRefererList(ownerUid, senSpec.getId()), RuleKind.SENSITIVE);
@@ -143,8 +145,16 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
                     : groupRefererByKind(resolveSecRefererList(ownerUid, querySpec.getId()), RuleKind.SENSITIVE);
         }
 
+        // C6/M3 additive (design §3, B2): the masking-binding tri-state. Combination rules —
+        // new key VALID wins; otherwise a VALID legacy key rescues (fallback intact); any
+        // DANGLING without a valid fallback stays DANGLING; both blank = NOT_BOUND. The
+        // existing valid/rule resolution below is byte-identical to the pre-C6 behaviour.
+        SecCheckerRules.MaskingBindingState maskingState = resolveMaskingBindingState(senBinding, queryBinding);
+
         if (ruleOfQuery.isEmpty() && ruleOfSen.isEmpty()) {
-            return new SecCheckerRules();
+            // C6/M3: the invalid shell keeps ds identity + tri-state (M4/M5 consumers need them;
+            // valid=false semantics unchanged for every existing consumer)
+            return new SecCheckerRules(envId, dsId, maskingState, ownerUid);
         }
 
         // result
@@ -154,22 +164,70 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
         String querySpecName = querySpec == null ? null : querySpec.getName();
         String senSpecName = senSpec != null ? senSpec.getName()
                 : (querySpec == null ? null : querySpec.getName());
-        return new SecCheckerRules(envId, dsId, dsCache.getDsInstId(), dsType,
+        SecCheckerRules rules = new SecCheckerRules(envId, dsId, dsCache.getDsInstId(), dsType,
                 querySpecName, senSpecName, resultOfQuery, resultOfSen);
+        rules.setMaskingBindingState(maskingState);
+        rules.setOwnerUid(ownerUid);
+        return rules;
     }
 
-    private DmSecSpecDO resolveBoundSpec(String ownerUid, long envId, String paramKey) {
+    /** C6/M3: the tri-state combination table of design §3 (new key first, legacy fallback rescues). */
+    private static SecCheckerRules.MaskingBindingState resolveMaskingBindingState(BoundSpec senBinding, BoundSpec queryBinding) {
+        if (senBinding.state == SecCheckerRules.MaskingBindingState.VALID
+            || queryBinding.state == SecCheckerRules.MaskingBindingState.VALID) {
+            return SecCheckerRules.MaskingBindingState.VALID;
+        }
+        if (senBinding.state == SecCheckerRules.MaskingBindingState.DANGLING
+            || queryBinding.state == SecCheckerRules.MaskingBindingState.DANGLING) {
+            return SecCheckerRules.MaskingBindingState.DANGLING;
+        }
+        return SecCheckerRules.MaskingBindingState.NOT_BOUND;
+    }
+
+    /**
+     * C6/M3: the tri-state carrier of one env-param binding. {@code spec} is non-null only in
+     * the VALID state, so every existing {@code == null} consumer keeps its exact behaviour
+     * (blank / non-numeric / missing / disabled all used to collapse to null).
+     */
+    private static final class BoundSpec {
+        final SecCheckerRules.MaskingBindingState state;
+        final DmSecSpecDO                         spec;
+
+        private BoundSpec(SecCheckerRules.MaskingBindingState state, DmSecSpecDO spec){
+            this.state = state;
+            this.spec = spec;
+        }
+
+        static BoundSpec notBound() {
+            return new BoundSpec(SecCheckerRules.MaskingBindingState.NOT_BOUND, null);
+        }
+
+        static BoundSpec dangling() {
+            return new BoundSpec(SecCheckerRules.MaskingBindingState.DANGLING, null);
+        }
+
+        static BoundSpec valid(DmSecSpecDO spec) {
+            return new BoundSpec(SecCheckerRules.MaskingBindingState.VALID, spec);
+        }
+    }
+
+    private BoundSpec resolveBoundSpec(String ownerUid, long envId, String paramKey) {
         String usingSpec = this.dmEnvParamService.queryParam(ownerUid, envId, paramKey);
-        if (StringUtils.isBlank(usingSpec) || !NumberUtils.isNumber(usingSpec)) {
-            return null;
+        if (StringUtils.isBlank(usingSpec)) {
+            // never bound = explicit opt-out (NOT the same as an unusable binding — B2 ruling)
+            return BoundSpec.notBound();
+        }
+        if (!NumberUtils.isNumber(usingSpec)) {
+            // a value exists but cannot name a spec → dangling (fail-closed side of B2)
+            return BoundSpec.dangling();
         }
 
         long specId = Long.parseLong(usingSpec);
         DmSecSpecDO specDO = this.secRuleDal.specMapper().queryByIdAndUid(ownerUid, specId);
         if (specDO == null || !specDO.isEnable()) {
-            return null;
+            return BoundSpec.dangling();
         }
-        return specDO;
+        return BoundSpec.valid(specDO);
     }
 
     private static Map<Long, SecRefererWrap> groupRefererByKind(Collection<SecRefererWrap> refererWraps, RuleKind kind) {

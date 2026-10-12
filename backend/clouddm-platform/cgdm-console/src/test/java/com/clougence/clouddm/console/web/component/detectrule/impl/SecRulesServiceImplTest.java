@@ -224,4 +224,140 @@ public class SecRulesServiceImplTest {
         // QUERY spec name should be from old spec
         assertEquals("old-spec", rules.getDsUseSpecName());
     }
+
+    // ==================================================================================
+    // C6/M3 tri-state matrix (task 10-11-masking-fail-closed, design §3 / B2 ruling):
+    // NOT_BOUND = both keys blank (explicit opt-out); DANGLING = a key carries a value but
+    // no usable spec resolves and no valid legacy fallback rescues; VALID = a binding
+    // resolves to an enabled spec. The existing valid/rule behaviour above stays pinned —
+    // the tri-state is an ADDITIVE marker on SecCheckerRules.
+    // ==================================================================================
+
+    // both keys blank → NOT_BOUND (never bound = explicit opt-out, NOT dangling)
+    @Test
+    public void maskingState_bothKeysEmpty_notBound() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn(null);
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("");
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertFalse(rules.isValid());
+        assertEquals(SecCheckerRules.MaskingBindingState.NOT_BOUND, rules.getMaskingBindingState());
+        // the invalid shell still carries the identity (M4/M5 consumers need it)
+        assertEquals(PUID, rules.getOwnerUid());
+        assertEquals(DS_ID, rules.getDsId());
+        assertEquals(ENV_ID, rules.getEnvId());
+    }
+
+    // new key bound but the spec is deleted + old key blank → DANGLING (no fallback exists)
+    @Test
+    public void maskingState_newKeySpecMissing_dangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn(null);
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(null);
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertFalse(rules.isValid());
+        assertEquals(SecCheckerRules.MaskingBindingState.DANGLING, rules.getMaskingBindingState());
+    }
+
+    // new key bound but the spec is DISABLED → DANGLING
+    @Test
+    public void maskingState_newKeySpecDisabled_dangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn(null);
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        DmSecSpecDO disabled = createSpec(SPEC_NEW, "disabled-spec");
+        disabled.setEnable(false);
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(disabled);
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.DANGLING, rules.getMaskingBindingState());
+    }
+
+    // new key carries a non-numeric value → DANGLING (a value exists but names no spec)
+    @Test
+    public void maskingState_newKeyNonNumeric_dangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn(null);
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("abc");
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.DANGLING, rules.getMaskingBindingState());
+    }
+
+    // new key DANGLING + old key VALID → VALID (the legacy fallback rescues — design §3)
+    @Test
+    public void maskingState_newKeyDanglingOldKeyValid_valid() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn("1");
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        when(specMapper.queryByIdAndUid(PUID, SPEC_OLD)).thenReturn(createSpec(SPEC_OLD, "old-spec"));
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(null);
+        mockSpecReferers(SPEC_OLD, Collections.singletonList(createSenReferer(50L)));
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.VALID, rules.getMaskingBindingState());
+        assertTrue(rules.isValid());
+        // the fallback serves the old spec's SENSITIVE referers (behaviour unchanged)
+        assertFalse(rules.getSenRuleList().isEmpty());
+    }
+
+    // both keys DANGLING → DANGLING
+    @Test
+    public void maskingState_bothKeysDangling_dangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn("1");
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        when(specMapper.queryByIdAndUid(PUID, SPEC_OLD)).thenReturn(null);
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(null);
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.DANGLING, rules.getMaskingBindingState());
+    }
+
+    // old key DANGLING + new key blank → DANGLING (legacy chain follows the same rule)
+    @Test
+    public void maskingState_oldKeyDanglingNewKeyBlank_dangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn("1");
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn(null);
+        when(specMapper.queryByIdAndUid(PUID, SPEC_OLD)).thenReturn(null);
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.DANGLING, rules.getMaskingBindingState());
+    }
+
+    // old key blank + old-key style: new key blank, old key VALID but zero SENSITIVE referers
+    // → VALID (a valid binding with zero enabled referers is an explicit opt-out — the pinned
+    // no-fallback ruling; NEVER dangling: rejection is spec-level only)
+    @Test
+    public void maskingState_validSpecZeroReferers_validNotDangling() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn(null);
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(createSpec(SPEC_NEW, "empty-spec"));
+        mockSpecReferers(SPEC_NEW, Collections.<DmSecRefererDO>emptyList());
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.VALID, rules.getMaskingBindingState());
+        assertFalse(rules.isValid()); // zero rules → the invalid shell (existing semantics kept)
+        assertTrue(rules.getSenRuleList().isEmpty());
+    }
+
+    // new key VALID (with referers) → VALID regardless of the old key's state
+    @Test
+    public void maskingState_newKeyValid_valid() {
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_CHECK_SPEC)).thenReturn("1");
+        when(envParamService.queryParam(PUID, ENV_ID, EnvParamKeys.DM_BIND_SENSITIVE_SPEC)).thenReturn("2");
+        when(specMapper.queryByIdAndUid(PUID, SPEC_OLD)).thenReturn(null); // old dangling — irrelevant
+        when(specMapper.queryByIdAndUid(PUID, SPEC_NEW)).thenReturn(createSpec(SPEC_NEW, "new-spec"));
+        mockSpecReferers(SPEC_NEW, Collections.singletonList(createSenReferer(60L)));
+
+        SecCheckerRules rules = secRulesService.fetchCheckerRules(PUID, DS_ID);
+
+        assertEquals(SecCheckerRules.MaskingBindingState.VALID, rules.getMaskingBindingState());
+        assertTrue(rules.isValid());
+    }
 }

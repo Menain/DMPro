@@ -18,6 +18,7 @@ package com.clougence.clouddm.sec.rules;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.clougence.clouddm.sec.rules.execute.sensitive.SecValueProcessServiceProvider;
 import com.clougence.clouddm.sec.rules.execute.sensitive.SenAlgorithm;
 
 /**
@@ -150,5 +151,93 @@ public class SenAlgorithmHalfMaskTest {
     @Test(expected = IllegalStateException.class)
     public void chooseAlgorithm_nullInput_throwsIllegalState() {
         SenAlgorithm.chooseAlgorithm(null, "algorithm::HALF_MASK(4,7)");
+    }
+
+    // ============================================================================
+    // C6/M2 fail-closed (task 10-11-masking-fail-closed, design §2 / survey §8 A2):
+    // an UNKNOWN command string degrades to FULL_MASK strength and is NORMALIZED to
+    // SEN_FULL_MASK (a typo over-masks the column instead of failing the whole query
+    // with IllegalStateException); null input keeps throwing (the pin above).
+    // ============================================================================
+
+    // unknown newone → normalized FULL_MASK wins over ORIGINAL
+    @Test
+    public void chooseAlgorithm_unknownNewone_normalizesToFullMask() {
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm(SenAlgorithm.SEN_ORIGINAL, "algorithm::TYPO_MASK"));
+    }
+
+    // unknown current → normalized to FULL_MASK and returned (never the raw typo string)
+    @Test
+    public void chooseAlgorithm_unknownCurrent_normalizesToFullMask() {
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm("algorithm::TYPO_MASK", SenAlgorithm.SEN_ORIGINAL));
+    }
+
+    // unknown command competes at FULL_MASK strength: beats HALF_MASK, result normalized
+    @Test
+    public void chooseAlgorithm_unknownBeatsHalfMask_normalized() {
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm("algorithm::HALF_MASK(4,7)", "algorithm::FULL_MASKK"));
+    }
+
+    // unknown vs unknown → both normalized, FULL_MASK returned (no throw)
+    @Test
+    public void chooseAlgorithm_bothUnknown_normalizesToFullMask() {
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm("algorithm::FOO", "algorithm::BAR(1,2)"));
+    }
+
+    // unknown vs known FULL_MASK → equal strength, the normalized command returned
+    @Test
+    public void chooseAlgorithm_unknownVsFullMask_returnsFullMask() {
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm("algorithm::TYPO_MASK", SenAlgorithm.SEN_FULL_MASK));
+        Assert.assertEquals(SenAlgorithm.SEN_FULL_MASK,
+            SenAlgorithm.chooseAlgorithm(SenAlgorithm.SEN_FULL_MASK, "algorithm::TYPO_MASK"));
+    }
+
+    // known-command regression guard: the normalization change must not touch pool hits
+    @Test
+    public void chooseAlgorithm_knownCommands_unchanged() {
+        Assert.assertEquals("algorithm::HALF_MASK(4,7)",
+            SenAlgorithm.chooseAlgorithm("algorithm::HALF_MASK(4,7)", SenAlgorithm.SEN_ORIGINAL));
+        Assert.assertEquals(SenAlgorithm.SEN_ORIGINAL,
+            SenAlgorithm.chooseAlgorithm(SenAlgorithm.SEN_ORIGINAL, SenAlgorithm.SEN_ORIGINAL));
+    }
+
+    // ============================================================================
+    // dispatch side (spec §6 "new command: dispatch test + chooseAlgorithm
+    // compatibility test"): doAlgorithm's unknown-command else branch is sealed —
+    // FULL_MASK + warn, never the original value. Private method → plain reflection
+    // (the plugin module has no spring-test/mockito on its test classpath).
+    // ============================================================================
+
+    private static String invokeDoAlgorithm(String command, String value) throws Exception {
+        SecValueProcessServiceProvider provider = new SecValueProcessServiceProvider(null, null);
+        java.lang.reflect.Method m = SecValueProcessServiceProvider.class
+            .getDeclaredMethod("doAlgorithm", String.class, String.class);
+        m.setAccessible(true);
+        return (String) m.invoke(provider, command, value);
+    }
+
+    // unknown command dispatch → "******" (fail-closed; the old behaviour returned cv unchanged)
+    @Test
+    public void doAlgorithm_unknownCommand_fullMaskNeverOriginal() throws Exception {
+        Assert.assertEquals("******", invokeDoAlgorithm("algorithm::TYPO_MASK", "13812345678"));
+    }
+
+    // unknown command with args → same fail-closed dispatch
+    @Test
+    public void doAlgorithm_unknownCommandWithArgs_fullMask() throws Exception {
+        Assert.assertEquals("******", invokeDoAlgorithm("algorithm::WEIRD_MASK(1,3)", "13812345678"));
+    }
+
+    // known dispatch branches regression guard (ORIGINAL / HALF_MASK / FULL_MASK unchanged)
+    @Test
+    public void doAlgorithm_knownCommands_unchanged() throws Exception {
+        Assert.assertEquals("13812345678", invokeDoAlgorithm(SenAlgorithm.SEN_ORIGINAL, "13812345678"));
+        Assert.assertEquals("138****5678", invokeDoAlgorithm("algorithm::HALF_MASK(4,7)", "13812345678"));
+        Assert.assertEquals("******", invokeDoAlgorithm(SenAlgorithm.SEN_FULL_MASK, "13812345678"));
     }
 }

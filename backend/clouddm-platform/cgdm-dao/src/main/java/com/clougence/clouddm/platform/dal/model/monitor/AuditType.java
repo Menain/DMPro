@@ -143,7 +143,27 @@ public enum AuditType {
      */
     GOV_SCHEMA_GATE_OVERRIDE_GRANT,
     /** Revocation of an unconsumed override grant — same trail shape as the GRANT row. */
-    GOV_SCHEMA_GATE_OVERRIDE_REVOKE;
+    GOV_SCHEMA_GATE_OVERRIDE_REVOKE,
+    //******* MASKING FAIL-CLOSED (C6, task 10-11-masking-fail-closed) *******
+    /**
+     * C6/M5 four-point registration (design §5): an EXEMPTED view of ORIGINAL (unmasked) values —
+     * the DM_DAUTH_SENSITIVE-labeled query paths (without/with provenance) and the data-editor
+     * table-level exemption. HIGH; subject = the exempted viewer; resId = dsId
+     * (ResourceType.DATASOURCE — the existing getResourceName case); obj =
+     * SensitiveOriginalViewObj {exemption, dsId, uid, resPaths≤20, queryId} — NEVER data values.
+     * The root exemption deliberately does NOT land here (every-query frequency → the
+     * dm_mon_biz_log MASKING_ROOT_EXEMPT tier instead — the storm-protection ruling).
+     */
+    SENSITIVE_ORIGINAL_VIEW,
+    /**
+     * C6/M3 (design §3, B2 ruling): a query REJECTED at analysis time because the masking
+     * binding is DANGLING (env key bound but the spec is deleted/disabled/unparsable and no
+     * valid legacy fallback exists) — the attempt is trailed even though nothing was served.
+     * HIGH; resId = dsId (ResourceType.DATASOURCE); obj = SensitiveOriginalViewObj
+     * {reason=DANGLING_BINDING, dsId, envId, uid}. Registration identical to
+     * SENSITIVE_ORIGINAL_VIEW. Written never-throw BEFORE the i18n rejection propagates.
+     */
+    SENSITIVE_MASKING_REJECTED;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

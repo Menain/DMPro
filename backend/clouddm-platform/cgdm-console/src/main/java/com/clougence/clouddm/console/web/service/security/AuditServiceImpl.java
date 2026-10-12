@@ -34,6 +34,7 @@ import com.clougence.clouddm.api.console.sqlaudit.Type;
 import com.clougence.clouddm.console.web.component.config.RootUserConfig;
 import com.clougence.clouddm.console.web.global.notify.DmWorkerRegisterNotify;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
+import com.clougence.clouddm.console.web.util.DbErrorSanitizer;
 import com.clougence.clouddm.console.web.util.RdpHostUtil;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
@@ -142,7 +143,10 @@ public class AuditServiceImpl implements AuditService, DmWorkerRegisterNotify, U
             return null;
         }
 
-        String message = getString(dto.getMessage());
+        // C6/M7: sanitize BEFORE the 65535 truncation (a truncated pattern could otherwise
+        // leave a half-matched data value behind) — the DB column and the app-log twin below
+        // share this sanitized source
+        String message = getString(DbErrorSanitizer.sanitize(dto.getMessage()));
         if (StringUtils.isBlank(dto.getQueryId())) {
             return null;
         }
@@ -275,7 +279,9 @@ public class AuditServiceImpl implements AuditService, DmWorkerRegisterNotify, U
             logInfo.setType(Type.SQL_END);
             logInfo.setSql(auditDO.getExecSql());
             logInfo.setAffectLine(dto.getAffectLine());
-            logInfo.setMessage(dto.getMessage());
+            // C6/M7: the app-log exit reads the PERSISTED (sanitized) message, never the raw
+            // dto text — both exits share one sanitized source (design §7)
+            logInfo.setMessage(auditDO.getMessage());
             logInfo.setTime(dto.getTime());
             logInfo.setSessionId(dto.getSessionId());
             logInfo.setSqlStatus(dto.getStatus());

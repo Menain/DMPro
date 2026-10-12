@@ -15,6 +15,9 @@
  */
 package com.clougence.clouddm.console.web.component.detectrule;
 
+import com.clougence.clouddm.api.common.exception.ErrorMessageException;
+import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
+import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.sdk.service.secrules.SecRulesCheckerService;
 
 /**
@@ -30,5 +33,21 @@ public interface SecRulesService {
     SecCheckerRules fetchCheckerRulesByDsId(long dsId);
 
     SecRulesCheckerService checkerSpi();
+
+    /**
+     * C6/M3 shared rejection gate (design §3, B2 ruling): a DANGLING masking binding (an env
+     * key carries a value but no usable spec resolves and no valid legacy fallback exists)
+     * means the masking policy is UNKNOWN → the query is REJECTED with an explicit i18n error,
+     * never served silent plaintext. Both console entry points share this single method:
+     * the main analysis chain ({@code QueryAnalysisServiceImpl.configMasking}) and the data
+     * editor path ({@code DsDataEditorServiceImpl.doFetchData} — it does not flow through
+     * configMasking). NOT_BOUND (never bound = explicit opt-out) passes here by design — its
+     * observation event lives at the analysis-time caller (M4), not in this gate.
+     */
+    static void ensureMaskingBindingUsable(SecCheckerRules rules) {
+        if (rules != null && rules.getMaskingBindingState() == SecCheckerRules.MaskingBindingState.DANGLING) {
+            throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.MASKING_BINDING_DANGLING_ERROR.name()));
+        }
+    }
 
 }

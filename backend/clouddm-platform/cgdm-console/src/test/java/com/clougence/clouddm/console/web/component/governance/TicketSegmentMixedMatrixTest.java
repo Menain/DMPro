@@ -581,7 +581,10 @@ public class TicketSegmentMixedMatrixTest {
         List<TicketSegment> runtime = lastRuntime();
         assertEquals(TicketSegment.STATUS_SUCCESS, runtime.get(0).getStatus());   // earlier untouched
         assertEquals(TicketSegment.STATUS_FAILED, runtime.get(1).getStatus());
-        assertEquals("77", runtime.get(1).getSummary().get("cursor"));            // retryGroup inheritance trail
+        // C6/M6: the summary cursor is the sha256 display handle; the retryGroup INHERITANCE
+        // trail is the raw checkpoint cursor on configData (the L520 pin), never this copy
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals.hashedCursorForDisplay("77"),
+            runtime.get(1).getSummary().get("cursor"));
         assertEquals(TicketSegment.STATUS_PENDING, runtime.get(2).getStatus());   // downstream untouched
         verify(stmtMapper).updateExecStatus(eq(GROUP_ID), eq("FAILED"), anyString());
         verify(govTicketV2Service, never()).dispatchGhostSegment(any(), any(), any(), anyString());

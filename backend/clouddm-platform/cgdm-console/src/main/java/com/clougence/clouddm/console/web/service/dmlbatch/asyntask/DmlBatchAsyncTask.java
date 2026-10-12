@@ -41,6 +41,7 @@ import com.clougence.clouddm.console.web.service.asyntask.AsyncTaskServiceServic
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchEffectiveParams;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLagProbe;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals;
+import com.clougence.clouddm.console.web.util.DbErrorSanitizer;
 import com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchServiceImpl;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.MonitorDal;
@@ -377,7 +378,7 @@ public class DmlBatchAsyncTask extends AsyncTask {
         }
         if (boundarySql == null) {
             throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(),
-                "boundary rewrite returned null — the frozen statement is not transformable (never falls back to direct execution)"));
+                DbErrorSanitizer.sanitize("boundary rewrite returned null — the frozen statement is not transformable (never falls back to direct execution)")));
         }
 
         DiagOpts opts = DiagOpts.builder()
@@ -436,7 +437,7 @@ public class DmlBatchAsyncTask extends AsyncTask {
                     cp.setLastStatus("FAILED");
                     this.persistConfig(task, cfg);
                     throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(),
-                        "boundary select failed: " + rootMessage(e)));
+                        DbErrorSanitizer.sanitize("boundary select failed: " + rootMessage(e))));
                 }
                 if (hiRaw == null) {
                     // NULL MAX = every key range is exhausted — the ONLY termination authority
@@ -472,7 +473,7 @@ public class DmlBatchAsyncTask extends AsyncTask {
                     cp.setLastStatus("FAILED");
                     this.persistConfig(task, cfg);
                     throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(),
-                        "range rewrite returned null — the frozen statement is not transformable (never falls back to direct execution)"));
+                        DbErrorSanitizer.sanitize("range rewrite returned null — the frozen statement is not transformable (never falls back to direct execution)")));
                 }
 
                 long startedAt = System.currentTimeMillis();
@@ -509,13 +510,16 @@ public class DmlBatchAsyncTask extends AsyncTask {
                     int retryCount = intent.getRetryCount() == null ? 1 : intent.getRetryCount() + 1;
                     intent.setRetryPending(true);
                     intent.setRetryCount(retryCount);
-                    intent.setLastBatchError(dbError);
+                    // C6/M7: sanitized BEFORE persisting — lastBatchError is display-only
+                    // (statusMsg + the adjudication-modal projection; consumers grepped: no
+                    // functional parse), so the persisted value never carries key data values
+                    intent.setLastBatchError(DbErrorSanitizer.sanitize(dbError));
                     cp.setLastTickAt(System.currentTimeMillis());
                     cp.setLastStatus("RETRYING");
                     this.persistConfig(task, cfg);
                     if (retryCount > params.getMaxBatchRetries()) {
                         throw new TickFailure(false, DmI18nUtils.getMessage(
-                            I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(), dbError)
+                            I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(), DbErrorSanitizer.sanitize(dbError))
                             + " (retries exhausted: " + params.getMaxBatchRetries() + ")");
                     }
                     log.warn("[DmlBatch] task {} batch {} failed (retry {}/{}): {}",
@@ -560,7 +564,8 @@ public class DmlBatchAsyncTask extends AsyncTask {
                     cp.getIntent() == null ? cp.getBatchesDone() + 1 : cp.getIntent().getSeq())
                     + " (" + rootMessage(e) + ")");
             }
-            throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(), rootMessage(e)));
+            throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(), DbErrorSanitizer
+                .sanitize(rootMessage(e))));
         }
     }
 
@@ -667,7 +672,7 @@ public class DmlBatchAsyncTask extends AsyncTask {
             hiRaw = session.executeSingleValue(boundarySql);
         } catch (RuntimeException e) {
             throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(),
-                "skip-batch boundary select failed: " + rootMessage(e)));
+                DbErrorSanitizer.sanitize("skip-batch boundary select failed: " + rootMessage(e))));
         }
         if (hiRaw == null) {
             // the cursor already sits past the last matching row — the skip completes the segment
@@ -816,7 +821,10 @@ public class DmlBatchAsyncTask extends AsyncTask {
         summary.put("batchesDone", cp.getBatchesDone());
         summary.put("rowsDone", cp.getRowsDone());
         if (cp.getCursor() != null) {
-            summary.put("cursor", cp.getCursor());
+            // C6/M6: the summary freezes into the segment detail (frontend-visible) — the cursor
+            // rides as its hash form. Functional resume reads the CHECKPOINT cursor (configData),
+            // never this display copy (extractDmlBatchDoneCheckpoint — verified no consumer).
+            summary.put("cursor", DmlBatchLiterals.hashedCursorForDisplay(cp.getCursor()));
         }
         if (error != null) {
             summary.put("error", error);
@@ -876,8 +884,10 @@ public class DmlBatchAsyncTask extends AsyncTask {
             sb.append('/').append('~').append(estimatedRowsCache);
         }
         if (cp.getCursor() != null) {
-            String cursor = cp.getCursor();
-            sb.append(", cursor=").append(cursor.length() > 40 ? cursor.substring(0, 40) + "…" : cursor);
+            // C6/M6 (design §6 tiered disclosure): the statusMsg is a USER-facing surface — the
+            // raw cursor (a real key-column value) is replaced by its sha256 correlation handle;
+            // the operator matches it against the biz_log forensics (which keep the raw value).
+            sb.append(", cursor=").append(DmlBatchLiterals.hashedCursorForDisplay(cp.getCursor()));
         }
         if (cp.getIntent() != null && cp.getIntent().getLastBatchError() != null) {
             String err = cp.getIntent().getLastBatchError();

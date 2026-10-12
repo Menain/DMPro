@@ -477,7 +477,9 @@ public class TicketSegmentServiceDmlBatchTest {
         List<TicketSegment> runtime = TicketSegment.parseRuntime(captor.getValue());
         assertEquals(TicketSegment.STATUS_SUCCESS, runtime.get(0).getStatus());
         assertEquals(20, ((Number) runtime.get(0).getSummary().get("batchesDone")).intValue()); // the replay carries the checkpoint trail
-        assertEquals("99", runtime.get(0).getSummary().get("cursor"));
+        // C6/M6: the frontend-visible summary cursor is the sha256 handle, never the raw value
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals.hashedCursorForDisplay("99"),
+            runtime.get(0).getSummary().get("cursor"));
         verify(stmtMapper).updateExecStatus(GROUP_ID, "SUCCESS", null);
     }
 
@@ -528,7 +530,10 @@ public class TicketSegmentServiceDmlBatchTest {
         verify(stmtMapper).updateExecSegments(eq(GROUP_ID), captor.capture());
         List<TicketSegment> runtime = TicketSegment.parseRuntime(captor.getValue());
         assertEquals(TicketSegment.STATUS_FAILED, runtime.get(0).getStatus());
-        assertEquals("77", runtime.get(0).getSummary().get("cursor")); // retryGroup inheritance trail
+        // C6/M6: the summary cursor is the sha256 handle; the retryGroup INHERITANCE trail is
+        // unaffected — it reads the raw checkpoint cursor from the task configData, never this copy
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals.hashedCursorForDisplay("77"),
+            runtime.get(0).getSummary().get("cursor"));
         assertEquals(15, ((Number) runtime.get(0).getSummary().get("batchesDone")).intValue());
         assertNull("no unresolvedIntent marker without an intent", runtime.get(0).getSummary().get("unresolvedIntent"));
     }
@@ -609,7 +614,9 @@ public class TicketSegmentServiceDmlBatchTest {
         Map<String, Object> summary = TicketSegment.parseRuntime(captor.getValue()).get(0).getSummary();
         assertEquals(Boolean.TRUE, summary.get("unresolvedIntent"));
         assertEquals(21, ((Number) summary.get("intentSeq")).intValue()); // batchesDone+1 = the adjudicated batch
-        assertEquals("99", summary.get("cursor"));                        // the cursor never advanced
+        // C6/M6: the cursor never advanced — shown as its sha256 handle (raw stays on the checkpoint)
+        assertEquals(com.clougence.clouddm.console.web.service.dmlbatch.DmlBatchLiterals.hashedCursorForDisplay("99"),
+            summary.get("cursor"));
     }
 
     @Test

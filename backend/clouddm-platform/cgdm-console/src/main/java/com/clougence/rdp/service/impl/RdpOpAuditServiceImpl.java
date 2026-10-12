@@ -150,7 +150,9 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.DML_BATCH_EXECUTE, // B7 four-point registration (2/4): init whitelist
                 AuditType.DML_BATCH_REJECT, // B7 N2 four-point registration (2/4): init whitelist
                 AuditType.GOV_SCHEMA_GATE_OVERRIDE_GRANT, // ADR-011 registration (2/3): init whitelist
-                AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE)); // ADR-011 registration (2/3): init whitelist
+                AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE, // ADR-011 registration (2/3): init whitelist
+                AuditType.SENSITIVE_ORIGINAL_VIEW, // C6 four-point registration (2/4): init whitelist
+                AuditType.SENSITIVE_MASKING_REJECTED)); // C6 four-point registration (2/4): init whitelist
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());

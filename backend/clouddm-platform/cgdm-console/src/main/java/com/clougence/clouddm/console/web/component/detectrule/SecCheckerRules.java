@@ -28,6 +28,26 @@ import lombok.Setter;
 @Setter
 public class SecCheckerRules {
 
+    /**
+     * C6/M3 additive (design §3, B2 ruling): tri-state of the MASKING (SENSITIVE chain) env
+     * binding, resolved by {@code SecRulesServiceImpl.resolveCheckerRules}. Existing consumers
+     * keep reading {@link #valid} only — this field never changes their behaviour.
+     * <ul>
+     * <li>{@code NOT_BOUND} — both env keys blank: never bound = an explicit opt-out (the
+     * opt-in activation contract). Query proceeds unmasked + an observation event (M4).</li>
+     * <li>{@code DANGLING} — a key carries a value but no usable spec resolves (non-numeric,
+     * spec deleted or disabled) and no valid legacy fallback exists: the masking policy is
+     * UNKNOWN → console-analysis-time query rejection (fail-closed, never silent plaintext).</li>
+     * <li>{@code VALID} — a binding resolves to an enabled spec (a valid binding with zero
+     * enabled referers stays VALID: "explicit user intent wins", the pinned no-fallback ruling;
+     * it is NOT dangling — rejection is reserved for spec-level dangling only, aligned with the
+     * UI carrier {@code DmEnvParamSecDesVO{openSec=true, invalid=true}}).</li>
+     * </ul>
+     */
+    public enum MaskingBindingState {
+        NOT_BOUND, DANGLING, VALID
+    }
+
     private final boolean           valid;
     private final long              envId;
     private final long              dsId;
@@ -39,6 +59,12 @@ public class SecCheckerRules {
 
     private final List<CheckerRule> queryRuleList;
     private final List<CheckerRule> senRuleList;
+
+    /** C6/M3 additive: masking-binding tri-state; defaults to NOT_BOUND on the invalid shell. */
+    private MaskingBindingState     maskingBindingState = MaskingBindingState.NOT_BOUND;
+
+    /** C6/M5 additive: the tenant owner uid of the ds (the audit rows need puid at the call site). */
+    private String                  ownerUid;
 
     public SecCheckerRules(){
         this.valid = false;
@@ -65,6 +91,27 @@ public class SecCheckerRules {
         this.dsUseSensitiveSpecName = dsUseSensitiveSpecName;
         this.queryRuleList = (queryRuleList == null) ? Collections.emptyList() : queryRuleList;
         this.senRuleList = (senRuleList == null) ? Collections.emptyList() : senRuleList;
+    }
+
+    /**
+     * C6/M3 additive: the invalid shell WITH identity — resolved zero rules on both chains, but
+     * the masking tri-state and the ds identity ride along (the M4 observation event and the
+     * M5 audit rows need the real dsId/envId; the no-arg shell zeroes them). {@code valid}
+     * stays false, so every existing consumer (fetchSensitiveConfigByDs null-collapse,
+     * hasSensitiveRules) behaves exactly as before.
+     */
+    public SecCheckerRules(long envId, long dsId, MaskingBindingState maskingBindingState, String ownerUid){
+        this.valid = false;
+        this.envId = envId;
+        this.dsId = dsId;
+        this.dsName = null;
+        this.dsType = null;
+        this.dsUseSpecName = "";
+        this.dsUseSensitiveSpecName = "";
+        this.queryRuleList = Collections.emptyList();
+        this.senRuleList = Collections.emptyList();
+        this.maskingBindingState = maskingBindingState;
+        this.ownerUid = ownerUid;
     }
 
     public boolean isEmpty() { return this.queryRuleList.isEmpty() && this.senRuleList.isEmpty(); }

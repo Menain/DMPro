@@ -24,5 +24,18 @@ public enum LogDependBizType {
      * every batch logs its (seq, lo, hi, affectRows, costMs) — design §3.4 injection-surface
      * forensics (magnitude = batch count, the B6 jobLog precedent). Additive enum value.
      */
-    DML_BATCH_TASK
+    DML_BATCH_TASK,
+    /**
+     * C6/M4 masking observation (task 10-11-masking-fail-closed): a query ran with NO masking
+     * spec bound to the env (NOT_BOUND = explicit opt-out — allowed by the opt-in activation
+     * contract, but now VISIBLE). dependOnBizId = dsId; rate-limited to one row per dsId per
+     * day at the write side; content carries dsId/envId only, never SQL or data values.
+     */
+    MASKING_NOT_BOUND,
+    /**
+     * C6/M5 root-exemption trail (the storm-protected tier of design §5): root skips masking on
+     * EVERY query, so this lands in dm_mon_biz_log (ops side, high frequency allowed) instead
+     * of op_audit. dependOnBizId = dsId; content = uid/dsId/exemption marker, no data values.
+     */
+    MASKING_ROOT_EXEMPT
 }

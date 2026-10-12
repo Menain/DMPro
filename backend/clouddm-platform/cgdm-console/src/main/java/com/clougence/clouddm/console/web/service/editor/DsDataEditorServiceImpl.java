@@ -25,10 +25,13 @@ import com.clougence.clouddm.api.sidecar.session.execute.ResultList;
 import com.clougence.clouddm.base.metadata.ds.DataSourceConfig;
 import com.clougence.clouddm.base.metadata.ds.DataSourceType;
 import com.clougence.clouddm.console.web.component.auth.DmAuthServiceForBiz;
+import com.clougence.clouddm.console.web.component.detectrule.SecCheckerRules;
+import com.clougence.clouddm.console.web.component.detectrule.SecRulesService;
 import com.clougence.clouddm.console.web.component.dsconfig.DmDsConfigService;
 import com.clougence.clouddm.console.web.component.dsconfig.mode.DsLevels;
 import com.clougence.clouddm.console.web.component.execute.QueryService;
 import com.clougence.clouddm.console.web.component.schema.DsSchemaService;
+import com.clougence.clouddm.console.web.model.vo.security.SensitiveOriginalViewObj;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
 import com.clougence.clouddm.console.web.model.fo.editor.data.*;
@@ -39,6 +42,7 @@ import com.clougence.clouddm.console.web.service.editor.model.DataEditorResultDT
 import com.clougence.clouddm.console.web.service.editor.model.DataEditorUpdateDTO;
 import com.clougence.clouddm.console.web.util.DmConvertUtils;
 import com.clougence.clouddm.console.web.util.DmDsUtils;
+import com.clougence.clouddm.console.web.util.MaskingAuditUtils;
 import com.clougence.clouddm.dsfamily.definition.TypeMapUtils;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
 import com.clougence.clouddm.platform.plugin.PluginManager;
@@ -57,6 +61,7 @@ import com.clougence.clouddm.sdk.ui.editor.data.reload.DataEditorReloadSpi;
 import com.clougence.clouddm.sdk.ui.editor.data.reload.EditorResultSet;
 import com.clougence.clouddm.sdk.ui.editor.data.reload.Reload;
 import com.clougence.clouddm.sdk.ui.editor.data.reload.SqlData;
+import com.clougence.rdp.service.RdpOpAuditService;
 import com.clougence.schema.metadata.FieldType;
 import com.clougence.schema.umi.special.rdb.RdbColumn;
 import com.clougence.schema.umi.special.rdb.RdbTable;
@@ -79,6 +84,12 @@ public class DsDataEditorServiceImpl implements DsDataEditorService {
     private QueryService        queryService;
     @Resource
     private DmAuthServiceForBiz authCheckService;
+    /** C6/M3: the data-editor path does NOT flow through configMasking — it applies the SAME tri-state gate. */
+    @Resource
+    private SecRulesService     rulesService;
+    /** C6/M3+M5: DANGLING-rejection trail + the table-level DM_SENSITIVE exemption audit (never-throw). */
+    @Resource
+    private RdpOpAuditService   rdpOpAuditService;
 
     /** for service API '/editor/data/fetchData' */
     @Override
@@ -319,14 +330,35 @@ public class DsDataEditorServiceImpl implements DsDataEditorService {
                                         String fetchSql, String table) {
         Map<UmiTypes, Object> levelsParam = levels.levelsParam();
 
+        // C6/M3 (design §3, B2 ruling): the data-editor path does NOT flow through
+        // configMasking — apply the SAME tri-state gate here (shared judgment): a DANGLING
+        // masking binding (bound but unresolvable) REJECTS the fetch before any value process
+        // is configured; NOT_BOUND passes (explicit opt-out). The rejection attempt is audited
+        // first (never-throw), then the shared gate throws the i18n business error which
+        // propagates through fetchData's try-finally (session closed) to the API surface.
+        long dsId = levels.dsDO().getId();
+        SecCheckerRules maskingRules = this.rulesService.fetchCheckerRulesByDsId(dsId);
+        if (maskingRules != null && maskingRules.getMaskingBindingState() == SecCheckerRules.MaskingBindingState.DANGLING) {
+            MaskingAuditUtils.auditRejected(this.rdpOpAuditService, maskingRules.getOwnerUid(), uid, dsId, maskingRules
+                .getEnvId(), null);
+            SecRulesService.ensureMaskingBindingUsable(maskingRules);
+        }
+
         // create session/request
         QueryRequest request = DmDsUtils.createRequestCtx(dsConfig);
         request.setQueryBody(fetchSql);
         request.setQueryArgs(Collections.emptyList());
         request.setQueryTypes(Set.of(SplitQueryType.SELECT));
         request.setRequester(Requester.CONSOLE);
-        request.setUsingValueProcess(!this.authCheckService
-            .checkResPathWithoutError(puid, uid, levels.dsDO().getId(), AuthKind.DataSource, levels.asResPath(), SecDataAuthLabel.DM_DAUTH_SENSITIVE));
+        boolean sensitiveAuthorized = this.authCheckService
+            .checkResPathWithoutError(puid, uid, dsId, AuthKind.DataSource, levels.asResPath(), SecDataAuthLabel.DM_DAUTH_SENSITIVE);
+        request.setUsingValueProcess(!sensitiveAuthorized);
+        if (sensitiveAuthorized) {
+            // C6/M5: table-level DM_SENSITIVE authorization exempts the WHOLE editor request —
+            // an explicit grant serving original values, trailed in op_audit (HIGH).
+            MaskingAuditUtils.auditOriginalView(this.rdpOpAuditService, puid, uid, dsId,
+                SensitiveOriginalViewObj.EXEMPT_DATA_EDITOR, Collections.singletonList(levels.asResPath().getResPath()), null);
+        }
 
         // execute sql
         try {

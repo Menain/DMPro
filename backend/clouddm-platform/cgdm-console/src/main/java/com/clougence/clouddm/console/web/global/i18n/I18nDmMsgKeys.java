@@ -702,4 +702,8 @@ public enum I18nDmMsgKeys {
     ALERT_PUSH_DING_BRIDGE_ACTION_CANCEL,
     /** 告警文案:工单详情深链 */
     ALERT_PUSH_DING_BRIDGE_LINK,
+
+    // -- Masking fail-closed hardening (task 10-11-masking-fail-closed, C6 design §3) --
+    /** 悬空/失效脱敏绑定(DANGLING)→ 分析期拒绝查询(B2 裁决:未知策略≠明示不启用) */
+    MASKING_BINDING_DANGLING_ERROR,
 }
