@@ -4,6 +4,7 @@
 > 本文档面向桥接项目与审批引擎的对接开发,涵盖端点全集、签名规则、幂等与守卫语义、编排时序、错误矩阵、出站桥接契约(§10)与三途径时序(§11)。
 > 2026-10-10 修订(task 10-09-dingtalk-approval-bridge):§1 立场由「纯拉」修订为「推拉结合」;端点全集 13→14(+`ledger/list`,§5.10);新增 §7.3 直连通道退役、§10 出站桥接、§11 三途径编排时序。入站命令面(§2~§9)行为冻结不变。
 > 2026-10-10 M4b 补丁(用户裁决):`/releases/create` 新增 additive `skipOutbound` 参数(§5.8)——途径 1(钉钉内审批已完成后由桥接转建发布单)的出站回声由「桥接侧幂等处置」改为**显式参数契约**(§10.6 末行/§11.1);console 页面建单不暴露该参数、行为逐位不变。
+> 2026-10-11 修订(ADR-012,task 10-11-approval-round-binding):**入站冻结声明修订为「frozen except the additive FLOW_ID_MISMATCH/ROUND_MISMATCH rejections」**——三态命令(approve/reject/cancel)新增 flow 一致性守卫与审批轮次守卫(§4.5),既有合法调用(最简 ticketId 调用、携带一致 flowId/round 的调用)行为逐位不变,仅「携带的 externalFlowId/externalRound 与本地记录**不一致**」的命令由静默推进改为拒绝+审计;§5.4 payload 新增 additive 可选字段 `externalRound`(旧桥接不发送不受影响);§10.2 出站 context 新增 `round` 键(§10.2.1 轮次语义);executes/return 守卫拒绝补审计落库(O-C2-1)。
 
 ## 1. 架构定位
 
@@ -166,6 +167,21 @@ String signature = hmacSha1Base64(toSign, sk);
 - 状态前置守卫 → 重放/乱序无害:同一条 approve 命令重放 → 第二次因状态已非 `WAIT_APPROVAL` 被拒;
 - 无 nonce 去重基建(网关限流职责);外部引擎用读接口自行核对状态。
 
+### 4.5 flow 一致性与轮次守卫(ADR-012,2026-10-11 新增)
+
+三态命令(approve/reject/cancel,`meta != null ∧ approType=External` 作用域)在三个状态守卫(END_STATUS / STATUS_MISMATCH / CHANNEL_MISMATCH)之后新增两个一致性守卫;**每个拒绝都先落 `EXTERNAL_COMMAND_REJECTED` 审计事件再抛错,零状态副作用**:
+
+| 守卫 | 条件 | 拒绝 reason | 宽松语义(红线) |
+|---|---|---|---|
+| ④ flow 一致性 | 命令 `externalFlowId` 非空 ∧ 已记录 `appro_identity` 非空 ∧ **不相等** | `FLOW_ID_MISMATCH`(eventData 携带两值:externalFlowId + recordedFlowId) | 任一为空 → 跳过校验(空 identity = §10.6 合法空窗,见观测条款;缺失 flowId = §5.4 冻结的「最简调用」) |
+| ⑤ 轮次绑定 | 命令 `externalRound` 携带 ∧ 与 `dm_approval.approval_round` **不相等** | `ROUND_MISMATCH` | 字段缺失 → 跳过(旧桥接不发送该字段,行为不变);本地轮次列为 NULL(异常防御)同样跳过 |
+
+- **架构立场**(桥接 PRD 裁决 #5 修订):「外部引擎 = 审批流转唯一真相源」**保留**;console 由「仅状态守卫」升级为「状态守卫 + flow 一致性守卫」——不对账、不轮询,只拒绝**可证明**属于其他 flow/轮次的命令;
+- **空窗观测**:入站命令 flowId 写入空 `appro_identity` 时(既有「仅空时写入」双源契约不变)记 warn 日志 + 成功事件 `eventData.identityBackfill=true` 标记——为严格档灰度积累真实窗口频率数据;
+- **严格档(预留,默认关闭)**:root KV `govExternalCommandStrictFlow=true` 时,三态命令缺失 externalFlowId / externalRound 即拒(`FLOW_ID_MISSING` / `ROUND_MISSING`)。默认 false=宽松档;读取失败同样按宽松处理。开启前必须完成桥接升级联调实证(§10.2.1);
+- **execute/return 拒绝审计(O-C2-1 同批关闭)**:`tickets/execute` 守卫拒绝(reason=`EXECUTE_STATUS_MISMATCH` / `CHANNEL_MISMATCH`,command=`execute`)与 `tickets/return` 委托链守卫拒绝(umbrella reason=`RETURN_GUARD`,command=`return`)同样落 `EXTERNAL_COMMAND_REJECTED`;not-found/跨租户拒绝**不落审计**(存在性不泄露);
+- **D5 零误拒**:工单级 External resubmit(§10.5)后工单在 WAIT_EXEC 链,三态命令被状态守卫②先行拒绝,④⑤执行不到;execute/return 不消费 flowId/round——原审批(含旧 flowId)照常有效。
+
 ## 5. 编排时序
 
 ### 5.1 工单环(PROD_DML DIRECT)
@@ -220,6 +236,7 @@ approve/reject/cancel/return/execute 共用 `DbChangeTicketCommandFO`:
   "approver": "张三",
   "comment": "同意",
   "externalFlowId": "EXT-FLOW-001",
+  "externalRound": 1,
   "reason": "执行失败退回修改"
 }
 ```
@@ -229,10 +246,11 @@ approve/reject/cancel/return/execute 共用 `DbChangeTicketCommandFO`:
 | `ticketId` | 是 | 全部 | dm_approval.id,按 approBiz 路由(工单/发布单) |
 | `approver` | 否 | approve/reject/cancel | 审批人名,合成 activity 进度区展示 |
 | `comment` | 否 | approve/reject/cancel | 审批意见 |
-| `externalFlowId` | 否 | approve/reject/cancel | 外部流程 ID,落 approIdentity(仅当前为空时) |
+| `externalFlowId` | 否 | approve/reject/cancel | 外部流程 ID,落 approIdentity(仅当前为空时);**与已记录 approIdentity 均非空且不一致 → 拒绝 `FLOW_ID_MISMATCH`**(§4.5,ADR-012) |
+| `externalRound` | 否 | approve/reject/cancel | **additive 2026-10-11(ADR-012)**:命令所属审批轮次(整数,来自出站 `flows/create.context.round`,§10.2.1);携带且与本地 `approval_round` 不一致 → 拒绝 `ROUND_MISMATCH`;缺失 → 跳过校验(旧桥接不发送不受影响) |
 | `reason` | 否 | return | 退回原因,入 eventData + IM 通知申请人 |
 
-> 最简调用:只传 `ticketId` 即可驱动状态迁移;有 approver/comment 时增强进度区展示。
+> 最简调用:只传 `ticketId` 即可驱动状态迁移;有 approver/comment 时增强进度区展示。**宽松红线(ADR-012)**:缺失 externalFlowId/externalRound 永不拒绝(严格档为配置预留、默认关闭,§4.5)——本冻结承诺不因轮次绑定而破坏。
 
 ### 5.5 /tickets/detail(读端点)
 
@@ -432,6 +450,10 @@ VO 16 字段(list 级口径):
 |---|---|
 | `GOV_OPEN_COMMAND_INVALID_STATUS` | 命令前置状态不满足(携带 ticketId + 当前状态 + 命令) |
 | `GOV_OPEN_COMMAND_CHANNEL_MISMATCH` | 非 External 通道工单收到命令 |
+| `GOV_OPEN_COMMAND_FLOW_MISMATCH` | 命令 externalFlowId 与已记录 approIdentity 不一致(§4.5 守卫④,ADR-012;携带两值) |
+| `GOV_OPEN_COMMAND_ROUND_MISMATCH` | 命令 externalRound 与本地 approval_round 不一致(§4.5 守卫⑤,ADR-012;携带两值) |
+| `GOV_OPEN_COMMAND_FLOW_MISSING` | 严格档(config 预留,默认关闭)下三态命令缺失 externalFlowId |
+| `GOV_OPEN_COMMAND_ROUND_MISSING` | 严格档(config 预留,默认关闭)下三态命令缺失 externalRound |
 | `GOV_RELEASE_RETURN_INVALID_STATUS` | 发布单退回状态不满足 |
 | `TICKET_OPERATOR_TYPE_NOT_MATCH_STATUS` | 工单状态与操作不匹配(既有键) |
 
@@ -467,7 +489,7 @@ VO 16 字段(list 级口径):
   "title": "orders 表新增列",
   "applicant": {"account": "<申请人 uid>", "name": "<显示名>"},
   "summary": "ALTER TABLE orders ADD COLUMN note TEXT;...(≤200 字符截断)",
-  "context": {"puid": "<租户 puid>", "approBiz": "PROD_DML"}
+  "context": {"puid": "<租户 puid>", "approBiz": "PROD_DML", "round": 1}
 }
 ```
 
@@ -479,7 +501,7 @@ VO 16 字段(list 级口径):
 | `title` | 工单/发布单标题 |
 | `applicant` | `account`=申请人 uid(工单 ownerUid/发布单创建人);`name`=显示名(查询失败退化为裸 uid)——**钉钉用户映射为桥接侧责任** |
 | `summary` | rawSql 前 200 字符截断(与台账 list 级同口径:无全量 SQL、无连接串) |
-| `context` | `puid`=租户;`approBiz`=`PROD_DML` / `DM_PROD_RELEASE` 等 |
+| `context` | `puid`=租户;`approBiz`=`PROD_DML` / `DM_PROD_RELEASE` 等;`round`=本次发起的审批轮次(**additive 2026-10-11,ADR-012**,恒携带,首轮=1,§10.2.1)——未知键容忍,未升级桥接忽略即可 |
 
 **鉴权**:请求头 `X-Bridge-Auth: <dingBridgeAuthToken>`(token 空则省略该头)。
 
@@ -494,7 +516,15 @@ VO 16 字段(list 级口径):
 1. 旧实例**存活期间**的重复请求 → 桥接侧去重返回**同一 flowId**(`duplicated=true`),绝不创建第二个钉钉实例(本地行级 CAS 之后的第二道防双发网,兜住跨进程重发/重复重发);
 2. **旧实例已被撤销后**(收到出站 `flows/cancel` 通知或桥接侧自行关闭)同键再次发起 → **必须创建新实例返回新 flowId**,绝不能返回已撤销实例的旧 id。典型场景:发布单 `RETURNED` → `releases/resubmit` 重建审批面(本项目清空 `appro_identity`+出站四列后重新出站,`bizId`=releaseId 跨轮次不变)= **第二轮审批**(§10.5)。
 
-**flowId 回填(双源先到先得)**:出站响应的 `flowId` 回填 `dm_approval.appro_identity`,SQL 级原子 CAS——**仅当前为空时写入**;与入站命令携带的 `externalFlowId`(§5.4)落同一字段、同一守卫。双源本质是同一实例 id,先到先写,后到跳过回填(STARTED 照落,§10.6)。
+**flowId 回填(双源先到先得)**:出站响应的 `flowId` 回填 `dm_approval.appro_identity`,SQL 级原子 CAS——**仅当前为空时写入**;与入站命令携带的 `externalFlowId`(§5.4)落同一字段、同一守卫。双源本质是同一实例 id,先到先写,后到跳过回填(STARTED 照落,§10.6)。**ADR-012 一致性补充**:「双源同值」由假设升级为**校验**——入站三态命令携带的 flowId 与已记录值不一致即拒(§4.5 守卫④);写入规则本身不变(比对是新增守卫,不是覆盖语义);入站写入空 identity 时记观测标记(`identityBackfill`,§4.5)。
+
+#### 10.2.1 审批轮次语义(ADR-012,2026-10-11 新增)
+
+- **本地轮次列**:`dm_approval.approval_round`(int NOT NULL DEFAULT 1,迁移 V202610110002)。首轮=1;**发布单 resubmit(§10.5)在清空 `appro_identity`+出站四列的同时 round+1**(轮次自增与轮次清空同一 SQL,原子);
+- **出站携带**:`flows/create.context.round` = 发起时刻的行轮次(additive,恒携带)——桥接侧应将 round 与 `(bizType,bizId)↔flowId` 映射一并存储;
+- **入站回传(桥接侧 additive 适配)**:三态命令携带 `externalRound`(§5.4)= 该命令所属 flow 创建时收到的 `context.round`;console 比对本地 `approval_round`,不等 → `ROUND_MISMATCH` 拒绝+审计(§4.5 守卫⑤);缺失 → 跳过(宽松档,旧桥接零影响);
+- **第二轮硬要求衔接**:§10.2 幂等键第二轮语义(旧实例撤销后同键再发起**必须**返回新 flowId)不变;round 是其**可校验化**——即使桥接误将旧实例事件按稳定键解析到新轮次审批行,旧 flow 的 F1 回调也会被守卫④(identity 已回填时)或守卫⑤(externalRound 不符时)拒绝,而不再静默反写推进;
+- **严格档灰度(预留)**:`govExternalCommandStrictFlow=true` 后「缺失 externalFlowId/externalRound 即拒」——须待桥接升级(读取 context.round + 回传 externalRound)经统一联调实证后方可开启(ADR-012 Decision 3)。
 
 **错误分类(决定补偿策略)**:
 
@@ -550,7 +580,7 @@ VO 16 字段(list 级口径):
 
 ### 10.5 发布单重提 = 新审批轮次
 
-`releases/resubmit`(RETURNED → 重提)重建审批面:本项目在 resubmit 事务内对新审批行显式清空 `appro_identity` + 出站四列(**轮次清空契约显性化**),事务提交后**重新出站发起**。旧实例已由 return 时的 `RELEASE_RETURNED` 撤销通知关闭;桥接侧对第二轮 `flows/create` **必须返回新 flowId**(§10.2 第二轮语义)。
+`releases/resubmit`(RETURNED → 重提)重建审批面:本项目在 resubmit 事务内对新审批行显式清空 `appro_identity` + 出站四列并将 `approval_round` **+1**(轮次清空契约显性化;ADR-012 起为**轮次自增语义**,§10.2.1),事务提交后**重新出站发起**(context 携带新 round)。旧实例已由 return 时的 `RELEASE_RETURNED` 撤销通知关闭;桥接侧对第二轮 `flows/create` **必须返回新 flowId**(§10.2 第二轮语义)。
 
 注意区分:**工单 External resubmit**(`/tickets/resubmit`,REVISION → 直落 WAIT_EXEC)是执行失败后的重提,**原审批仍然有效——不清空、不重新出站**(D5 语义,旧 flowId 存留有效)。
 
@@ -559,8 +589,8 @@ VO 16 字段(list 级口径):
 | 场景 | 行为 |
 |---|---|
 | 开关 off / baseUrl 空 | 全部出站静默跳过(NOT_STARTED 停留);入站命令面照常 = 纯拉模式 |
-| 事件先于出站响应到达(极端并发) | 入站命令不依赖 `outbound_status`(守卫只看工单状态)→ 照常受理;出站响应后到 STARTED 照落 |
-| 出站回填 vs 入站 externalFlowId 竞争 | `appro_identity` 仅空时写,先到先得(双源同实例,值一致);被抢占时回填跳过、STARTED 照落 |
+| 事件先于出站响应到达(极端并发) | 入站命令不依赖 `outbound_status`(守卫只看工单状态)→ 照常受理;出站响应后到 STARTED 照落。**ADR-012 观测条款**:此时 identity 为空,入站 flowId 反写照常(宽松红线)但记 warn 日志+成功事件 `identityBackfill=true` 标记(§4.5)——空窗频率可测,严格档灰度依据 |
+| 出站回填 vs 入站 externalFlowId 竞争 | `appro_identity` 仅空时写,先到先得(双源同实例,值一致——ADR-012 起「同值」由假设升级为**校验**:入站三态命令携带值与已记录值不一致即拒 `FLOW_ID_MISMATCH`,§4.5);被抢占时回填跳过、STARTED 照落 |
 | 人工 cancel 后桥接 approve 事件到达 | 状态守卫拒绝(CANCELED 终态)——入站面已交付行为 |
 | 人工 cancel 但出站撤销失败 | 本地流转不回滚,仅告警;僵尸实例由守卫无害化 |
 | 手动重发与 sweep 并发 | 行级 CAS 双向:reissue 拒 STARTING;sweep 认领要求 FAILED + retry_count 匹配 |

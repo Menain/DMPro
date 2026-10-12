@@ -90,7 +90,10 @@ public interface DmApprovalMapper extends BaseMapper<DmApprovalDO> {
     /** flowId backfill under the "write only when currently empty" contract (dual-source first-writer-wins). */
     int updateOutboundFlowIdIfEmpty(@Param("ticketId") Long ticketId, @Param("flowId") String flowId);
 
-    /** New approval round (release resubmit, design boundary #15): clear appro_identity + the four outbound columns. */
+    /**
+     * New approval round (release resubmit, design boundary #15; ADR-012 M3 round-increment
+     * semantics): clear appro_identity + the four outbound columns AND bump approval_round.
+     */
     int clearOutboundForNewRound(@Param("ticketId") Long ticketId);
 
     /** Compensation sweep candidates: FAILED ∧ retry_count < maxRetry ∧ next_retry_at due. */

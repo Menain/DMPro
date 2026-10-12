@@ -88,10 +88,34 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
     /**
      * Guard-rejection reasons recorded in EXTERNAL_COMMAND_REJECTED eventData
      * (10-11 rejected-command-audit): end status / not WAIT_APPROVAL / not the External channel.
+     * <p>
+     * ADR-012 round binding (task 10-11-approval-round-binding) additively extends the
+     * vocabulary: FLOW_ID_MISMATCH / ROUND_MISMATCH (tolerant mismatch rejections of the
+     * three-state commands) and FLOW_ID_MISSING / ROUND_MISSING (strict tier — config-gated
+     * by govExternalCommandStrictFlow, default false = unreachable); O-C2-1 adds the
+     * execute/return open-command guard reasons (EXECUTE_STATUS_MISMATCH / RETURN_GUARD —
+     * CHANNEL_MISMATCH is reused for the execute channel guard). Public because
+     * GovOpenApiServiceImpl audits through the same vocabulary (single reason source).
      */
-    private static final String REJECT_REASON_END_STATUS       = "END_STATUS";
-    private static final String REJECT_REASON_STATUS_MISMATCH  = "STATUS_MISMATCH";
-    private static final String REJECT_REASON_CHANNEL_MISMATCH = "CHANNEL_MISMATCH";
+    public static final String REJECT_REASON_END_STATUS              = "END_STATUS";
+    public static final String REJECT_REASON_STATUS_MISMATCH         = "STATUS_MISMATCH";
+    public static final String REJECT_REASON_CHANNEL_MISMATCH        = "CHANNEL_MISMATCH";
+    public static final String REJECT_REASON_FLOW_ID_MISMATCH        = "FLOW_ID_MISMATCH";
+    public static final String REJECT_REASON_ROUND_MISMATCH          = "ROUND_MISMATCH";
+    public static final String REJECT_REASON_FLOW_ID_MISSING         = "FLOW_ID_MISSING";
+    public static final String REJECT_REASON_ROUND_MISSING           = "ROUND_MISSING";
+    public static final String REJECT_REASON_EXECUTE_STATUS_MISMATCH = "EXECUTE_STATUS_MISMATCH";
+    /** umbrella reason of the /tickets/return preconditions (status/approBiz/ticketType/failed-group/merged — the throw site inside GovTicketV2ServiceImpl carries the detail; eventData.ticketStatus + the application log disambiguate). */
+    public static final String REJECT_REASON_RETURN_GUARD            = "RETURN_GUARD";
+
+    /**
+     * Strict-tier fail-safe default (ADR-012 Decision 3 / design M7): false = tolerant mode —
+     * a missing externalFlowId/externalRound NEVER rejects. Flipping the switch to true is a
+     * gray-release decision requiring bridge-upgrade integration-test evidence (the frozen §5.4
+     * "ticketId-only minimal call" contract forbids strict-by-default). A config read failure
+     * stays tolerant as well — the strict tier must never activate by accident.
+     */
+    public static final boolean DEFAULT_STRICT_FLOW_MODE = false;
 
     @Resource
     private SystemDal                               systemDal;
@@ -400,8 +424,10 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
      * <p>
      * Mirrors the original switch block (L325-362) bit-for-bit when {@code meta == null}
      * (the DingTalk/Internal callback path). When {@code meta != null} (the open command
-     * API path), additionally performs: status guards, activity synthesis, externalFlowId
-     * persistence, and audit event recording.
+     * API path), additionally performs: state guards, flow-consistency guards (ADR-012:
+     * FLOW_ID_MISMATCH / ROUND_MISMATCH — tolerant, blank/absent values skip; strict tier
+     * config-gated and default-off), activity synthesis, externalFlowId persistence (with
+     * empty-window observation), and audit event recording.
      * <p>
      * The three steps per status branch:
      * <ol>
@@ -447,6 +473,54 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
                     I18nRdpMsgKeys.GOV_OPEN_COMMAND_CHANNEL_MISMATCH.name(),
                     ticketId, ticket.getApproType()));
             }
+
+            // Guard 4 — flow consistency (ADR-012 Decision 2, form A): both sides non-blank
+            // and different ⇒ the command provably belongs to a DIFFERENT flow (stale F1
+            // callback hitting a resubmitted row) → reject + audit, zero state side effects.
+            // TOLERANT: either side blank skips the check — a blank command flowId is the
+            // frozen §5.4 "ticketId-only minimal call", and a blank appro_identity is the
+            // legitimate §10.6 empty window (observed at the backfill point below, never
+            // rejected in tolerant mode). Scope stays meta!=null ∧ External (guard 3 above).
+            String commandFlowId  = meta.getExternalFlowId();
+            String recordedFlowId = ticket.getApproIdentity();
+            if (StringUtils.isNotBlank(commandFlowId)) {
+                if (StringUtils.isNotBlank(recordedFlowId) && !recordedFlowId.equals(commandFlowId)) {
+                    appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_FLOW_ID_MISMATCH);
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nRdpMsgKeys.GOV_OPEN_COMMAND_FLOW_MISMATCH.name(),
+                        ticketId, commandFlowId, recordedFlowId));
+                }
+            } else if (isStrictFlowMode()) {
+                // Strict tier (ADR-012 Decision 3 — code in place, config-gated, default
+                // unreachable): missing flowId rejects once the bridge upgrade is confirmed
+                // and gray-released with integration-test evidence.
+                appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_FLOW_ID_MISSING);
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nRdpMsgKeys.GOV_OPEN_COMMAND_FLOW_MISSING.name(),
+                    ticketId, mapToCommandName(status)));
+            }
+
+            // Guard 5 — approval-round binding (ADR-012 Decision 3, form B): a carried
+            // externalRound that differs from the row's approval_round proves the command
+            // was emitted by an OLD round's flow (identity-empty window included — the round
+            // token closes what pure flowId comparison cannot) → reject + audit. Absent →
+            // skipped (tolerant-first; old bridges never send the field). A null recorded
+            // round (unmigrated row read) is skipped too — never reject on absent evidence.
+            Integer externalRound = meta.getExternalRound();
+            if (externalRound != null) {
+                Integer recordedRound = ticket.getApprovalRound();
+                if (recordedRound != null && !externalRound.equals(recordedRound)) {
+                    appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_ROUND_MISMATCH);
+                    throw new ErrorMessageException(DmI18nUtils.getMessage(
+                        I18nRdpMsgKeys.GOV_OPEN_COMMAND_ROUND_MISMATCH.name(),
+                        ticketId, externalRound, recordedRound));
+                }
+            } else if (isStrictFlowMode()) {
+                appendRejectedCommandEvent(ticket, status, meta, REJECT_REASON_ROUND_MISSING);
+                throw new ErrorMessageException(DmI18nUtils.getMessage(
+                    I18nRdpMsgKeys.GOV_OPEN_COMMAND_ROUND_MISSING.name(),
+                    ticketId, mapToCommandName(status)));
+            }
         }
 
         // Activity synthesis — only for the command path when approver/comment is present.
@@ -470,9 +544,19 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
 
         // externalFlowId → approIdentity — only when the current approIdentity is empty
         // (never overwrite an identity set by a prior createApproval or command).
+        // ADR-012 Decision 4 — empty-window observation: this write IS the §10.6 "events may
+        // arrive before the outbound response" window (and, until guard 4 existed, the stale-flow
+        // back-write hole). The write rule is untouched (the dual-source "only when empty"
+        // contract stands); the window becomes MEASURABLE — warn log + identityBackfill marker
+        // on the success event — so the strict tier can gray-release on real frequency data.
+        boolean identityBackfill = false;
         if (meta != null && StringUtils.isNotBlank(meta.getExternalFlowId())
             && StringUtils.isEmpty(ticket.getApproIdentity())) {
             approvalDal.approvalMapper().updateThirdApprovalInfo(ticketId, meta.getExternalFlowId(), null);
+            identityBackfill = true;
+            log.warn("ticketId={}: inbound command back-filled an EMPTY appro_identity with externalFlowId={}"
+                + " — identity-empty-window sample (ADR-012 observation; the outbound flowId backfill"
+                + " had not landed first)", ticketId, meta.getExternalFlowId());
         }
 
         // Three-step state migration (mirrors the former inline switch block).
@@ -525,7 +609,7 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
             if (eventType != null) {
                 String fromStatus = ApprovalStatus.WAIT_APPROVAL.name();
                 String toStatus = mapToTicketStatus(status);
-                appendExternalCommandEvent(ticketId, eventType, fromStatus, toStatus, meta);
+                appendExternalCommandEvent(ticketId, eventType, fromStatus, toStatus, meta, identityBackfill);
             }
         }
     }
@@ -577,7 +661,8 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
     }
 
     private void appendExternalCommandEvent(long ticketId, GovEventType eventType,
-                                            String fromStatus, String toStatus, ExternalCommandMeta meta) {
+                                            String fromStatus, String toStatus, ExternalCommandMeta meta,
+                                            boolean identityBackfill) {
         DmDbChangeEventDO eventDO = new DmDbChangeEventDO();
         eventDO.setTicketId(ticketId);
         eventDO.setEventType(eventType.name());
@@ -596,9 +681,33 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
         if (StringUtils.isNotBlank(meta.getExternalFlowId())) {
             data.put("externalFlowId", meta.getExternalFlowId());
         }
+        if (identityBackfill) {
+            // ADR-012 Decision 4 observation marker (additive): the command's flowId landed on
+            // an EMPTY appro_identity — the §10.6 identity-empty window made searchable.
+            // INBOUND command path only; the outbound CAS backfill is the normal path and
+            // never carries this marker.
+            data.put("identityBackfill", true);
+        }
         eventDO.setEventData(JsonUtils.toJson(data));
 
         this.dbChangeEventDal.eventMapper().insert(eventDO);
+    }
+
+    /**
+     * Strict-tier config read (ADR-012 Decision 3 / design M7 — reservation only): true means a
+     * three-state command MISSING externalFlowId / externalRound is rejected (FLOW_ID_MISSING /
+     * ROUND_MISSING). Default AND read-failure both stay {@link #DEFAULT_STRICT_FLOW_MODE} = false
+     * (tolerant) — the strict tier must never activate by accident; flipping it is a gray-release
+     * decision requiring bridge-upgrade integration-test evidence (the §10.6 "events may precede
+     * the outbound response" boundary collides with strict-by-default).
+     */
+    private boolean isStrictFlowMode() {
+        try {
+            Boolean strict = systemDal.fetchSystemConf(RootUserConfig.Fields.govExternalCommandStrictFlow, Boolean.class);
+            return strict != null && strict;
+        } catch (Exception e) {
+            return DEFAULT_STRICT_FLOW_MODE;
+        }
     }
 
     /**
@@ -617,23 +726,43 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
      * <p>
      * Payload discipline: NO credentials / signature parameters — command name, rejection reason,
      * the ticket status that rejected it (+approType on channel mismatch), externalFlowId when
-     * carried; caller identity = operator_uid column (same shape as {@link #appendExternalCommandEvent};
-     * ticketId-only like the success events — release-side retrieval goes through
-     * dm_prod_release.approval_id → ticketId).
+     * carried (+recordedFlowId on FLOW_ID_MISMATCH — both mismatch values are auditable, flowIds
+     * are not credentials); caller identity = operator_uid column (same shape as
+     * {@link #appendExternalCommandEvent}; ticketId-only like the success events — release-side
+     * retrieval goes through dm_prod_release.approval_id → ticketId).
      */
     private void appendRejectedCommandEvent(DmApprovalDO ticket, ApprovalInstanceStatus status,
                                              ExternalCommandMeta meta, String reason) {
+        appendRejectedCommandEvent(ticket, mapToCommandName(status), reason, meta);
+    }
+
+    /**
+     * Command-named core of the rejected-command audit — the SINGLE EXTERNAL_COMMAND_REJECTED
+     * write point (10-11 rejected-command-audit R2 discipline; made public by ADR-012 M8/O-C2-1
+     * so GovOpenApiServiceImpl's execute/return guard rejections ride the same REQUIRES_NEW
+     * mechanism instead of copy-pasting it). Organization note (design M8 discretion): kept on
+     * this service rather than extracted into a new component — GovOpenApiServiceImpl already
+     * injects ApprovalProviderServiceImpl, the txManager/eventDal wiring lives here, and the
+     * reason/command vocabulary constants sit right above; a separate class would only add an
+     * injection edge with zero cohesion gain.
+     * <p>
+     * {@code command} whitelist (eventData.command): approve / reject / cancel (via
+     * {@link #mapToCommandName}) + execute / return (GovOpenApiServiceImpl). {@code meta} may be
+     * null for callers without command metadata — the event still records command/reason/status.
+     */
+    public void appendRejectedCommandEvent(DmApprovalDO ticket, String command, String reason,
+                                           ExternalCommandMeta meta) {
         try {
             DmDbChangeEventDO eventDO = new DmDbChangeEventDO();
             eventDO.setTicketId(ticket.getId());
             eventDO.setEventType(GovEventType.EXTERNAL_COMMAND_REJECTED.name());
             eventDO.setFromStatus(ticket.getTicketStatus() != null ? ticket.getTicketStatus().name() : null);
             // toStatus stays null — a rejected command NEVER moves the ticket.
-            eventDO.setOperatorUid(meta.getOperatorUid());
+            eventDO.setOperatorUid(meta != null ? meta.getOperatorUid() : null);
 
             Map<String, Object> data = new HashMap<>();
             data.put("via", "EXTERNAL_COMMAND");
-            data.put("command", mapToCommandName(status));
+            data.put("command", command);
             data.put("reason", reason);
             if (eventDO.getFromStatus() != null) {
                 data.put("ticketStatus", eventDO.getFromStatus());
@@ -641,8 +770,13 @@ public class ApprovalProviderServiceImpl implements ApprovalRefreshService {
             if (REJECT_REASON_CHANNEL_MISMATCH.equals(reason) && ticket.getApproType() != null) {
                 data.put("approType", ticket.getApproType().name());
             }
-            if (StringUtils.isNotBlank(meta.getExternalFlowId())) {
+            if (meta != null && StringUtils.isNotBlank(meta.getExternalFlowId())) {
                 data.put("externalFlowId", meta.getExternalFlowId());
+            }
+            if (REJECT_REASON_FLOW_ID_MISMATCH.equals(reason) && StringUtils.isNotBlank(ticket.getApproIdentity())) {
+                // ADR-012 A1: the mismatch is auditable on BOTH sides — the recorded identity
+                // next to the carried externalFlowId (flowIds are not credentials).
+                data.put("recordedFlowId", ticket.getApproIdentity());
             }
             eventDO.setEventData(JsonUtils.toJson(data));
 

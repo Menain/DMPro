@@ -24,7 +24,7 @@ import lombok.Setter;
  * <pre>
  * {"bizType":"TICKET|RELEASE","bizId":"&lt;ticketId|releaseId&gt;","bizNo":"&lt;工单号|releaseNo&gt;",
  *  "title":"...","applicant":{"account":"...","name":"..."},"summary":"≤200 chars",
- *  "context":{"puid":"...","approBiz":"PROD_DML|DM_PROD_RELEASE"}}
+ *  "context":{"puid":"...","approBiz":"PROD_DML|DM_PROD_RELEASE","round":1}}
  * </pre>
  * {@code (bizType,bizId)} is the bridge-side dedup key — repeated creates for the same pair
  * return the SAME flowId ({@code duplicated=true}) instead of spawning a second DingTalk
@@ -67,6 +67,14 @@ public class BridgeCreateRequest {
         private String puid;
         /** ticket type (PROD_DML) or DM_PROD_RELEASE for release approval rows. */
         private String approBiz;
+        /**
+         * Approval round of this initiation (ADR-012, additive 2026-10-11): dm_approval.approval_round
+         * at send time — 1 for a first send, N+1 after each release-resubmit round reset. The
+         * bridge is asked to persist it with the (bizType,bizId)↔flowId mapping and echo it back
+         * as externalRound on inbound commands (ROUND_MISMATCH guard). Unknown-key tolerance
+         * (§10.2) makes this invisible to a not-yet-upgraded bridge — zero breakage.
+         */
+        private Integer round;
 
         public Context() {
         }

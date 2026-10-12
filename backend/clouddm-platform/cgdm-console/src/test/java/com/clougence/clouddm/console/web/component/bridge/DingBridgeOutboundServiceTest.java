@@ -349,6 +349,44 @@ public class DingBridgeOutboundServiceTest {
     }
 
     @Test
+    public void payload_contextCarriesApprovalRound() {
+        // ADR-012 M4 (additive): the flows/create context carries the row's explicit approval
+        // round so the bridge can bind (bizType,bizId)↔flowId per round and echo externalRound
+        // on inbound commands. Unknown-key tolerance (§10.2) keeps old bridges unaffected.
+        DmApprovalDO row = externalTicket();
+        row.setApprovalRound(3); // e.g. a release row after two resubmit rounds
+        when(approvalMapper.queryById(APPROVAL_ID)).thenReturn(row);
+
+        service.triggerCreateFlow(PUID, APPROVAL_ID);
+
+        ArgumentCaptor<BridgeCreateRequest> reqCaptor = ArgumentCaptor.forClass(BridgeCreateRequest.class);
+        verify(client).createFlow(any(), reqCaptor.capture());
+        assertEquals(Integer.valueOf(3), reqCaptor.getValue().getContext().getRound());
+    }
+
+    @Test
+    public void payload_roundAbsentOnRow_fallsBackToFirstRound() {
+        // defensive contract: a row read without the column (legacy read paths, fixtures) is by
+        // definition round 1 — the context ALWAYS carries the key, the bridge never sees null.
+        service.triggerCreateFlow(PUID, APPROVAL_ID); // externalTicket() leaves approvalRound null
+
+        ArgumentCaptor<BridgeCreateRequest> reqCaptor = ArgumentCaptor.forClass(BridgeCreateRequest.class);
+        verify(client).createFlow(any(), reqCaptor.capture());
+        assertEquals(Integer.valueOf(1), reqCaptor.getValue().getContext().getRound());
+    }
+
+    @Test
+    public void resetForNewApprovalRound_delegatesToRoundIncrementStatement() {
+        // ADR-012 M3: the round-increment reset semantics live in the clearOutboundForNewRound
+        // SQL — single delegation point (the ProdReleaseServiceImpl caller is untouched). The
+        // SQL content itself (approval_round = approval_round + 1) is pinned in
+        // ResubmitOutboundResetTest.
+        service.resetForNewApprovalRound(APPROVAL_ID);
+
+        verify(approvalMapper).clearOutboundForNewRound(APPROVAL_ID);
+    }
+
+    @Test
     public void payload_summaryTruncatedTo200() {
         DmApprovalDO row = externalTicket();
         row.setRawSql("U".repeat(500));

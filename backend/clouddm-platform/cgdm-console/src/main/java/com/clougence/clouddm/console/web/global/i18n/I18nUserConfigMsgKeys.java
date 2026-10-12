@@ -210,6 +210,9 @@ public enum I18nUserConfigMsgKeys {
     USER_DING_BRIDGE_TIMEOUT_MS,
     USER_DING_BRIDGE_OUTBOUND_ENABLE,
 
+    // for ADR-012 approval round binding strict tier (task 10-11-approval-round-binding)
+    USER_GOV_EXTERNAL_COMMAND_STRICT_FLOW,
+
     // for schema gate fail-closed (ADR-011, task 10-11-schema-gate-fail-closed)
     USER_GOV_SCHEMA_PRECHECK_FAIL_CLOSED,
     USER_GOV_SCHEMA_DIFF_FAIL_CLOSED

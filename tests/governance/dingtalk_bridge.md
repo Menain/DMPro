@@ -1,6 +1,6 @@
 # 钉钉审批桥接集成联调手册
 
-> 覆盖:出站发起主链(途径 2/3)/ 失败补偿 / 止血开关 / 途径 1 全链(台账开放读+组合命令)/ 途径 3 全链(双选项+退回映射)/ 撤销通知 / 直连通道退役 / 前端三面浏览器验收 / 运维处置。
+> 覆盖:出站发起主链(途径 2/3)/ 失败补偿 / 止血开关 / 途径 1 全链(台账开放读+组合命令)/ 途径 3 全链(双选项+退回映射)/ **审批轮次绑定(ADR-012,5A 章,项目末尾统一联调)** / 撤销通知 / 直连通道退役 / 前端三面浏览器验收 / 运维处置。
 > 代码基线:4 笔提交(`ba6bd748` 出站基建 / `1ec7ddf7` 台账开放读 / `d5386a86` 直连 deprecated / `11418b0f` 前端三面)+ M4 文档面 + **M4b skipOutbound 补丁**(2026-10-10,待提交:开放 create FO additive 参数 + 透传 + 钩子守卫 + 5 钉)。
 > 自动化基线:`:cgdm-console:test` 114 类 / 1604 / 0 失败(M4b +5 钉);全后端 2157 / 0(skip 10 = 插件模块预存;M4b 仅 console 模块 +5,其余 21 模块由 M3 check 复跑背书)——桥接七套 102 钉 + GovOpenApiServiceImplTest 2 透传钉背书,本手册聚焦**真实桥接联调 + 浏览器面**。
 > 契约参考:`docs/governance/openapi-orchestration.md` §10(出站桥接)/§11(三途径时序);`.trellis/spec/backend/governance-contracts.md`(出站桥接契约段)。
@@ -109,6 +109,30 @@
 | 5.4 | 执行失败退回环 | 构造执行失败(测试库锁/语法)→ EXEC_FAIL → 桥接 `tickets/return {reason}` → `tickets/resubmit {groups}` | return → REVISION+IM 通知申请人;resubmit 预检通过**直落 WAIT_EXEC**(零新审批记录、零出站——原审批仍有效,appro_identity 存留);重跑到终态 |
 | 5.5 | **发布单第二轮(核心)** | 发布单(1.2 产物)桥接 `releases/return`(或页面退回)→ `releases/resubmit {releaseId, ticketIds}` | return → RETURNED+出站 flows/cancel(RELEASE_RETURNED);resubmit → 新审批行出站四列清空+**重新出站** → 桥接返回**新 flowId**(≠第一轮,第二轮语义实证 orchestration §10.2);钉钉测试群出现新审批实例、旧实例已关闭 |
 | 5.6 | 守卫抽验 | WAIT_APPROVAL 时桥接下发 execute(乱序) | 拒绝 GOV_OPEN_COMMAND_INVALID_STATUS,零副作用(重放/乱序无害抽验) |
+
+## 5A. 审批轮次绑定(ADR-012 C5,2026-10-11 新增 — 项目末尾统一联调)
+
+前置:开关开启;External 环境;**桥接侧已完成 5A.0 适配清单**(未适配时 5A.3/5A.4/5A.5 的入站回传场景不可测,仅可测出站携带与宽松跳过)。契约参考:orchestration §4.5/§5.4/§10.2.1。
+
+**桥接侧 additive 适配清单(5A.0,外部项目对接依据)**:
+
+1. **读取 `flows/create.context.round`**(新键,additive):与 `(bizType,bizId)↔flowId` 映射一并存储;未升级桥接按 §10.2 未知键容忍忽略,零破坏;
+2. **入站三态命令回传 `externalRound`**(§5.4 additive 可选字段)= 该命令所属 flow 创建时收到的 `context.round`;不发送则 console 宽松跳过(行为与升级前一致);
+3. **重申第二轮硬要求**(§10.2):旧实例撤销后同键再发起**必须**返回新 flowId,绝不复用已撤销实例 id——round 绑定使违反该要求的事件在 console 侧可拒绝、可审计;
+4. 尽量携带 `externalFlowId`(既有可选字段;携带即受 FLOW_ID_MISMATCH 一致性保护,空窗反写场景 console 侧有观测标记)。
+
+| # | 场景 | 步骤 | 预期 |
+|---|---|---|---|
+| 5A.1 | **出站 context 携带 round(核心)** | 提交 External DIRECT 工单;桥接侧记录 flows/create 请求体 | `context.round=1`(首轮);发布单建单同验 `bizType=RELEASE` 行 `round=1` |
+| 5A.2 | **resubmit 轮次自增(核心)** | 发布单 return → `releases/resubmit`(5.5 场景)→ 观察第二轮 flows/create 与元数据库 | 新审批行 `approval_round=2`(元数据库取证:`SELECT approval_round FROM dm_approval WHERE id=<新审批行>`);第二轮 context.round=2;桥接返回**新 flowId** |
+| 5A.3 | **旧 flow 残留回调被拒(核心漏洞场景)** | 5A.2 后 identity 已回填 F2 时,以 AK/SK 模拟旧桥接事件:`tickets/approve {ticketId=新审批行, externalFlowId=<F1 旧值>}` | 拒绝 `GOV_OPEN_COMMAND_FLOW_MISMATCH`;事件表 `EXTERNAL_COMMAND_REJECTED`(reason=FLOW_ID_MISMATCH,eventData 含 externalFlowId=F1 + recordedFlowId=F2);工单状态零变化 |
+| 5A.4 | **round 不符被拒** | 对 5A.2 的新审批行(WAIT_APPROVAL,round=2)下发 `tickets/approve {externalRound=1}`(可同带 F2 flowId) | 拒绝 `GOV_OPEN_COMMAND_ROUND_MISMATCH`;审计 reason=ROUND_MISMATCH;零状态副作用;`externalRound=2` 同命令 → 照常成功 |
+| 5A.5 | **宽松跳过(冻结契约 pin)** | 对 WAIT_APPROVAL 工单下发**最简调用** `tickets/approve {ticketId}`(无 flowId/round);再下发只带 externalFlowId 不带 round | 两命令均照常成功(缺失=跳过校验,§5.4「最简调用」冻结承诺不破);旧桥接零回归 |
+| 5A.6 | **空窗观测样本** | (需桥接配合延迟出站响应,或 1.4 场景复用)入站命令携 flowId 先于出站回填到达 | 命令照常受理(宽松);后端 warn 日志「back-filled an EMPTY appro_identity」;成功事件 `eventData.identityBackfill=true`——样本计数入严格档灰度评估 |
+| 5A.7 | D5 零误拒 | 5.4 场景(工单 return→resubmit 直落 WAIT_EXEC,原 flowId 存留)后:①下发 `tickets/execute {ticketId}`;②模拟乱序三态命令 `tickets/approve {externalFlowId=<原 flowId>}` | ①execute 照常(不消费 flowId/round);②被**状态守卫**拒(STATUS_MISMATCH,非 FLOW_ID_MISMATCH——守卫顺序 pin),审计 reason=STATUS_MISMATCH |
+| 5A.8 | execute/return 拒绝审计(O-C2-1) | 对 WAIT_APPROVAL 工单下发 `tickets/execute`;对不可退回工单下发 `tickets/return` | 各自拒绝且事件表落 `EXTERNAL_COMMAND_REJECTED`(command=execute reason=EXECUTE_STATUS_MISMATCH;command=return reason=RETURN_GUARD);跨租户调用**不落审计**(存在性不泄露) |
+| 5A.9 | 严格档预留验证(可选,测试环境) | root KV `govExternalCommandStrictFlow=true`(测完恢复 false)→ 最简调用 approve | 拒绝 `GOV_OPEN_COMMAND_FLOW_MISSING`;恢复 false 后同调用照常成功——灰度开关双向可用;**生产默认恒 false** |
+| 5A.10 | 迁移验证 | 部署后元数据库 `SHOW COLUMNS FROM dm_approval LIKE 'approval_round';` + 存量行抽查 | `int NOT NULL DEFAULT 1`;存量行全为 1;重启重跑迁移无 ERROR(1060 忽略幂等,V202610110002) |
 
 ## 6. 撤销通知(验收 A6)
 
@@ -238,6 +262,9 @@ FROM dm_approval WHERE outbound_status IN ('FAILED','STARTING') AND deleted = fa
 | 4.4 | create→approve 组合 | | | ☐ | | | |
 | 5.3 | reject+重新提单 | | | ☐ | | | |
 | 5.5 | 发布单第二轮新 flowId | | | ☐ | | | |
+| 5A.2 | resubmit 轮次自增(round=2) | | | ☐ | | | |
+| 5A.3/5A.4 | 旧 flow / round 不符被拒+审计 | | | ☐ | | | |
+| 5A.5 | 宽松跳过(最简调用冻结 pin) | | | ☐ | | | |
 | 6.1/6.6 | 撤销+回声隔离 | | | ☐ | | | |
 | 7.1/7.4 | 下拉置灰+存量不变 | | | ☐ | | | |
 | 8.1~8.4 | 前端三面 | | | ☐ | | | |

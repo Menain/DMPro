@@ -353,9 +353,31 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
 
     // ==================== Command: return ====================
 
+    /**
+     * Open return command. O-C2-1 / ADR-012 M8: a guard rejection inside the delegated chain
+     * (status EXEC_FAIL∨WAIT_EXEC / approBiz / ticketType / no-FAILED-group / already-merged)
+     * now also leaves the durable EXTERNAL_COMMAND_REJECTED trail — before this, execute/return
+     * rejections threw WITHOUT any DB audit (only the three-state commands were covered by C2).
+     * The audit rides the shared REQUIRES_NEW write point of ApprovalProviderServiceImpl (single
+     * mechanism, no copy-paste); the delegate's transaction has already rolled back when the
+     * exception reaches this catch, so the audit tx is independent and the throw semantics /
+     * zero-side-effect contract are unchanged. Cross-tenant / not-found rejections are NOT
+     * audited (existence is not leaked — same discipline as resolveTicketForCommand).
+     */
     @Override
     public void returnTicket(String puid, String uid, DbChangeTicketCommandFO fo) {
-        govTicketV2Service.returnTicketOpenCommand(puid, uid, fo.getTicketId(), fo.getReason());
+        try {
+            govTicketV2Service.returnTicketOpenCommand(puid, uid, fo.getTicketId(), fo.getReason());
+        } catch (ErrorMessageException e) {
+            DmApprovalDO ticket = approvalDal.approvalMapper().queryById(fo.getTicketId());
+            if (ticket != null && puid.equals(ticket.getPrimaryUid())) {
+                // umbrella reason: which of the five return preconditions fired is carried by
+                // eventData.ticketStatus + the i18n message + the application log
+                approvalProviderService.appendRejectedCommandEvent(ticket, "return",
+                    ApprovalProviderServiceImpl.REJECT_REASON_RETURN_GUARD, buildCommandMeta(uid, fo));
+            }
+            throw e;
+        }
     }
 
     // ==================== Command: execute ====================
@@ -365,15 +387,22 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
         long ticketId = fo.getTicketId();
         DmApprovalDO ticket = approvalDal.approvalMapper().queryById(ticketId);
         if (ticket == null || !puid.equals(ticket.getPrimaryUid())) {
+            // not-found / cross-tenant: NO audit (existence not leaked — resolveTicketForCommand discipline)
             throw new ErrorMessageException("Ticket not found: " + ticketId);
         }
-        // Status guard: must be WAIT_CONFIRM
+        // Status guard: must be WAIT_CONFIRM. O-C2-1 / ADR-012 M8: rejection is audited
+        // (EXTERNAL_COMMAND_REJECTED, command=execute) through the shared REQUIRES_NEW write
+        // point before the throw — the message and zero-side-effect semantics are unchanged.
         if (ticket.getTicketStatus() != ApprovalStatus.WAIT_CONFIRM) {
+            approvalProviderService.appendRejectedCommandEvent(ticket, "execute",
+                ApprovalProviderServiceImpl.REJECT_REASON_EXECUTE_STATUS_MISMATCH, buildCommandMeta(uid, fo));
             throw new ErrorMessageException("Ticket " + ticketId + " is in status "
                 + ticket.getTicketStatus() + ", expected WAIT_CONFIRM for execute command");
         }
-        // Channel guard: must be External
+        // Channel guard: must be External (audited under the shared CHANNEL_MISMATCH reason)
         if (ticket.getApproType() != ApprovalType.External) {
+            approvalProviderService.appendRejectedCommandEvent(ticket, "execute",
+                ApprovalProviderServiceImpl.REJECT_REASON_CHANNEL_MISMATCH, buildCommandMeta(uid, fo));
             throw new ErrorMessageException("Ticket " + ticketId + " uses approval channel "
                 + ticket.getApproType() + "; execute command requires the External orchestration channel");
         }
@@ -497,7 +526,8 @@ public class GovOpenApiServiceImpl implements GovOpenApiService {
     }
 
     private ExternalCommandMeta buildCommandMeta(String operatorUid, DbChangeTicketCommandFO fo) {
-        return new ExternalCommandMeta(operatorUid, fo.getApprover(), fo.getComment(), fo.getExternalFlowId());
+        return new ExternalCommandMeta(operatorUid, fo.getApprover(), fo.getComment(),
+            fo.getExternalFlowId(), fo.getExternalRound());
     }
 
     // ==================== Helpers: dbName pair resolution ====================

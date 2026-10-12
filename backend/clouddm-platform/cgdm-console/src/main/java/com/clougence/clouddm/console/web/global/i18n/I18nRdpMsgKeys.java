@@ -178,6 +178,12 @@ public enum I18nRdpMsgKeys {
     // -- for external open command
     GOV_OPEN_COMMAND_INVALID_STATUS,
     GOV_OPEN_COMMAND_CHANNEL_MISMATCH,
+    // ADR-012 round binding (task 10-11-approval-round-binding): flow consistency + round guards
+    GOV_OPEN_COMMAND_FLOW_MISMATCH,
+    GOV_OPEN_COMMAND_ROUND_MISMATCH,
+    // strict tier (config-gated, default unreachable — govExternalCommandStrictFlow)
+    GOV_OPEN_COMMAND_FLOW_MISSING,
+    GOV_OPEN_COMMAND_ROUND_MISSING,
 
     // ENV
     ENV_NAME_IS_EXIST_ERROR,

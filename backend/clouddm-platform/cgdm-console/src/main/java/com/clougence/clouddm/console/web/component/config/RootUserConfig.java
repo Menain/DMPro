@@ -384,6 +384,20 @@ public class RootUserConfig {
     private Boolean       dingBridgeOutboundEnable;
 
     /**
+     * Strict flow-binding tier for inbound external commands (ADR-012 Decision 3, task
+     * 10-11-approval-round-binding — RESERVATION, default false): when true, a three-state
+     * command (approve/reject/cancel) MISSING externalFlowId or externalRound is rejected
+     * (FLOW_ID_MISSING / ROUND_MISSING) instead of skipping the consistency check. The default
+     * (and read-failure fallback) is the TOLERANT tier — "missing ⇒ reject" would breach the
+     * frozen openapi-orchestration §5.4 "ticketId-only minimal call" contract, so flipping this
+     * switch is a gray-release decision that requires bridge-upgrade integration-test evidence
+     * (the §10.6 "events may precede the outbound response" boundary). Mismatch rejections
+     * (FLOW_ID_MISMATCH / ROUND_MISMATCH) are ALWAYS on and independent of this switch.
+     */
+    @UserConfigDef(name = "govExternalCommandStrictFlow", defaultValue = "false", valueRange = "true / false", descKey = I18nUserConfigMsgKeys.USER_GOV_EXTERNAL_COMMAND_STRICT_FLOW, configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM, kvConfWebOp = ConfigValType.BOOLEAN)
+    private Boolean       govExternalCommandStrictFlow;
+
+    /**
      * Schema gate fail-closed master switches (ADR-011 M6, task 10-11-schema-gate-fail-closed):
      * registration brings the two formerly HIDDEN global switches (root-owned dm_sys_user_conf
      * rows editable only by direct DB writes — no UI, no audit) into the @UserConfigDef

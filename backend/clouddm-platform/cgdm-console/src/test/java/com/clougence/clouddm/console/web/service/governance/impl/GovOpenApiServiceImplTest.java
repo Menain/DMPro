@@ -515,6 +515,7 @@ public class GovOpenApiServiceImplTest {
         fo.setApprover("alice");
         fo.setComment("approved");
         fo.setExternalFlowId("flow-001");
+        fo.setExternalRound(2); // ADR-012 additive field rides the same passthrough
 
         service.approveTicket(PUID, UID, fo);
 
@@ -525,6 +526,23 @@ public class GovOpenApiServiceImplTest {
         assertEquals("alice", meta.getApprover());
         assertEquals("approved", meta.getComment());
         assertEquals("flow-001", meta.getExternalFlowId());
+        assertEquals(Integer.valueOf(2), meta.getExternalRound());
+    }
+
+    @Test
+    public void approveTicket_externalRoundAbsent_metaCarriesNull() {
+        // old bridges never send the additive field — the meta stays null (tolerant skip downstream)
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        service.approveTicket(PUID, UID, fo);
+
+        ArgumentCaptor<ExternalCommandMeta> metaCaptor = ArgumentCaptor.forClass(ExternalCommandMeta.class);
+        verify(approvalProviderService).applyExternalApprovalResult(eq(100L), eq(ApprovalInstanceStatus.COMPLETED), metaCaptor.capture());
+        assertNull(metaCaptor.getValue().getExternalRound());
     }
 
     @Test
@@ -600,6 +618,56 @@ public class GovOpenApiServiceImplTest {
         service.returnTicket(PUID, UID, fo);
 
         verify(govTicketV2Service).returnTicketOpenCommand(PUID, UID, 100L, "execution failed");
+        // success path writes NO rejection audit
+        verify(approvalProviderService, never())
+            .appendRejectedCommandEvent(any(), anyString(), anyString(), any());
+    }
+
+    @Test
+    public void returnTicket_delegateGuardRejection_auditedThenRethrown() {
+        // O-C2-1 / ADR-012 M8: any guard rejection inside the delegated return chain
+        // (status / approBiz / ticketType / no-FAILED-group / already-merged) leaves the durable
+        // EXTERNAL_COMMAND_REJECTED trail (umbrella reason RETURN_GUARD, command=return) and the
+        // original exception is rethrown unchanged.
+        DmApprovalDO ticket = buildExternalTicket(100L, PUID, ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.queryById(100L)).thenReturn(ticket);
+        doThrow(new ErrorMessageException("not returnable"))
+            .when(govTicketV2Service).returnTicketOpenCommand(PUID, UID, 100L, "boom");
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+        fo.setReason("boom");
+
+        try {
+            service.returnTicket(PUID, UID, fo);
+            fail("Expected the delegate rejection to be rethrown");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalProviderService).appendRejectedCommandEvent(eq(ticket), eq("return"),
+            eq(ApprovalProviderServiceImpl.REJECT_REASON_RETURN_GUARD), any(ExternalCommandMeta.class));
+    }
+
+    @Test
+    public void returnTicket_crossTenantRejection_notAudited() {
+        // not-found semantics: a cross-tenant return rejection leaves NO audit row here
+        // (existence is not leaked — the trail requires an in-tenant resolved ticket).
+        DmApprovalDO other = buildExternalTicket(100L, "other-puid", ApprovalStatus.EXEC_FAIL);
+        when(approvalMapper.queryById(100L)).thenReturn(other);
+        doThrow(new ErrorMessageException("not found"))
+            .when(govTicketV2Service).returnTicketOpenCommand(eq(PUID), eq(UID), eq(100L), any());
+
+        DbChangeTicketCommandFO fo = new DbChangeTicketCommandFO();
+        fo.setTicketId(100L);
+
+        try {
+            service.returnTicket(PUID, UID, fo);
+            fail("Expected the delegate rejection to be rethrown");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+        verify(approvalProviderService, never())
+            .appendRejectedCommandEvent(any(), anyString(), anyString(), any());
     }
 
     // ==================== Command: execute (T7) ====================
@@ -678,6 +746,9 @@ public class GovOpenApiServiceImplTest {
             // ok
         }
         verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+        // O-C2-1 / ADR-012 M8: the rejection rides the shared EXTERNAL_COMMAND_REJECTED audit
+        verify(approvalProviderService).appendRejectedCommandEvent(eq(ticket), eq("execute"),
+            eq(ApprovalProviderServiceImpl.REJECT_REASON_EXECUTE_STATUS_MISMATCH), any(ExternalCommandMeta.class));
     }
 
     @Test
@@ -695,6 +766,9 @@ public class GovOpenApiServiceImplTest {
             // ok
         }
         verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+        // O-C2-1: the channel rejection is audited under the shared CHANNEL_MISMATCH reason
+        verify(approvalProviderService).appendRejectedCommandEvent(eq(ticket), eq("execute"),
+            eq(ApprovalProviderServiceImpl.REJECT_REASON_CHANNEL_MISMATCH), any(ExternalCommandMeta.class));
     }
 
     @Test
@@ -712,6 +786,9 @@ public class GovOpenApiServiceImplTest {
             // ok
         }
         verify(approvalControlService, never()).confirmTicketBySystem(anyLong(), any());
+        // not-found / cross-tenant rejections are NOT audited (existence is not leaked)
+        verify(approvalProviderService, never())
+            .appendRejectedCommandEvent(any(), anyString(), anyString(), any());
     }
 
     // ==================== Command: releases/create skipOutbound pass-through (M4b) ====================

@@ -313,12 +313,14 @@ public class DingBridgeOutboundService {
     }
 
     /**
-     * New approval round reset (design boundary #15): release resubmit rebuilds the approval
-     * surface — clear appro_identity + the four outbound columns so the round-2 flowId is not
-     * blocked by the "write only when empty" guard (the old instance was already closed by the
-     * RELEASE_RETURNED cancel notification). Called INSIDE the resubmit transaction on the FRESH
-     * approval row (clean by construction — this is the explicit contract materialization and
-     * the safety net should the row ever be reused in the future).
+     * New approval round reset (design boundary #15; ADR-012 M3 round-increment semantics):
+     * release resubmit rebuilds the approval surface — clear appro_identity + the four outbound
+     * columns so the round-2 flowId is not blocked by the "write only when empty" guard (the old
+     * instance was already closed by the RELEASE_RETURNED cancel notification), AND bump
+     * approval_round so the re-triggered flows/create carries the new round in its context and
+     * stale-round inbound commands can be rejected (ROUND_MISMATCH). Called INSIDE the resubmit
+     * transaction on the FRESH approval row (clean by construction — this is the explicit
+     * contract materialization and the safety net should the row ever be reused in the future).
      */
     public void resetForNewApprovalRound(long approvalId) {
         approvalDal.approvalMapper().clearOutboundForNewRound(approvalId);
@@ -624,7 +626,14 @@ public class DingBridgeOutboundService {
             approBizLabel = mo != null && StringUtils.isNotBlank(mo.getTicketType())
                     ? mo.getTicketType() : (row.getApproBiz() == null ? null : row.getApproBiz().name());
         }
-        req.setContext(new BridgeCreateRequest.Context(row.getPrimaryUid(), approBizLabel));
+        BridgeCreateRequest.Context context = new BridgeCreateRequest.Context(row.getPrimaryUid(), approBizLabel);
+        // ADR-012 M4 (additive): the explicit approval round rides along so the bridge can bind
+        // its (bizType,bizId)↔flowId mapping to the round and echo externalRound on inbound
+        // commands. Null-safe fallback 1: a row read without the column (legacy/pre-migration
+        // read paths, test fixtures) is by definition a first round — the DB column itself is
+        // NOT NULL DEFAULT 1, so production reads always carry the real value.
+        context.setRound(row.getApprovalRound() != null ? row.getApprovalRound() : 1);
+        req.setContext(context);
         return req;
     }
 

@@ -28,20 +28,31 @@ package com.clougence.clouddm.console.web.component.approval.model;
  *   <li>{@code approver} — optional, human-readable approver name for activity synthesis.</li>
  *   <li>{@code comment} — optional, approval comment for activity context.</li>
  *   <li>{@code externalFlowId} — optional, external engine's flow identity for approIdentity.</li>
+ *   <li>{@code externalRound} — optional (ADR-012 round binding, task 10-11-approval-round-binding),
+ *       the approval round the command believes it acts on; compared against
+ *       dm_approval.approval_round when present, skipped when absent (tolerant-first: the frozen
+ *       §5.4 "ticketId-only minimal call" contract forbids rejecting a missing round by default).</li>
  * </ul>
  */
 public class ExternalCommandMeta {
 
-    private final String operatorUid;
-    private final String approver;
-    private final String comment;
-    private final String externalFlowId;
+    private final String  operatorUid;
+    private final String  approver;
+    private final String  comment;
+    private final String  externalFlowId;
+    private final Integer externalRound;
 
     public ExternalCommandMeta(String operatorUid, String approver, String comment, String externalFlowId) {
+        this(operatorUid, approver, comment, externalFlowId, null);
+    }
+
+    public ExternalCommandMeta(String operatorUid, String approver, String comment,
+                               String externalFlowId, Integer externalRound) {
         this.operatorUid = operatorUid;
         this.approver = approver;
         this.comment = comment;
         this.externalFlowId = externalFlowId;
+        this.externalRound = externalRound;
     }
 
     public String getOperatorUid() {
@@ -58,5 +69,9 @@ public class ExternalCommandMeta {
 
     public String getExternalFlowId() {
         return externalFlowId;
+    }
+
+    public Integer getExternalRound() {
+        return externalRound;
     }
 }

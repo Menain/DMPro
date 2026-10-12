@@ -39,6 +39,7 @@
         <result column="outbound_error" property="outboundError"/>
         <result column="outbound_retry_count" property="outboundRetryCount"/>
         <result column="outbound_next_retry_at" property="outboundNextRetryAt"/>
+        <result column="approval_round" property="approvalRound"/>
     </resultMap>
 
     <sql id="all_ticket_col">
@@ -74,7 +75,8 @@
         outbound_status,
         outbound_error,
         outbound_retry_count,
-        outbound_next_retry_at
+        outbound_next_retry_at,
+        approval_round
     </sql>
 
     <sql id="basic_ticket_col">
@@ -249,10 +251,14 @@
             (appro_identity IS NULL OR appro_identity = '')
     </update>
 
-    <!-- New approval round (release resubmit, design boundary #15): resubmit rebuilds the
-         approval surface — clear appro_identity + the four outbound columns so the round-2
-         flowId is not blocked by the "only when empty" guard (the old instance was already
-         closed by the RELEASE_RETURNED cancel notification). -->
+    <!-- New approval round (release resubmit, design boundary #15; ADR-012 M3 round-increment
+         semantics): resubmit rebuilds the approval surface — clear appro_identity + the four
+         outbound columns so the round-2 flowId is not blocked by the "only when empty" guard
+         (the old instance was already closed by the RELEASE_RETURNED cancel notification), AND
+         bump the explicit approval_round token (stale-round inbound commands carrying
+         externalRound are rejected by the ROUND_MISMATCH guard; the outbound flows/create
+         context carries the new round to the bridge). gmt_modified neutralization discipline
+         unchanged (scheduler lease). -->
     <update id="clearOutboundForNewRound">
         UPDATE
             dm_approval
@@ -262,6 +268,7 @@
             outbound_error         = NULL,
             outbound_retry_count   = 0,
             outbound_next_retry_at = NULL,
+            approval_round         = approval_round + 1,
             gmt_modified           = gmt_modified
         WHERE
             id = #{ticketId}

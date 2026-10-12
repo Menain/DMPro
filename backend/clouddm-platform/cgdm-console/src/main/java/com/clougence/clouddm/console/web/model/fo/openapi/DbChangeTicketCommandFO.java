@@ -46,9 +46,24 @@ public class DbChangeTicketCommandFO {
     @McpField(value = DmMcpI18nKey.F_COMMENT_DESC, required = false)
     private String comment;
 
-    /** Optional external engine flow identity; persisted to approIdentity only when currently empty. */
+    /**
+     * Optional external engine flow identity; persisted to approIdentity only when currently empty.
+     * ADR-012 round binding: when BOTH this value and the recorded approIdentity are non-blank and
+     * differ, the three-state commands are rejected (FLOW_ID_MISMATCH) — a stale flow's callback
+     * can never drive a different flow's approval row. Either side blank = check skipped (tolerant;
+     * the frozen "ticketId-only minimal call" contract stays intact).
+     */
     @McpField(value = DmMcpI18nKey.F_EXTERNAL_FLOW_ID_DESC, required = false)
     private String externalFlowId;
+
+    /**
+     * Optional approval round the command acts on (ADR-012, additive 2026-10-11); compared against
+     * dm_approval.approval_round on the three-state commands when present (mismatch → ROUND_MISMATCH
+     * rejection); absent → skipped (tolerant-first; old bridges simply never send it — Spring's
+     * unknown-field tolerance makes the whole field invisible to them until they upgrade).
+     */
+    @McpField(value = DmMcpI18nKey.F_EXTERNAL_ROUND_DESC, required = false)
+    private Integer externalRound;
 
     /** Optional return reason — used only by the /tickets/return command; recorded in eventData + IM notification. */
     @McpField(value = DmMcpI18nKey.F_REASON_DESC, required = false)

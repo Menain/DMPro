@@ -84,6 +84,14 @@ public class DmApprovalDO {
     private Integer               outboundRetryCount;
     private Date                  outboundNextRetryAt;
 
+    // Explicit approval round (ADR-012, task 10-11-approval-round-binding; migration
+    // V202610110002, NOT NULL DEFAULT 1). Born at 1; clearOutboundForNewRound increments it
+    // (release resubmit = new round) while resetting appro_identity + the four outbound columns.
+    // Read by the inbound ROUND_MISMATCH guard and the outbound flows/create context. Plain
+    // field like the outbound four: MyBatis-Plus default NOT_NULL strategy keeps null out of
+    // INSERT/UPDATE sets, so the DB default always materializes the round.
+    private Integer               approvalRound;
+
     public boolean hasFeature(ApprovalFeature feature) {
         return CollectionUtils.isNotEmpty(this.features) && this.features.contains(feature);
     }

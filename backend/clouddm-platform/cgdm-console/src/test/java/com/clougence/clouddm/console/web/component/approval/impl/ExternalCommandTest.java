@@ -32,6 +32,7 @@ import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
 import com.clougence.clouddm.console.web.component.approval.model.ExternalCommandMeta;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
+import com.clougence.clouddm.console.web.component.config.RootUserConfig;
 import com.clougence.clouddm.platform.dal.access.ApprovalDal;
 import com.clougence.clouddm.platform.dal.access.DbChangeEventDal;
 import com.clougence.clouddm.platform.dal.access.AuthDal;
@@ -65,6 +66,14 @@ import com.clougence.utils.JsonUtils;
  * EXTERNAL_COMMAND_REJECTED event (R1) without changing the throw / zero-side-effect
  * semantics (R2) — asserted on the three guard reasons, the replay path (R4) and the
  * audit-failure degradation path (A3).
+ * <p>
+ * 10-11 approval-round-binding (ADR-012 A+B): guards 4/5 — flow consistency
+ * (FLOW_ID_MISMATCH, pin FLIPPED from "mismatch still succeeds, just no overwrite") and
+ * round binding (ROUND_MISMATCH); tolerant mode pins (blank/absent values skip the checks —
+ * the frozen §5.4 ticketId-only minimal call); identity-empty-window observation
+ * (identityBackfill marker + no marker on the normal path); the config-gated strict tier
+ * (default off, read-failure tolerant); D5 zero-misfire (state guard precedes the flow
+ * guards on a resubmitted ticket).
  */
 public class ExternalCommandTest {
 
@@ -75,6 +84,7 @@ public class ExternalCommandTest {
     private DbChangeEventDal dbChangeEventDal;
     private DmDbChangeEventMapper eventMapper;
     private ImSenderService imSenderService;
+    private SystemDal systemDal;
     private TestHandler testHandler;
 
     private static final long  TICKET_ID = 300L;
@@ -101,11 +111,13 @@ public class ExternalCommandTest {
 
         imSenderService = mock(ImSenderService.class);
 
+        systemDal = mock(SystemDal.class);
+
         ReflectionTestUtils.setField(service, "approvalDal", approvalDal);
         ReflectionTestUtils.setField(service, "approvalStateService", approvalStateService);
         ReflectionTestUtils.setField(service, "dbChangeEventDal", dbChangeEventDal);
         ReflectionTestUtils.setField(service, "imSenderService", imSenderService);
-        ReflectionTestUtils.setField(service, "systemDal", mock(SystemDal.class));
+        ReflectionTestUtils.setField(service, "systemDal", systemDal);
         ReflectionTestUtils.setField(service, "authDal", mock(AuthDal.class));
         // REQUIRES_NEW template of the rejected-command audit rides this manager (10-11 R2):
         // the bare mock makes getTransaction/commit no-ops — the insert runs inline.
@@ -214,17 +226,269 @@ public class ExternalCommandTest {
         verify(approvalMapper).updateThirdApprovalInfo(TICKET_ID, "ext-flow-123", null);
     }
 
+    /**
+     * PIN FLIP (10-11 approval-round-binding, ADR-012 form A): this case formerly asserted
+     * "mismatched flowId → the command still succeeds, just without overwriting the identity".
+     * A provably different flow is now REJECTED (FLOW_ID_MISMATCH) — the stale-F1-hits-A2
+     * vulnerability chain (adr-b §1.6) — with a durable audit trail carrying BOTH flow values,
+     * and zero state side effects (A1). The "never overwrite" half of the old pin survives:
+     * updateThirdApprovalInfo is still never called on a non-empty identity.
+     */
     @Test
-    public void externalFlowId_doesNotOverwrite_existingApproIdentity() {
+    public void externalFlowId_mismatchedWithRecordedIdentity_rejectedWithFlowIdMismatch() {
         DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
         ticket.setApproIdentity("existing-identity");
         when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
 
         ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "ext-flow-456");
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for flow id mismatch");
+        } catch (ErrorMessageException ex) {
+            // ok — guard 4 rejects
+        }
+
+        // Zero side effects: no overwrite, no state migration, no handler callback
+        verify(approvalMapper, never()).updateThirdApprovalInfo(anyLong(), anyString(), any());
+        verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+        assertFalse("approvalApproved should NOT be called", testHandler.approvedCalled);
+
+        // A1: the rejection is audited with both flow values (flowIds are not credentials)
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        assertEquals(OPERATOR, event.getOperatorUid());
+        assertNull("a rejected command never moves the ticket", event.getToStatus());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("EXTERNAL_COMMAND", data.get("via"));
+        assertEquals("approve", data.get("command"));
+        assertEquals("FLOW_ID_MISMATCH", data.get("reason"));
+        assertEquals("ext-flow-456", data.get("externalFlowId"));
+        assertEquals("existing-identity", data.get("recordedFlowId"));
+    }
+
+    // ==================== 10-11 approval-round-binding (ADR-012 A+B) ====================
+
+    @Test
+    public void externalRound_mismatch_rejectedWithRoundMismatch() {
+        // Form B: the row is in round 2 (release resubmit bumped it); a command carrying the
+        // round-1 token is rejected even when the flowId side is blank/matching — the round
+        // token closes the identity-empty window that pure flowId comparison cannot (adr-b §1.6-6).
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApprovalRound(2);
+        ticket.setApproIdentity("flow-round2");
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "flow-round2", 1);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for round mismatch");
+        } catch (ErrorMessageException ex) {
+            // ok — guard 5 rejects
+        }
+
+        verify(approvalStateService, never()).updateProcessStatus(anyLong(), any(), any(), any());
+        assertFalse(testHandler.approvedCalled);
+
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_COMMAND_REJECTED.name(), event.getEventType());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("approve", data.get("command"));
+        assertEquals("ROUND_MISMATCH", data.get("reason"));
+        assertEquals("flow-round2", data.get("externalFlowId"));
+    }
+
+    @Test
+    public void externalRound_matching_passesGuard() {
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApprovalRound(2);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null, 2);
         service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
 
-        // Should NOT overwrite the existing identity
+        assertTrue("matching round must pass", testHandler.approvedCalled);
+    }
+
+    @Test
+    public void externalRound_absent_tolerantSkip_commandSucceeds() {
+        // A2 tolerant pin: an old bridge never sends externalRound — the check is skipped
+        // entirely and the existing behavior is unchanged (frozen §5.4 minimal-call contract).
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApprovalRound(2);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null); // no round
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        assertTrue("absent round must skip the guard", testHandler.approvedCalled);
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        assertEquals(GovEventType.EXTERNAL_APPROVED.name(), eventCaptor.getValue().getEventType());
+    }
+
+    @Test
+    public void flowId_absent_identityPresent_tolerantSkip_commandSucceeds() {
+        // A2 tolerant pin: the ticketId-only minimal call against a row that already has an
+        // identity — blank command flowId skips guard 4 (strict "missing ⇒ reject" would breach
+        // the frozen contract and is reserved for the config-gated strict tier below).
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApproIdentity("flow-1");
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null);
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        assertTrue(testHandler.approvedCalled);
         verify(approvalMapper, never()).updateThirdApprovalInfo(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void flowId_matchingIdentity_passesGuard_noOverwrite() {
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApproIdentity("flow-1");
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "flow-1");
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        assertTrue("equal flowIds must pass guard 4", testHandler.approvedCalled);
+        // "write only when empty" dual-source contract untouched — no rewrite of an equal identity
+        verify(approvalMapper, never()).updateThirdApprovalInfo(anyLong(), anyString(), any());
+    }
+
+    @Test
+    public void identityEmpty_backfill_observationTrail() {
+        // R6 / ADR-012 Decision 4: the legitimate §10.6 empty window (inbound event beats the
+        // outbound backfill) still WRITES (behavior unchanged) but is now measurable —
+        // identityBackfill marker on the success event (the warn log accompanies it).
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApproIdentity(null);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "ext-flow-123");
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        verify(approvalMapper).updateThirdApprovalInfo(TICKET_ID, "ext-flow-123", null);
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        DmDbChangeEventDO event = eventCaptor.getValue();
+        assertEquals(GovEventType.EXTERNAL_APPROVED.name(), event.getEventType());
+        Map<String, Object> data = JsonUtils.toObj(event.getEventData(), Map.class);
+        assertEquals("ext-flow-123", data.get("externalFlowId"));
+        assertEquals(Boolean.TRUE, data.get("identityBackfill"));
+    }
+
+    @Test
+    public void successEvent_withoutBackfill_carriesNoMarker() {
+        // The marker is precise: a matching-flowId success (no write happened) must NOT carry it,
+        // otherwise the strict-tier gray release would measure noise.
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        ticket.setApproIdentity("flow-1");
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "flow-1");
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertFalse("no write ⇒ no identityBackfill marker", data.containsKey("identityBackfill"));
+    }
+
+    @Test
+    public void strictMode_missingFlowId_rejectedFlowIdMissing() {
+        // M7 strict tier with the switch ON (gray-release posture): the minimal call is rejected.
+        when(systemDal.fetchSystemConf(RootUserConfig.Fields.govExternalCommandStrictFlow, Boolean.class))
+            .thenReturn(Boolean.TRUE);
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null, 1);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for missing flowId in strict mode");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+
+        assertFalse(testHandler.approvedCalled);
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertEquals("FLOW_ID_MISSING", data.get("reason"));
+        assertEquals("approve", data.get("command"));
+    }
+
+    @Test
+    public void strictMode_missingRound_rejectsRoundMissing() {
+        when(systemDal.fetchSystemConf(RootUserConfig.Fields.govExternalCommandStrictFlow, Boolean.class))
+            .thenReturn(Boolean.TRUE);
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        // flowId carried (guard 4 passes — identity blank skips the comparison even in strict
+        // mode; strict only rejects MISSING values) but round absent → guard 5 rejects.
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "flow-x", null);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for missing round in strict mode");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+
+        assertFalse(testHandler.approvedCalled);
+        verify(approvalMapper, never()).updateThirdApprovalInfo(anyLong(), anyString(), any());
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertEquals("ROUND_MISSING", data.get("reason"));
+    }
+
+    @Test
+    public void strictMode_readFailure_staysTolerant() {
+        // Fail-safe direction: an unreadable switch must NEVER activate the strict tier
+        // (DEFAULT_STRICT_FLOW_MODE = false) — the frozen minimal-call contract wins.
+        when(systemDal.fetchSystemConf(RootUserConfig.Fields.govExternalCommandStrictFlow, Boolean.class))
+            .thenThrow(new RuntimeException("kv store down"));
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_APPROVAL);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, null);
+        service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+
+        assertTrue("read failure ⇒ tolerant mode ⇒ minimal call succeeds", testHandler.approvedCalled);
+    }
+
+    @Test
+    public void d5ResubmitTicket_stateGuardFiresBeforeFlowGuards_zeroMisfire() {
+        // A4 (adr-b §1.4): after a ticket-level External resubmit (D5) the ticket sits in
+        // WAIT_EXEC with the ORIGINAL flowId still recorded. A three-state command — even one
+        // carrying a different flowId — is rejected by the cheaper STATE guard first
+        // (STATUS_MISMATCH), never by FLOW_ID_MISMATCH: the flow guards are unreachable in the
+        // D5 scenario, so they can never misfire on it. (execute/return do not consume flowId
+        // at all — pinned by the O-C2-1 audits in GovOpenApiServiceImplTest.)
+        DmApprovalDO ticket = buildExternalTicket(ApprovalStatus.WAIT_EXEC);
+        ticket.setApproIdentity("flow-original");
+        ticket.setApprovalRound(1);
+        when(approvalMapper.selectByIdForUpdate(TICKET_ID)).thenReturn(ticket);
+
+        ExternalCommandMeta meta = new ExternalCommandMeta(OPERATOR, null, null, "flow-other", 9);
+        try {
+            service.applyExternalApprovalResult(TICKET_ID, ApprovalInstanceStatus.COMPLETED, meta);
+            fail("Expected ErrorMessageException for non-WAIT_APPROVAL status");
+        } catch (ErrorMessageException ex) {
+            // ok
+        }
+
+        ArgumentCaptor<DmDbChangeEventDO> eventCaptor = ArgumentCaptor.forClass(DmDbChangeEventDO.class);
+        verify(eventMapper).insert(eventCaptor.capture());
+        Map<String, Object> data = JsonUtils.toObj(eventCaptor.getValue().getEventData(), Map.class);
+        assertEquals("state guard precedes the flow guards (order pin)", "STATUS_MISMATCH", data.get("reason"));
+        assertFalse(testHandler.approvedCalled);
     }
 
     // ==================== T5: Command guards ====================

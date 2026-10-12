@@ -268,8 +268,36 @@ public class ResubmitOutboundResetTest {
         releaseService.resubmitRelease(PUID, UID, true, resubmitFO(500L));
 
         InOrder order = inOrder(bridge);
-        order.verify(bridge).resetForNewApprovalRound(700L); // clear appro_identity + outbound four columns
+        // clear appro_identity + outbound four columns + approval_round increment (ADR-012 M3 —
+        // round-increment semantics; the SQL content is pinned by the XML test below)
+        order.verify(bridge).resetForNewApprovalRound(700L);
         order.verify(bridge).triggerCreateFlow(PUID, 700L);   // re-initiate for the new round
+    }
+
+    /**
+     * ADR-012 M3 SQL pin: the round-increment semantics live in clearOutboundForNewRound —
+     * the resubmit reset MUST bump approval_round alongside clearing appro_identity + the four
+     * outbound columns, keeping the gmt_modified neutralization discipline (scheduler lease).
+     * Read off the mapper XML on the classpath (mock-level tests cannot observe SQL content).
+     */
+    @Test
+    public void clearOutboundForNewRound_sqlCarriesRoundIncrement() throws Exception {
+        try (java.io.InputStream in = getClass().getClassLoader()
+                .getResourceAsStream("mybatis/mapper/DmApprovalMapper.xml")) {
+            assertNotNull("DmApprovalMapper.xml must be on the test classpath", in);
+            String xml = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            int start = xml.indexOf("<update id=\"clearOutboundForNewRound\">");
+            assertTrue("clearOutboundForNewRound statement missing", start >= 0);
+            String stmt = xml.substring(start, xml.indexOf("</update>", start)).replaceAll("\\s+", " ");
+            assertTrue("round-increment semantics (ADR-012 M3)",
+                    stmt.contains("approval_round = approval_round + 1"));
+            assertTrue("identity reset survives", stmt.contains("appro_identity = NULL"));
+            assertTrue("the four outbound columns stay reset",
+                    stmt.contains("outbound_status = NULL") && stmt.contains("outbound_retry_count = 0")
+                        && stmt.contains("outbound_next_retry_at = NULL"));
+            assertTrue("gmt_modified neutralization discipline",
+                    stmt.contains("gmt_modified = gmt_modified"));
+        }
     }
 
     @Test

@@ -45,6 +45,7 @@ public interface DmMcpI18nKey {
     String F_APPROVER_DESC            = "MCP_F_APPROVER_DESC";
     String F_COMMENT_DESC             = "MCP_F_COMMENT_DESC";
     String F_EXTERNAL_FLOW_ID_DESC    = "MCP_F_EXTERNAL_FLOW_ID_DESC";
+    String F_EXTERNAL_ROUND_DESC      = "MCP_F_EXTERNAL_ROUND_DESC";
     String F_REASON_DESC              = "MCP_F_REASON_DESC";
     String F_OWNER_ACCOUNT_DESC       = "MCP_F_OWNER_ACCOUNT_DESC";
     String F_SERVICE_ID_DESC           = "MCP_F_SERVICE_ID_DESC";
