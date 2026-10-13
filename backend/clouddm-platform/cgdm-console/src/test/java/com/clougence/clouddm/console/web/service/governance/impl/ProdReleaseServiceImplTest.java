@@ -93,6 +93,9 @@ public class ProdReleaseServiceImplTest {
     private ReleaseSchemaPrecheckService releaseSchemaPrecheckService;
     private com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService releaseSchemaDiffService;
     private com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService schemaGateOverrideService;
+    // ADR-013 M3: the frozen-manifest mapper (plan-drift gate reads) + the segment orchestrator
+    private com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper segmentMapper;
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService releaseSegmentService;
 
     private static final String PUID = "puid-001";
     private static final String UID  = "uid-001";
@@ -122,9 +125,10 @@ public class ProdReleaseServiceImplTest {
         // Sub-task A: schema mapper for freeze propagation
         DmProdReleaseStmtSchemaMapper prodSchemaMapper = mock(DmProdReleaseStmtSchemaMapper.class);
         when(prodReleaseDal.schemaMapper()).thenReturn(prodSchemaMapper);
-        // ADR-013 M1: frozen segment manifest mapper (propagate + cascade deletes)
-        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
-            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
+        // ADR-013 M1: frozen segment manifest mapper (propagate + cascade deletes; M3: plan gate)
+        segmentMapper = mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class);
+        when(prodReleaseDal.segmentMapper()).thenReturn(segmentMapper);
 
         ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);
@@ -194,8 +198,8 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "schemaGateOverrideService", schemaGateOverrideService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
         // ADR-013 M2: retryReleaseStmt delegates the segment reset to the release orchestrator
-        ReflectionTestUtils.setField(service, "releaseSegmentService",
-            mock(com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService.class));
+        releaseSegmentService = mock(com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService.class);
+        ReflectionTestUtils.setField(service, "releaseSegmentService", releaseSegmentService);
     }
 
     // ==================== createRelease four-condition rejection branches ====================
@@ -628,6 +632,9 @@ public class ProdReleaseServiceImplTest {
             eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
         // Verify no job created
         verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+        // A7 order pin: the hash gate runs BEFORE the plan gate — a text drift never reaches the
+        // manifest comparison (the frozen plan is not even read)
+        verify(segmentMapper, never()).queryByReleaseStmtId(anyLong());
     }
 
     @Test
@@ -643,6 +650,175 @@ public class ProdReleaseServiceImplTest {
         } catch (ErrorMessageException ex) {
             // ok
         }
+    }
+
+    // ==================== ADR-013 M3 frozen-plan integrity gate (design D7) ====================
+
+    /**
+     * A5 pin: a dirty-written (tampered) manifest row flips the recomputed canonical hash away
+     * from the plan_hash pin → stmt FAILED + RELEASE_PLAN_DRIFT + dispatch denied, and the
+     * denial is NEVER overridable (integrity class — no override surface is consulted; the C4
+     * schema gates are not even reached — A7 order pin hash → PLAN → precheck → diff).
+     */
+    @Test
+    public void startExecution_planDrift_marksStmtFailedNoJob_neverOverridable() {
+        long releaseId = 560L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(660L, releaseId, "PENDING");
+        // the pin was computed over the ORIGINAL manifest; the row was then dirty-written
+        stmt.setPlanHash(com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils
+            .hash(List.of(segmentRow(1, "GHOST", "t_big"))));
+        when(segmentMapper.queryByReleaseStmtId(660L))
+            .thenReturn(List.of(segmentRow(1, "GHOST", "t_TAMPERED")));
+
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+        DmProdReleaseStmtDO failedStmt = buildReleaseStmt(660L, releaseId, "FAILED");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt), List.of(failedStmt));
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-560");
+        when(approvalMapper.queryById(anyLong())).thenReturn(approval);
+
+        service.startExecution(releaseId, UID);
+
+        verify(stmtMapper).updateExecStatus(eq(660L), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType()) && UID.equals(e.getOperatorUid())
+                && e.getEventData() != null && e.getEventData().contains("\"stmtId\":660")));
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+        // A7 order pin: the plan gate runs BEFORE the C4 schema gates — a drift never reaches them
+        verify(releaseSchemaPrecheckService, never()).precheck(any());
+        verify(releaseSchemaDiffService, never()).diff(any());
+        // NEVER overridable: the C4 schema-gate override surface is not consulted
+        verify(schemaGateOverrideService, never()).findAndConsume(anyLong(), anyLong(), anyString(), any());
+        // aggregation: all terminal → PARTIAL_FAILED (the release never sticks EXECUTING)
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+    }
+
+    /** plan_hash set + manifest EMPTY → recomputed null ≠ pin → drift (the D7 second arm). */
+    @Test
+    public void startExecution_planHashWithEmptyManifest_drift() {
+        long releaseId = 561L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(661L, releaseId, "PENDING");
+        stmt.setPlanHash(com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils
+            .hash(List.of(segmentRow(1, "DML_BATCH", "t_order"))));
+        when(segmentMapper.queryByReleaseStmtId(661L)).thenReturn(List.of()); // manifest deleted
+
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+        DmProdReleaseStmtDO failedStmt = buildReleaseStmt(661L, releaseId, "FAILED");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt), List.of(failedStmt));
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-561");
+        when(approvalMapper.queryById(anyLong())).thenReturn(approval);
+
+        service.startExecution(releaseId, UID);
+
+        verify(stmtMapper).updateExecStatus(eq(661L), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+    }
+
+    /** A matching pin passes the gate — the C4 precheck runs next and the job is created (A7 order). */
+    @Test
+    public void startExecution_planHashMatches_proceeds() {
+        long releaseId = 562L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(662L, releaseId, "PENDING");
+        List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
+            = List.of(segmentRow(1, "GHOST", "t_big"));
+        stmt.setPlanHash(com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils.hash(manifest));
+        when(segmentMapper.queryByReleaseStmtId(662L)).thenReturn(manifest);
+
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        service.startExecution(releaseId, UID);
+
+        // plan gate passed → the C4 precheck gate ran → the segment-aware dispatch was reached
+        verify(releaseSchemaPrecheckService).precheck(stmt);
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+    }
+
+    /** null-plan legacy (plan_hash NULL): the gate skips entirely — no manifest read, byte-identical. */
+    @Test
+    public void startExecution_nullPlan_skipsPlanGate_noManifestRead() {
+        long releaseId = 563L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(663L, releaseId, "PENDING"); // planHash null
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+
+        service.startExecution(releaseId, UID);
+
+        // the plan gate never reads the manifest for a null-plan stmt (legacy short-circuit);
+        // dispatch proceeds byte-identical through the C4 gates
+        verify(segmentMapper, never()).queryByReleaseStmtId(anyLong());
+        verify(releaseSchemaPrecheckService).precheck(stmt);
+        verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+    }
+
+    /** retryReleaseStmt carries the same gate (three-point consistency): drift denies the retry. */
+    @Test
+    public void retryReleaseStmt_planDrift_marksFailedNoRedispatch() {
+        long stmtId = 905L;
+        long releaseId = 915L;
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(stmtId, releaseId, "FAILED");
+        stmt.setPlanHash(com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils
+            .hash(List.of(segmentRow(1, "DML_BATCH", "t_order"))));
+        when(segmentMapper.queryByReleaseStmtId(stmtId)).thenReturn(List.of()); // emptied manifest
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setPrimaryUid(PUID);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        com.clougence.clouddm.platform.dal.model.datasource.DmDsDO prodDs
+            = mock(com.clougence.clouddm.platform.dal.model.datasource.DmDsDO.class);
+        when(prodDs.getInstanceId()).thenReturn("inst-1");
+        when(dsMapper.queryDsIdentityById(anyLong())).thenReturn(prodDs);
+
+        service.retryReleaseStmt(PUID, UID, stmtId);
+
+        verify(stmtMapper).updateExecStatus(eq(stmtId), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+        // denied BEFORE the segment reset + re-dispatch; the C4 gates are never reached (A7 order)
+        verify(releaseSegmentService, never()).prepareRetry(any());
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+        verify(releaseSchemaPrecheckService, never()).precheck(any());
+    }
+
+    private static com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO segmentRow(
+        int segIdx, String type, String table) {
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO row
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO();
+        row.setSegIdx(segIdx);
+        row.setType(type);
+        row.setStmtIndex(segIdx);
+        row.setTableName(table);
+        row.setSqlText("ALTER TABLE " + table + " ADD c INT");
+        row.setStatus("PENDING");
+        return row;
     }
 
     // ==================== handleRejected / handleCancelled delete rows ====================

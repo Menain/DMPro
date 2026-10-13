@@ -101,6 +101,11 @@ public class ReleaseSegmentService {
     private ApprovalDal         approvalDal;
     @Resource
     private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
+    // ADR-013 M3 (design D8): governed route-override consumption at the two block points
+    // (DML_BATCH unsupported ∨ GHOST capability failure) — single-use CAS, release = DIRECT replay.
+    // Plain injection: the override service only reaches the DAL + audit/event surfaces (no cycle).
+    @Resource
+    private GovRouteOverrideService govRouteOverrideService;
     // @Lazy: AutoExecServiceImpl reaches back into this service (createReleaseStmtJob delegation +
     //   handleReleaseJobCompletion segment completion) — safe-side proxy injection (iron rule).
     @org.springframework.context.annotation.Lazy
@@ -172,7 +177,7 @@ public class ReleaseSegmentService {
             return dispatchReleaseGhostSegment(release, stmt, seg, uid);
         }
         if (TicketSegment.TYPE_DML_BATCH.equals(seg.getType())) {
-            return blockDmlBatchSegment(release, stmt, seg);
+            return blockDmlBatchSegment(release, stmt, seg, uid);
         }
         if (!TicketSegment.TYPE_AUTOEXEC.equals(seg.getType())) {
             // UNKNOWN segment type (a corrupt/tampered manifest row — the M1 writer only emits the
@@ -187,6 +192,19 @@ public class ReleaseSegmentService {
         }
         // AUTOEXEC: build the segment-filtered job (holes numbering) + start it (the caller's
         // createReleaseStmtJob returns false so the outer startJob is skipped — this owns it).
+        dispatchDirectSegmentJob(stmt, seg, uid);
+        return false;
+    }
+
+    /**
+     * Build + start the segment-filtered DIRECT job of one segment (the AUTOEXEC branch's body,
+     * shared with the M3 override-released replay of a blocked GHOST/DML_BATCH segment — design
+     * D5/D8: a consumed route override releases the segment as a DIRECT single-statement job,
+     * exec_order = stmtIndex, an EXPLICIT risk acceptance, never a silent downgrade). Records the
+     * jobBizId binding on the segment row BEFORE the job insert (the completion callback locates
+     * the segment by it — any plan type).
+     */
+    private void dispatchDirectSegmentJob(DmProdReleaseStmtDO stmt, DmProdReleaseStmtSegmentDO seg, String uid) {
         String jobBizId = DmTeamUtils.nextExecJobBizId();
         seg.setJobBizId(jobBizId);
         persistRuntime(seg);
@@ -195,7 +213,6 @@ public class ReleaseSegmentService {
         this.autoExecService.createReleaseSegmentJob(stmt, seg, jobBizId, transactional,
             ErrorStrategy.NONE, languageTag, uid);
         this.autoExecService.startJob(jobBizId, uid);
-        return false;
     }
 
     /**
@@ -228,12 +245,14 @@ public class ReleaseSegmentService {
      * Dispatch ONE frozen GHOST segment against the prod target: capability re-check FIRST (only the
      * gh-ost hard preconditions — dialect/direct-connection/channel/table+PK-UK; NEVER the routing
      * decision, red line 4), then the launch binding (releaseStmtId/releaseId/segmentIndex). Any
-     * capability failure OR launch failure (incl. GHOST_BINARY_MISSING) → stmt FAILED +
-     * RELEASE_ROUTE_CAPABILITY event (the M3 override channel is the recovery; this milestone blocks).
-     * The session owner = the release creator (stable across the release lifecycle, mirrored by the
-     * sweep probe / session release).
+     * capability failure OR launch failure (incl. GHOST_BINARY_MISSING) first offers the M3 route
+     * override a consumption (design D8 — an explicit lock-risk acceptance releases the segment as
+     * a DIRECT single-statement replay); with nothing consumable the block STANDS: stmt FAILED +
+     * RELEASE_ROUTE_CAPABILITY event. The session owner = the release creator (stable across the
+     * release lifecycle, mirrored by the sweep probe / session release).
      *
-     * @return true when the stmt became terminal FAILED (capability/launch failure); false on launch.
+     * @return true when the stmt became terminal FAILED (capability/launch failure, no override);
+     *         false on launch OR an override-released DIRECT dispatch.
      */
     private boolean dispatchReleaseGhostSegment(DmProdReleaseDO release, DmProdReleaseStmtDO stmt,
                                                 DmProdReleaseStmtSegmentDO seg, String uid) {
@@ -245,8 +264,14 @@ public class ReleaseSegmentService {
         if (cap == null || !cap.isCapable()) {
             String code = cap == null ? "CHANNEL_UNAVAILABLE" : cap.getFailCode();
             String reason = cap == null ? "capability probe unavailable" : cap.getFailReason();
-            failSegment(release, stmt, seg,
-                "GHOST capability re-check failed [" + code + "]: " + reason,
+            String detail = "GHOST capability re-check failed [" + code + "]: " + reason;
+            // M3 override channel (design D8): consumed → the segment replays as AUTOEXEC DIRECT
+            // (explicit lock-risk acceptance — event + HIGH audit written by the override service)
+            if (tryRouteOverrideRelease(release, stmt, seg,
+                GovRouteOverrideService.BLOCK_ROUTE_CAPABILITY, detail, uid)) {
+                return false;
+            }
+            failSegment(release, stmt, seg, detail,
                 GovEventType.RELEASE_ROUTE_CAPABILITY, capabilityEventData(stmt, seg, code, reason));
             return true;
         }
@@ -269,12 +294,40 @@ public class ReleaseSegmentService {
             // (the binary lives on the sidecar and is only proven by the launch itself — design D4 ②)
             log.warn("[ReleaseSegment] GHOST launch failed for release stmt {} segment {} — blocked",
                 stmt.getId(), seg.getSegIdx(), e);
-            failSegment(release, stmt, seg,
-                "GHOST launch failed: " + e.getMessage(),
+            String detail = "GHOST launch failed: " + e.getMessage();
+            if (tryRouteOverrideRelease(release, stmt, seg,
+                GovRouteOverrideService.BLOCK_ROUTE_CAPABILITY, detail, uid)) {
+                return false;
+            }
+            failSegment(release, stmt, seg, detail,
                 GovEventType.RELEASE_ROUTE_CAPABILITY,
                 capabilityEventData(stmt, seg, "LAUNCH_FAILED", e.getMessage()));
             return true;
         }
+    }
+
+    /**
+     * M3 route-override consumption attempt at ONE of the two block points (design D8): findAndConsume
+     * (single-use CAS + RELEASE_ROUTE_OVERRIDE event + HIGH grantor audit inside the override
+     * service); on success the blocked segment is released as a DIRECT single-statement job
+     * (dispatchDirectSegmentJob — exec_order = stmtIndex, the D5 "该段按 AUTOEXEC 直发" semantics).
+     * NEVER a silent path: the consumption writes the event + audit trails before the dispatch.
+     *
+     * @return true when the override was consumed and the DIRECT job dispatched; false when the
+     *         block stands (nothing consumable / CAS lost — the caller writes the block disposal).
+     */
+    private boolean tryRouteOverrideRelease(DmProdReleaseDO release, DmProdReleaseStmtDO stmt,
+                                            DmProdReleaseStmtSegmentDO seg, String blockCode,
+                                            String blockReason, String uid) {
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO override
+            = this.govRouteOverrideService.findAndConsume(release, stmt, seg, blockCode, blockReason);
+        if (override == null) {
+            return false;
+        }
+        log.info("[ReleaseSegment] route override {} consumed for release stmt {} segment {} ({}) — direct replay",
+            override.getId(), stmt.getId(), seg.getSegIdx(), blockCode);
+        dispatchDirectSegmentJob(stmt, seg, uid);
+        return true;
     }
 
     /**
@@ -315,16 +368,22 @@ public class ReleaseSegmentService {
      * BLOCK a DML_BATCH segment at its dispatch turn: the release chain has NO batch executor
      * (O-C7-1 follow-up), so the stmt fails with RELEASE_ROUTE_UNSUPPORTED rather than silently
      * replaying the frozen text as ONE direct statement (red line 1). Recovery = a route override
-     * (M3, explicit risk acceptance → the segment replays as AUTOEXEC) ∨ returnStmt to the ticket
-     * chain ∨ the O-C7-1 executor. eventData is the disclosure WHITELIST (segIdx/table/rows/
-     * batchKey/sourceTicketId — NO SQL text, C2 eventData discipline).
+     * (M3, design D8 — a consumed grant releases THIS segment as a DIRECT single-statement replay,
+     * explicit risk acceptance with event + HIGH audit trails) ∨ returnStmt to the ticket chain ∨
+     * the O-C7-1 executor. eventData is the disclosure WHITELIST (segIdx/table/rows/batchKey/
+     * sourceTicketId — NO SQL text, C2 eventData discipline).
      *
-     * @return true always (the stmt became terminal FAILED).
+     * @return true when the block stands (the stmt became terminal FAILED); false when a route
+     *         override was consumed and the DIRECT job dispatched.
      */
     private boolean blockDmlBatchSegment(DmProdReleaseDO release, DmProdReleaseStmtDO stmt,
-                                         DmProdReleaseStmtSegmentDO seg) {
-        failSegment(release, stmt, seg,
-            "DML_BATCH segment is not executable on the release chain (route unsupported)",
+                                         DmProdReleaseStmtSegmentDO seg, String uid) {
+        String detail = "DML_BATCH segment is not executable on the release chain (route unsupported)";
+        if (tryRouteOverrideRelease(release, stmt, seg,
+            GovRouteOverrideService.BLOCK_ROUTE_UNSUPPORTED, detail, uid)) {
+            return false;
+        }
+        failSegment(release, stmt, seg, detail,
             GovEventType.RELEASE_ROUTE_UNSUPPORTED, unsupportedEventData(stmt, seg));
         return true;
     }
@@ -334,10 +393,13 @@ public class ReleaseSegmentService {
     // ==================================================================================
 
     /**
-     * AUTOEXEC segment completion (caller: {@code handleReleaseJobCompletion}, UNDER its release row
-     * lock, after the job terminal flip). Locates the segment by the EXECUTING+AUTOEXEC shape and
-     * cross-checks the recorded jobBizId (a stale/replayed callback never advances a segment that
-     * moved on). Advances it (terminal + next-segment dispatch, or the stmt terminal when last).
+     * DIRECT-job segment completion (caller: {@code handleReleaseJobCompletion}, UNDER its release
+     * row lock, after the job terminal flip). Locates the segment by the recorded jobBizId — the
+     * exact binding covers BOTH shapes: a plain AUTOEXEC segment AND an M3 override-released
+     * GHOST/DML_BATCH segment (plan type frozen, job-driven at runtime). A stale/replayed callback
+     * never advances a segment that moved on (the M2 jobBizId cross-check, promoted to the locator).
+     * The lenient EXECUTING+AUTOEXEC shape fallback only applies when a biz id is blank
+     * (unreachable by construction — both sides always record one; defensive parity with M2).
      *
      * @return true when the stmt reached a TERMINAL state (the caller runs the chain-advance tail);
      *         false when the next segment was dispatched or the CAS skipped (replay/race).
@@ -347,19 +409,26 @@ public class ReleaseSegmentService {
         List<DmProdReleaseStmtSegmentDO> rows = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
         DmProdReleaseStmtSegmentDO seg = null;
         for (DmProdReleaseStmtSegmentDO one : rows) {
-            if (one != null && EXEC_STATUS_EXECUTING.equals(one.getStatus())
-                && TicketSegment.TYPE_AUTOEXEC.equals(one.getType())) {
-                seg = one;
+            if (one == null || !EXEC_STATUS_EXECUTING.equals(one.getStatus())) {
+                continue;
+            }
+            if (StringUtils.isNotBlank(jobBizId) && StringUtils.isNotBlank(one.getJobBizId())) {
+                if (jobBizId.equals(one.getJobBizId())) {
+                    seg = one; // exact job binding (any plan type — incl. override-released)
+                    break;
+                }
+            } else if (TicketSegment.TYPE_AUTOEXEC.equals(one.getType())) {
+                seg = one; // lenient legacy shape (a blank biz id on either side)
                 break;
             }
         }
         if (seg == null) {
-            return false; // replay/race: no EXECUTING autoexec segment — the first writer won
-        }
-        if (StringUtils.isNotBlank(seg.getJobBizId()) && StringUtils.isNotBlank(jobBizId)
-            && !seg.getJobBizId().equals(jobBizId)) {
-            log.warn("[ReleaseSegment] stale job callback for release stmt {} (job {} vs segment job {}) — skipped",
-                stmt.getId(), jobBizId, seg.getJobBizId());
+            // replay/race: no EXECUTING segment bound to this job — the first writer won, or the
+            // callback's job is stale (a superseded segment's biz id no longer matches any row)
+            if (StringUtils.isNotBlank(jobBizId)) {
+                log.warn("[ReleaseSegment] stale job callback for release stmt {} (job {} matches no EXECUTING segment) — skipped",
+                    stmt.getId(), jobBizId);
+            }
             return false;
         }
         return advanceUnderLock(release, stmt, rows, seg, success, detail, uid);
@@ -386,7 +455,11 @@ public class ReleaseSegmentService {
         List<DmProdReleaseStmtSegmentDO> rows = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(releaseStmtId);
         DmProdReleaseStmtSegmentDO seg = findGhostSegment(rows, segmentIndex);
         if (seg == null || !EXEC_STATUS_EXECUTING.equals(seg.getStatus())
-            || !TicketSegment.TYPE_GHOST.equals(seg.getType())) {
+            || !TicketSegment.TYPE_GHOST.equals(seg.getType())
+            // M3: an override-released GHOST segment is JOB-driven (jobBizId recorded, no ghost
+            // task ever launched) — its completion arrives through the AUTOEXEC job callback, the
+            // ghost hook must never advance it (defensive: no task exists to fire this hook)
+            || StringUtils.isNotBlank(seg.getJobBizId())) {
             return; // CAS: replayed hook / sweep already judged / stale task of a rebuilt segment
         }
         String uid = StringUtils.isNotBlank(release.getCreatorUid()) ? release.getCreatorUid() : SYSTEM_OPERATOR;
@@ -557,7 +630,10 @@ public class ReleaseSegmentService {
             return;
         }
         if (!EXEC_STATUS_EXECUTING.equals(current.getStatus())
-            || !TicketSegment.TYPE_GHOST.equals(current.getType())) {
+            || !TicketSegment.TYPE_GHOST.equals(current.getType())
+            // M3: an override-released GHOST segment carries a jobBizId (DIRECT job-driven — the
+            // AUTOEXEC callback + the release aggregation backstop it, no ghost task exists to probe)
+            || StringUtils.isNotBlank(current.getJobBizId())) {
             return; // EXECUTING AUTOEXEC is callback-driven; DML_BATCH is never EXECUTING (blocked at dispatch)
         }
         probeGhostSegmentUnderLock(release, stmt, rows, current);

@@ -137,8 +137,38 @@
                   <div class="gov-stmt-card__sql">
                     <read-only-editor :text="stmt.sqlContent" :max-height="200" />
                   </div>
+                  <!-- ADR-013 M3 冻结计划复核面（design D10）：有 manifest 才渲染；null-plan 存量语句保持原形态 -->
+                  <div v-if="stmt.segments && stmt.segments.length" class="gov-stmt-card__plan">
+                    <div class="gov-plan-title">{{ $t('gov-release-frozen-plan-title') }}（{{ stmt.segments.length }}）</div>
+                    <Alert v-if="hasDmlBatchSegment(stmt)" type="warning" show-icon class="gov-plan-banner">
+                      {{ $t('gov-release-dml-batch-block-banner') }}
+                    </Alert>
+                    <div class="gov-plan-row gov-plan-row--head">
+                      <span class="gov-plan-col gov-plan-col--seg">{{ $t('gov-release-plan-col-seg') }}</span>
+                      <span class="gov-plan-col gov-plan-col--type">{{ $t('gov-release-plan-col-type') }}</span>
+                      <span class="gov-plan-col gov-plan-col--stmts">{{ $t('gov-release-plan-col-stmts') }}</span>
+                      <span class="gov-plan-col gov-plan-col--table">{{ $t('gov-release-plan-col-table') }}</span>
+                      <span class="gov-plan-col gov-plan-col--rows">{{ $t('gov-release-plan-col-rows') }}</span>
+                      <span class="gov-plan-col gov-plan-col--key">{{ $t('gov-release-plan-col-batch-key') }}</span>
+                      <span class="gov-plan-col gov-plan-col--status">{{ $t('gov-release-plan-col-status') }}</span>
+                    </div>
+                    <div v-for="s in stmt.segments" :key="s.segIdx" class="gov-plan-row">
+                      <span class="gov-plan-col gov-plan-col--seg gov-mono">{{ s.segIdx }}</span>
+                      <span class="gov-plan-col gov-plan-col--type">
+                        <Tag :color="segmentTypeColor(s.type)" size="small">{{ s.type }}</Tag>
+                      </span>
+                      <span class="gov-plan-col gov-plan-col--stmts gov-mono">{{ segmentStmtsText(s) }}</span>
+                      <span class="gov-plan-col gov-plan-col--table" :title="s.tableName">{{ s.tableName || '-' }}</span>
+                      <span class="gov-plan-col gov-plan-col--rows gov-mono">{{ s.rowsEstimated != null ? s.rowsEstimated : '-' }}</span>
+                      <span class="gov-plan-col gov-plan-col--key gov-mono">{{ batchKeyText(s) }}</span>
+                      <span class="gov-plan-col gov-plan-col--status">
+                        <Tag :color="segmentStatusColor(s.status)" size="small" :title="s.error || ''">{{ s.status }}</Tag>
+                      </span>
+                    </div>
+                  </div>
                   <div class="gov-stmt-card__meta">
                     <span class="gov-mono">{{ $t('gov-release-hash') }}: {{ shortHash(stmt.hash) }}</span>
+                    <span v-if="stmt.planHash" class="gov-mono">{{ $t('gov-release-plan-hash') }}: {{ shortHash(stmt.planHash) }}</span>
                     <span v-if="stmt.execDetail" class="gov-stmt-card__detail">{{ stmt.execDetail }}</span>
                   </div>
                   <div class="gov-stmt-card__actions">
@@ -157,6 +187,14 @@
                     <!-- ADR-011 门禁 Override：仅 FAILED 语句 + GOV_SCHEMA_GATE_OVERRIDE 标签持有者可见（端点同标签强制） -->
                     <Button v-if="stmt.execStatus === 'FAILED' && canOverride" size="small" @click="openOverrideModal(stmt)">
                       {{ $t('gov-release-override-button') }}
+                    </Button>
+                    <!-- ADR-013 M3 路由 Override：仅 FAILED 且带冻结计划的语句 + GOV_ROUTE_OVERRIDE 标签持有者可见（端点同标签强制；与门禁 Override 完全隔离） -->
+                    <Button
+                      v-if="stmt.execStatus === 'FAILED' && canRouteOverride && stmt.segments && stmt.segments.length"
+                      size="small"
+                      @click="openRouteOverrideModal(stmt)"
+                    >
+                      {{ $t('gov-release-route-override-button') }}
                     </Button>
                   </div>
                 </div>
@@ -193,6 +231,32 @@
                   {{ $t('gov-release-override-revoke-button') }}
                 </Button>
               </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ADR-013 M3 路由 Override 记录：GOV_ROUTE_OVERRIDE 标签持有者可见（列表端点同标签强制），状态 待消费/已消费/已过期；与门禁 Override 记录完全隔离 -->
+        <section v-if="canRouteOverride" class="page-section">
+          <div class="page-section__title">{{ $t('gov-release-route-override-list-title') }}</div>
+          <div v-if="!routeOverrides.length" class="gov-override-empty">{{ $t('gov-release-route-override-empty') }}</div>
+          <div v-else class="gov-override-list">
+            <div class="gov-override-row gov-override-row--head">
+              <span class="gov-override-col gov-override-col--scope">{{ $t('gov-release-route-override-col-scope') }}</span>
+              <span class="gov-override-col gov-override-col--reason">{{ $t('gov-release-route-override-col-reason') }}</span>
+              <span class="gov-override-col gov-override-col--operator">{{ $t('gov-release-route-override-col-creator') }}</span>
+              <span class="gov-override-col gov-override-col--expire">{{ $t('gov-release-route-override-col-expire') }}</span>
+              <span class="gov-override-col gov-override-col--status">{{ $t('gov-release-route-override-col-status') }}</span>
+              <span class="gov-override-col gov-override-col--consumed">{{ $t('gov-release-route-override-col-consumed') }}</span>
+            </div>
+            <div v-for="row in routeOverrides" :key="row.id" class="gov-override-row">
+              <span class="gov-override-col gov-override-col--scope">{{ overrideScopeText(row) }}</span>
+              <span class="gov-override-col gov-override-col--reason" :title="row.reason">{{ row.reason }}</span>
+              <span class="gov-override-col gov-override-col--operator">{{ row.createdBy }}</span>
+              <span class="gov-override-col gov-override-col--expire">{{ formatDateTime(row.expireAt) }}</span>
+              <span class="gov-override-col gov-override-col--status">
+                <Tag :color="routeOverrideStatusColor(row.status)" size="small">{{ $t(`gov-release-route-override-status-${row.status}`) }}</Tag>
+              </span>
+              <span class="gov-override-col gov-override-col--consumed gov-mono">{{ routeOverrideConsumedText(row) }}</span>
             </div>
           </div>
         </section>
@@ -329,6 +393,29 @@
         <Button type="primary" :loading="grantingOverride" @click="handleOverrideGrantSubmit">{{ $t('que-ren') }}</Button>
       </template>
     </CCModal>
+
+    <!-- ADR-013 M3 路由 Override 授予弹窗：理由必填 + 有效期 ≤7 天（粒度固定 (releaseId, stmtId)，无门禁类型/范围选择；风险提示前置） -->
+    <CCModal v-model="showRouteOverrideModal" :title="$t('gov-release-route-override-title')" :footer-hide="true" width="560">
+      <div class="gov-override-form">
+        <Alert type="warning" show-icon class="gov-route-override-risk">{{ $t('gov-release-route-override-risk-hint') }}</Alert>
+        <div class="gov-override-form__label">{{ $t('gov-release-route-override-reason-label') }}</div>
+        <Input
+          v-model="routeOverrideForm.reason"
+          type="textarea"
+          :rows="3"
+          :maxlength="1024"
+          show-word-limit
+          :placeholder="$t('gov-release-route-override-reason-placeholder')"
+        />
+        <div class="gov-override-form__label">{{ $t('gov-release-route-override-expire-label') }}</div>
+        <DatePicker v-model="routeOverrideForm.expireAt" type="datetime" :options="overrideExpireOptions" />
+        <div class="gov-override-form__hint">{{ $t('gov-release-route-override-expire-hint') }}</div>
+      </div>
+      <template #footer>
+        <Button @click="showRouteOverrideModal = false">{{ $t('qu-xiao') }}</Button>
+        <Button type="primary" :loading="grantingRouteOverride" @click="handleRouteOverrideGrantSubmit">{{ $t('que-ren') }}</Button>
+      </template>
+    </CCModal>
   </div>
 </template>
 
@@ -376,6 +463,15 @@ export default {
         reason: '',
         expireAt: null
       },
+      // ADR-013 M3 路由 Override：与门禁 Override 完全隔离（两标签两端点两列表），粒度固定单语句
+      routeOverrides: [],
+      showRouteOverrideModal: false,
+      grantingRouteOverride: false,
+      routeOverrideForm: {
+        stmtId: null,
+        reason: '',
+        expireAt: null
+      },
       overrideExpireOptions: {
         disabledDate(date) {
           if (!date) return false;
@@ -396,6 +492,10 @@ export default {
     // ADR-011 门禁 Override 权限门控（镜像后端 @RequestAuth(GOV_SCHEMA_GATE_OVERRIDE) 三端点）
     canOverride() {
       return this.myAuth.includes('GOV_SCHEMA_GATE_OVERRIDE');
+    },
+    // ADR-013 M3 路由 Override 权限门控（镜像后端 @RequestAuth(GOV_ROUTE_OVERRIDE) 两端点；与门禁 Override 标签互不代换）
+    canRouteOverride() {
+      return this.myAuth.includes('GOV_ROUTE_OVERRIDE');
     },
     gateTypeOptions() {
       return [
@@ -440,31 +540,43 @@ export default {
       }
       return ['REJECTED', 'CANCELLED', 'RETURNED'].includes(this.detail.status);
     },
-    // B6 M3 发布链过渡明示：gate_result 的 additive 提示键（ghostRoutedStmtCount>0）→ 黄旗
-    // 「PROD 重放=直接执行，大表存在锁风险」；旧发布单无该键 → 不显示（容错解析）
-    ghostReplayHint() {
+    // B6 M3/B7 N3 存量披露 + ADR-013 M3 收窄：黄旗只覆盖「曾路由但无冻结计划」的语句（存量
+    // release 仍整段直发重放）；带 manifest 的语句由逐语句冻结计划区块按真实行为披露
+    // （GHOST 段 gh-ost 重放 / DML_BATCH 段阻断），不再显示「重放为直接执行」的旧文案。
+    // 判定：gate_result.stmts 快照（sourceStmtId + ghostRouted/dmlBatchRouted 标记）× 详情
+    // 语句的 segments 有无（sourceStmtId 对齐）；旧发布单无提示键 → 不显示（容错解析）
+    legacyRoutedHints() {
+      const hints = { ghost: false, dmlBatch: false };
       if (!this.detail || !this.detail.gateResult) {
-        return false;
+        return hints;
       }
+      let gr;
       try {
-        const gr = JSON.parse(this.detail.gateResult);
-        return Number(gr && gr.ghostRoutedStmtCount) > 0;
+        gr = JSON.parse(this.detail.gateResult);
       } catch (e) {
-        return false;
+        return hints;
       }
+      const snapshots = (gr && gr.stmts) || [];
+      const hasPlan = {};
+      for (const group of this.detail.stmtGroups || []) {
+        for (const stmt of group.stmts || []) {
+          hasPlan[stmt.sourceStmtId] = !!(stmt.segments && stmt.segments.length);
+        }
+      }
+      for (const snap of snapshots) {
+        if (!snap || hasPlan[snap.sourceStmtId]) {
+          continue; // 带冻结计划的语句按计划区块披露，不适用存量黄旗
+        }
+        if (snap.ghostRouted) hints.ghost = true;
+        if (snap.dmlBatchRouted) hints.dmlBatch = true;
+      }
+      return hints;
     },
-    // B7 N3 发布链披露：dmlBatchRoutedStmtCount>0 → 「PRE 侧曾分批执行；PROD 重放为直接执行，
-    // 大表存在长锁/超时风险」黄旗；旧发布单无该键 → 不显示（同款容错解析）
+    ghostReplayHint() {
+      return this.legacyRoutedHints.ghost;
+    },
     dmlBatchReplayHint() {
-      if (!this.detail || !this.detail.gateResult) {
-        return false;
-      }
-      try {
-        const gr = JSON.parse(this.detail.gateResult);
-        return Number(gr && gr.dmlBatchRoutedStmtCount) > 0;
-      } catch (e) {
-        return false;
-      }
+      return this.legacyRoutedHints.dmlBatch;
     }
   },
   mounted() {
@@ -487,6 +599,7 @@ export default {
           this.detail = res.data;
           await this.loadApprovalOutbound();
           this.loadOverrides();
+          this.loadRouteOverrides();
         }
       } finally {
         this.loading = false;
@@ -590,6 +703,108 @@ export default {
       if (status === 'ACTIVE') return 'primary';
       if (status === 'EXPIRED') return 'warning';
       return 'default';
+    },
+    // ---- ADR-013 M3 路由 Override（与门禁 Override 完全隔离：独立端点/列表/弹窗状态） ----
+    // 静默加载:无标签/请求失败均置空列表,不影响详情主体呈现（loadOverrides 同款）
+    async loadRouteOverrides() {
+      if (!this.canRouteOverride) {
+        this.routeOverrides = [];
+        return;
+      }
+      try {
+        const res = await this.$services.govReleaseRouteOverrideList({
+          data: { releaseId: Number(this.releaseId) },
+          modal: false
+        });
+        this.routeOverrides = res.success && res.data ? res.data : [];
+      } catch {
+        this.routeOverrides = [];
+      }
+    },
+    openRouteOverrideModal(stmt) {
+      this.routeOverrideForm = {
+        stmtId: stmt ? stmt.id : null,
+        reason: '',
+        expireAt: new Date(Date.now() + 24 * 3600 * 1000)
+      };
+      this.showRouteOverrideModal = true;
+    },
+    async handleRouteOverrideGrantSubmit() {
+      if (this.grantingRouteOverride) {
+        return;
+      }
+      const reason = (this.routeOverrideForm.reason || '').trim();
+      if (!reason) {
+        this.$Message.warning(this.$t('gov-release-route-override-reason-required'));
+        return;
+      }
+      const expireMs = this.routeOverrideForm.expireAt ? new Date(this.routeOverrideForm.expireAt).getTime() : NaN;
+      const now = Date.now();
+      if (isNaN(expireMs) || expireMs <= now || expireMs - now > 7 * 86400000) {
+        this.$Message.warning(this.$t('gov-release-route-override-expire-invalid'));
+        return;
+      }
+      this.grantingRouteOverride = true;
+      try {
+        const res = await this.$services.govReleaseRouteOverrideGrant({
+          data: {
+            releaseId: Number(this.releaseId),
+            stmtId: this.routeOverrideForm.stmtId,
+            reason,
+            expireAt: expireMs
+          }
+        });
+        if (res.success) {
+          this.$Message.success(this.$t('gov-release-route-override-grant-success'));
+          this.showRouteOverrideModal = false;
+          await this.loadRouteOverrides();
+        } else {
+          this.$Message.error(formatError(res.msg));
+        }
+      } finally {
+        this.grantingRouteOverride = false;
+      }
+    },
+    routeOverrideStatusColor(status) {
+      if (status === 'PENDING') return 'primary';
+      if (status === 'EXPIRED') return 'warning';
+      return 'default';
+    },
+    routeOverrideConsumedText(row) {
+      if (row.status !== 'CONSUMED') {
+        return '-';
+      }
+      return `#${row.coveredSegIdxs || '-'} · ${this.formatDateTime(row.consumedAt)}`;
+    },
+    // ---- ADR-013 M3 冻结计划区块渲染（读 manifest,plan+runtime 双面） ----
+    hasDmlBatchSegment(stmt) {
+      return (stmt.segments || []).some((s) => s.type === 'DML_BATCH');
+    },
+    segmentTypeColor(type) {
+      if (type === 'GHOST') return 'primary';
+      if (type === 'DML_BATCH') return 'warning';
+      return 'default';
+    },
+    segmentStatusColor(status) {
+      if (status === 'SUCCESS') return 'success';
+      if (status === 'FAILED') return 'error';
+      if (status === 'EXECUTING') return 'primary';
+      return 'default';
+    },
+    segmentStmtsText(s) {
+      if (s.stmtRangeFrom != null && s.stmtRangeTo != null) {
+        return `${s.stmtRangeFrom}-${s.stmtRangeTo}`;
+      }
+      if (s.stmtIndex != null) {
+        return `#${s.stmtIndex}`;
+      }
+      return '-';
+    },
+    batchKeyText(s) {
+      if (!s.batchKeyColumn) {
+        return '-';
+      }
+      return `${s.batchKeyColumn}(${s.batchKeyType || '?'})`;
     },
     // 审批工单 base info(含 outbound 状态)——静默加载:无 approvalId / 无权限 / 请求失败
     // 均置 null,面板隐藏,不影响发布单详情主体呈现
@@ -1075,6 +1290,14 @@ export default {
       flex: 0 0 60px;
       text-align: right;
     }
+    // ADR-013 M3 路由 Override 记录的「消费（段号）」列（比操作列宽,容纳 段号+时间）
+    &--consumed {
+      flex: 0 0 180px;
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   }
 
   .gov-override-form {
@@ -1250,6 +1473,80 @@ export default {
       gap: 8px;
       padding: 0 16px 12px;
     }
+
+    // ADR-013 M3 冻结计划区块:浅底分区(少线框,与 gov-overview-grid 同款),零新色值
+    &__plan {
+      margin: 0 16px 12px;
+      background: var(--surface-soft, #f8fafc);
+      border-radius: 6px;
+      padding: 12px 16px;
+    }
+  }
+
+  .gov-plan-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #181d26;
+    margin-bottom: 8px;
+  }
+
+  .gov-plan-banner {
+    margin-bottom: 8px;
+  }
+
+  .gov-plan-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 13px;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    &--head {
+      color: var(--muted, #41454d);
+    }
+  }
+
+  .gov-plan-col {
+    min-width: 0;
+
+    &--seg {
+      flex: 0 0 40px;
+    }
+    &--type {
+      flex: 0 0 110px;
+    }
+    &--stmts {
+      flex: 0 0 80px;
+    }
+    &--table {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &--rows {
+      flex: 0 0 100px;
+      text-align: right;
+    }
+    &--key {
+      flex: 0 0 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &--status {
+      flex: 0 0 100px;
+      text-align: right;
+    }
+  }
+
+  .gov-route-override-risk {
+    margin-bottom: 8px;
   }
 
   .gov-event-timeline-list {

@@ -144,6 +144,27 @@ public enum AuditType {
     GOV_SCHEMA_GATE_OVERRIDE_GRANT,
     /** Revocation of an unconsumed override grant — same trail shape as the GRANT row. */
     GOV_SCHEMA_GATE_OVERRIDE_REVOKE,
+    //******* ROUTE OVERRIDE (ADR-013 M3, task 10-12-release-chain-frozen-routing) *******
+    /**
+     * Grant of a governed route override (dm_gov_route_override row): a permissioned DBA
+     * (GOV_ROUTE_OVERRIDE label) authorizes one future route block (DML_BATCH unsupported ∨
+     * GHOST capability failure) of ONE release stmt to be released as a DIRECT single-statement
+     * replay — reason mandatory, expiry ≤ 7 days, single-use consumption. HIGH; resId = releaseId;
+     * obj = the grant FO {releaseId, stmtId, reason, expireAt}. Registration: enum +
+     * RdpOpAuditServiceImpl init whitelist + explicit resourceName via the 10-arg overload
+     * ("release:&lt;id&gt;" — the C4 GRANT twin, getResourceName bypassed). Plan/hash drift are
+     * NOT overridable — integrity classes, out of this audit family's scope by design.
+     */
+    GOV_ROUTE_OVERRIDE_GRANT,
+    /**
+     * Consumption of a route override at one of the two dispatch block points — the trail of an
+     * explicit risk acceptance actually taking effect. HIGH; subject = the GRANTOR (createdBy —
+     * the dispatch runner is SYSTEM); resId = releaseId; obj = RouteOverrideAuditObj
+     * {overrideId, releaseId, stmtId, segIdx, segmentType, blockCode, blockReason, reason,
+     * createdBy, expireAt, coveredSegIdxs} — NO SQL text. Written by the consumption itself
+     * (same-tx twin: the RELEASE_ROUTE_OVERRIDE event). Registration identical to the GRANT row.
+     */
+    GOV_ROUTE_OVERRIDE_CONSUME,
     //******* MASKING FAIL-CLOSED (C6, task 10-11-masking-fail-closed) *******
     /**
      * C6/M5 four-point registration (design §5): an EXEMPTED view of ORIGINAL (unmasked) values —

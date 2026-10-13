@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovRouteOverrideMapper">
+
+    <resultMap id="dmGovRouteOverrideDO" type="com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="release_id" property="releaseId"/>
+        <result column="stmt_id" property="stmtId"/>
+        <result column="reason" property="reason"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="status" property="status"/>
+        <result column="expire_at" property="expireAt"/>
+        <result column="consumed_at" property="consumedAt"/>
+        <result column="covered_seg_idxs" property="coveredSegIdxs"/>
+    </resultMap>
+
+    <sql id="dmGovRouteOverride">
+        id,
+        gmt_create,
+        gmt_modified,
+        release_id,
+        stmt_id,
+        reason,
+        created_by,
+        status,
+        expire_at,
+        consumed_at,
+        covered_seg_idxs
+    </sql>
+
+    <select id="findConsumable" resultMap="dmGovRouteOverrideDO">
+        SELECT
+            <include refid="dmGovRouteOverride"/>
+        FROM
+            dm_gov_route_override
+        WHERE
+            release_id = #{releaseId}
+            AND stmt_id = #{stmtId}
+            AND status = 'PENDING'
+            <![CDATA[ AND expire_at > #{now} ]]>
+        ORDER BY
+            id DESC
+        LIMIT 1
+    </select>
+
+    <update id="consumeCas">
+        UPDATE
+            dm_gov_route_override
+        SET
+            status = 'CONSUMED',
+            consumed_at = #{consumedAt},
+            covered_seg_idxs = #{coveredSegIdxs}
+        WHERE
+            id = #{id}
+            AND status = 'PENDING'
+    </update>
+
+    <select id="queryByReleaseId" resultMap="dmGovRouteOverrideDO">
+        SELECT
+            <include refid="dmGovRouteOverride"/>
+        FROM
+            dm_gov_route_override
+        WHERE
+            release_id = #{releaseId}
+        ORDER BY
+            id DESC
+    </select>
+
+</mapper>

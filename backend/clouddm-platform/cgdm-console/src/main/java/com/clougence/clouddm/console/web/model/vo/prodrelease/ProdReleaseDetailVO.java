@@ -60,6 +60,38 @@ public class ProdReleaseDetailVO {
         private String execStatus;
         private String execDetail;
         private String gmtCreate;
+        /** ADR-013 M3 (design D10): the frozen-plan integrity pin (null = null-plan legacy stmt). */
+        private String planHash;
+        /**
+         * ADR-013 M3 (design D10): the frozen segment manifest (seg_idx ascending) — null/empty
+         * for a null-plan legacy stmt. Plan columns are the merge-time freeze; status/error/
+         * timestamps are the runtime face (the review surface shows BOTH). sqlText is NOT exposed
+         * (the stmt fulltext already renders above the block; C2 disclosure discipline).
+         */
+        private List<SegmentEntry> segments;
+    }
+
+    /**
+     * One frozen-manifest segment row for the release-detail review surface (ADR-013 M3, R10).
+     */
+    @Getter
+    @Setter
+    public static class SegmentEntry {
+
+        private int     segIdx;
+        private String  type;              // AUTOEXEC | GHOST | DML_BATCH
+        private Integer stmtRangeFrom;     // AUTOEXEC (1-based exec_order domain, inclusive)
+        private Integer stmtRangeTo;
+        private Integer stmtIndex;         // GHOST / DML_BATCH single-statement position
+        private String  tableName;
+        private Long    rowsEstimated;
+        private String  batchKeyColumn;    // DML_BATCH
+        private String  batchKeyType;      // DML_BATCH
+        private Boolean idempotent;        // DML_BATCH
+        private String  status;            // PENDING | EXECUTING | SUCCESS | FAILED
+        private String  error;
+        private Long    startedAt;
+        private Long    finishedAt;
     }
 
     @Getter

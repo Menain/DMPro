@@ -15,6 +15,7 @@
  */
 package com.clougence.clouddm.platform.dal.access;
 
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovRouteOverrideMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOverrideMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
@@ -29,6 +30,7 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSe
  * stmt_segment table (ADR-013 frozen plan manifest) has batchInsert, queryByReleaseStmtId,
  * lock-window updateRuntime + the two cascade deletes — plan columns frozen at merge.
  * gate_override table (ADR-011) has insert/select + CAS consume/revoke only.
+ * route_override table (ADR-013 M3) has insert/select + CAS consume only (no revoke — design D8).
  */
 public interface ProdReleaseDal {
 
@@ -41,4 +43,6 @@ public interface ProdReleaseDal {
     DmProdReleaseStmtSegmentMapper segmentMapper();
 
     DmGovSchemaGateOverrideMapper gateOverrideMapper();
+
+    DmGovRouteOverrideMapper routeOverrideMapper();
 }

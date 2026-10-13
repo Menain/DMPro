@@ -147,5 +147,27 @@ public enum GovEventType {
      * acceptance → the segment replays as AUTOEXEC). operator_uid = SYSTEM (dispatch scope).
      * eventData{stmtId,segIdx,table,failCode,failReason}.
      */
-    RELEASE_ROUTE_CAPABILITY
+    RELEASE_ROUTE_CAPABILITY,
+    /**
+     * ADR-013 M3 (design D7, frozen-plan integrity gate): the dispatch-time recomputation of the
+     * manifest's canonical plan hash (ReleasePlanHashUtils over queryByReleaseStmtId) does NOT match
+     * the stmt-level plan_hash pin — a tampered/dirty-written manifest, or a plan_hash set with an
+     * empty manifest. Gate order at ALL THREE dispatch points: hash(text) → PLAN → precheck(B) →
+     * diff(A); stmt FAILED + dispatch denied. INTEGRITY CLASS — NEVER overridable (neither the
+     * route override nor the schema-gate override covers it; the text-hash-drift twin).
+     * operator_uid = the dispatch runner (SYSTEM on chain advance).
+     * eventData{stmtId,storedPlanHash,recomputedPlanHash}.
+     */
+    RELEASE_PLAN_DRIFT,
+    /**
+     * ADR-013 M3 (design D8, 裁决 4): a route block (RELEASE_ROUTE_UNSUPPORTED ∨
+     * RELEASE_ROUTE_CAPABILITY) was released by consuming a dm_gov_route_override grant
+     * (single-use CAS, GOV_ROUTE_OVERRIDE label, reason mandatory, expiry ≤ 7 days) — the blocked
+     * segment replays as a DIRECT single-statement AUTOEXEC job (explicit risk acceptance, never a
+     * silent downgrade; the twin HIGH op_audit row records the same trail). Fully isolated from the
+     * C4 schema-gate override — consuming one NEVER releases a denial of the other.
+     * operator_uid = SYSTEM (dispatch scope); the GRANTOR trail lives in eventData.
+     * eventData{stmtId,segIdx,segmentType,blockCode,overrideId,reason,expireAt,creator,coveredSegIdxs}.
+     */
+    RELEASE_ROUTE_OVERRIDE
 }

@@ -18,6 +18,7 @@ package com.clougence.clouddm.platform.dal.access.impl;
 import org.springframework.stereotype.Service;
 
 import com.clougence.clouddm.platform.dal.access.ProdReleaseDal;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovRouteOverrideMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOverrideMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
@@ -41,6 +42,8 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     private DmProdReleaseStmtSegmentMapper segmentMapper;
     @Resource
     private DmGovSchemaGateOverrideMapper gateOverrideMapper;
+    @Resource
+    private DmGovRouteOverrideMapper routeOverrideMapper;
 
     @Override
     public DmProdReleaseMapper releaseMapper() {
@@ -65,5 +68,10 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     @Override
     public DmGovSchemaGateOverrideMapper gateOverrideMapper() {
         return gateOverrideMapper;
+    }
+
+    @Override
+    public DmGovRouteOverrideMapper routeOverrideMapper() {
+        return routeOverrideMapper;
     }
 }

@@ -11,5 +11,7 @@ export const dbChangeApi = {
   govReleaseCancel: '/api/entry/govrelease/cancel',
   govReleaseOverrideGrant: '/api/entry/govrelease/overrideGrant',
   govReleaseOverrideList: '/api/entry/govrelease/overrideList',
-  govReleaseOverrideRevoke: '/api/entry/govrelease/overrideRevoke'
+  govReleaseOverrideRevoke: '/api/entry/govrelease/overrideRevoke',
+  govReleaseRouteOverrideGrant: '/api/entry/govrelease/routeOverrideGrant',
+  govReleaseRouteOverrideList: '/api/entry/govrelease/routeOverrideList'
 };

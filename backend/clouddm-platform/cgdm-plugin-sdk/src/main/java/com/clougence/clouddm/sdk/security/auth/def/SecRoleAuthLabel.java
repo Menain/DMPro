@@ -230,6 +230,18 @@ public interface SecRoleAuthLabel {
     @AuthLabel(order = 6, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_SCHEMA_GATE_OVERRIDE, tag = SecSysRole.DBA_ROLE_NAME)
     String GOV_SCHEMA_GATE_OVERRIDE        = "GOV_SCHEMA_GATE_OVERRIDE";
 
+    /**
+     * ADR-013 M3: grant/list a governed ROUTE override (a production release frozen-plan route
+     * block — DML_BATCH unsupported ∨ GHOST capability failure — released to a DIRECT
+     * single-statement replay: reason mandatory, expiry ≤ 7 days, single-use consumption).
+     * Actually wired at GovReleaseController routeOverrideGrant/List (@RequestAuth) +
+     * releaseDetail.vue myAuth gating — the PROD_PROMOTE "defined but never enforced"
+     * precedent is heeded. ISOLATED from GOV_SCHEMA_GATE_OVERRIDE (裁决 4 — two labels, two
+     * tables, two event types; no cross-substitution). Plan/hash drift are NOT overridable.
+     */
+    @AuthLabel(order = 7, category = CAT_RDP_DB_CHANGE_GOVERN, i18nKey = AUTH_KEY_GOV_ROUTE_OVERRIDE, tag = SecSysRole.DBA_ROLE_NAME)
+    String GOV_ROUTE_OVERRIDE              = "GOV_ROUTE_OVERRIDE";
+
     // ================================ CAT_DM_OPS ==============================================
 
     @AuthLabel(order = 0, category = CAT_DM_OPS, i18nKey = AUTH_KEY_DM_SESSION_READ, tag = { SecSysRole.DBA_ROLE_NAME,

@@ -601,9 +601,27 @@ public class AutoExecServiceImpl implements AutoExecService {
         this.execDal.autoJobMapper().insert(job);
         this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "EXECUTING", null);
 
-        // segment-filtered task construction: GLOBAL exec_order WITH HOLES (stmt_index alignment)
-        final int segFrom = segment.getStmtRangeFrom() == null ? 1 : segment.getStmtRangeFrom();
-        final int segTo = segment.getStmtRangeTo() == null ? Integer.MAX_VALUE : segment.getStmtRangeTo();
+        // Segment-filtered task construction: GLOBAL exec_order WITH HOLES (stmt_index alignment).
+        // An AUTOEXEC segment carries [stmtRangeFrom,stmtRangeTo]; an override-released GHOST/
+        // DML_BATCH segment (ADR-013 M3, design D5/D8 — explicit risk acceptance → DIRECT replay)
+        // carries only its single stmtIndex → the degenerate range [stmtIndex,stmtIndex] (ONE task
+        // row, exec_order = stmtIndex). Neither bound present = a corrupt plan row: FAIL CLOSED,
+        // never a whole-text replay (red line 1 — the throw precedes every task-row insert and
+        // startJob, and the already-executed job-row INSERT + EXECUTING mark roll back with the
+        // enclosing transaction (rollbackFor = Throwable): zero PERSISTENT side effects; the
+        // plan-drift gate already denies reachable tampering since stmtIndex rides the plan hash).
+        Integer rangeFrom = segment.getStmtRangeFrom();
+        Integer rangeTo = segment.getStmtRangeTo();
+        if (rangeFrom == null && rangeTo == null) {
+            rangeFrom = segment.getStmtIndex();
+            rangeTo = segment.getStmtIndex();
+        }
+        if (rangeFrom == null || rangeTo == null) {
+            throw new IllegalStateException("Release segment " + segment.getSegIdx()
+                + " carries neither stmtRange nor stmtIndex — refusing to build the segment job");
+        }
+        final int segFrom = rangeFrom;
+        final int segTo = rangeTo;
         try (StringReader reader = new StringReader(stmt.getSqlContent());
              Stream<SplitScript> scripts = this.analysisService.analysisSplitStream(
                  dsConfig, reader, Collections.emptyList(), 1, 0)) {
@@ -781,6 +799,11 @@ public class AutoExecServiceImpl implements AutoExecService {
             appendReleaseStmtEvent(release.getId(), stmt.getId(),
                 com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_HASH_DRIFT,
                 "FAILED", "Hash drift detected");
+            return false;
+        }
+        // Gate: frozen-plan integrity (ADR-013 M3, design D7 — order hash → PLAN → B precheck → A
+        // diff; NEVER overridable — the hash-drift twin)
+        if (!passChainPlanGate(release, stmt)) {
             return false;
         }
         // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless a governed
@@ -1068,6 +1091,42 @@ public class AutoExecServiceImpl implements AutoExecService {
             return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
         }
         return com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    /**
+     * ADR-013 M3 frozen-plan integrity gate at the chain-advance dispatch point (the
+     * ProdReleaseServiceImpl.passPlanGate twin; its distinct disposal semantics are preserved: a
+     * denial stops the chain and the release goes PARTIAL_FAILED immediately via the caller's
+     * aggregateReleaseCompletion). Recomputes the canonical manifest hash (ReleasePlanHashUtils)
+     * and compares against the stmt-level plan_hash pin — order hash → PLAN → B precheck → A diff.
+     * NEVER overridable (integrity class — no override service is consulted; the text-hash-drift
+     * twin). A null-plan stmt (plan_hash NULL) skips the comparison (legacy/stock, byte-identical).
+     * Operator falls back to SYSTEM (callback scope has no user).
+     *
+     * @return true → chain proceeds; false → stmt FAILED + RELEASE_PLAN_DRIFT recorded.
+     */
+    private boolean passChainPlanGate(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                                      DmProdReleaseStmtDO stmt) {
+        if (stmt.getPlanHash() == null) {
+            return true; // null-plan legacy — no pin, no gate
+        }
+        java.util.List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
+            = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        String recomputedPlan = com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils
+            .hash(manifest); // null when the manifest is empty
+        if (stmt.getPlanHash().equals(recomputedPlan)) {
+            return true;
+        }
+        this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "FAILED",
+            "Plan drift: stored=" + stmt.getPlanHash() + " recomputed=" + recomputedPlan);
+        Map<String, Object> data = new HashMap<>();
+        data.put("stmtId", stmt.getId());
+        data.put("storedPlanHash", stmt.getPlanHash());
+        data.put("recomputedPlanHash", recomputedPlan);
+        appendReleaseEvent(release.getId(),
+            com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_PLAN_DRIFT,
+            null, "FAILED", null, JsonUtils.toJson(data));
+        return false;
     }
 
     /**

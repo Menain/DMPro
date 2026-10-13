@@ -101,6 +101,7 @@ public class ReleaseSegmentDispatchTest {
     private AutoExecService              autoExecService;
     private GhostService                 ghostService;
     private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
+    private com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService govRouteOverrideService;
 
     private static final long   RELEASE_ID  = 500L;
     private static final long   STMT_ID     = 800L;
@@ -139,6 +140,12 @@ public class ReleaseSegmentDispatchTest {
         autoExecService = mock(AutoExecService.class);
         ghostService = mock(GhostService.class);
         rdpOpAuditService = mock(com.clougence.rdp.service.RdpOpAuditService.class);
+        // ADR-013 M3: the two block points offer a route override consumption FIRST — default:
+        // nothing consumable → every M2 block pin stands byte-identical
+        govRouteOverrideService = mock(
+            com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService.class);
+        when(govRouteOverrideService.findAndConsume(any(), any(), any(), anyString(), any()))
+            .thenReturn(null);
 
         ReflectionTestUtils.setField(segmentService, "prodReleaseDal", prodReleaseDal);
         ReflectionTestUtils.setField(segmentService, "execDal", execDal);
@@ -147,6 +154,7 @@ public class ReleaseSegmentDispatchTest {
         ReflectionTestUtils.setField(segmentService, "autoExecService", autoExecService);
         ReflectionTestUtils.setField(segmentService, "ghostService", ghostService);
         ReflectionTestUtils.setField(segmentService, "rdpOpAuditService", rdpOpAuditService);
+        ReflectionTestUtils.setField(segmentService, "govRouteOverrideService", govRouteOverrideService);
 
         // default: release row lock returns the release; stmt is PENDING (dispatchable)
         when(releaseMapper.selectByIdForUpdate(RELEASE_ID)).thenReturn(release());
@@ -168,6 +176,10 @@ public class ReleaseSegmentDispatchTest {
         verify(autoExecService, never()).createReleaseSegmentJob(any(), any(), anyString(), anyBoolean(), any(), any(), any());
         verify(autoExecService, never()).startJob(anyString(), anyString());
         verifyNoInteractions(ghostService);
+        // M3: the route override was offered FIRST — nothing consumable → the block stands
+        verify(govRouteOverrideService).findAndConsume(any(), any(), eq(batch),
+            eq(com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService.BLOCK_ROUTE_UNSUPPORTED),
+            anyString());
         // RELEASE_ROUTE_UNSUPPORTED event with the disclosure whitelist (segIdx/table/rows/batchKey/sourceTicketId)
         DmDbChangeEventDO event = captureEvent("RELEASE_ROUTE_UNSUPPORTED");
         assertNotNull(event.getEventData());
@@ -465,6 +477,118 @@ public class ReleaseSegmentDispatchTest {
         assertEquals(Integer.valueOf(4), tasks.get(1).getExecOrder());
         // the segment job carries the additive segmentIdx config key + depend_on_release_stmt_id
         assertEquals("EXECUTING", stmtStatusAfterSegmentJob(svc));
+    }
+
+    // ==================== M3 route-override release (design D5/D8) ====================
+
+    @Test
+    public void dispatchFirst_dmlBatch_overrideConsumed_releasesAsDirectSegmentJob_neverFailsStmt() {
+        DmProdReleaseStmtSegmentDO batch = seg(1, "DML_BATCH", null, null, 1, "t_order", 5000000L,
+            "DELETE FROM t_order WHERE status = 0", "id", "INT", Boolean.TRUE, "PENDING");
+        when(stmtMapper.queryById(STMT_ID)).thenReturn(stmt("PENDING"));
+        when(segmentMapper.queryByReleaseStmtId(STMT_ID)).thenReturn(new ArrayList<>(List.of(batch)));
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO override
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO();
+        override.setId(77L);
+        when(govRouteOverrideService.findAndConsume(any(), any(), eq(batch),
+            eq(com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService.BLOCK_ROUTE_UNSUPPORTED),
+            anyString())).thenReturn(override);
+
+        segmentService.dispatchFirstReleaseSegment(stmt("PENDING"), UID);
+
+        // the consumed override releases THIS segment as a DIRECT single-statement job (explicit
+        // risk acceptance) — the block disposal never runs
+        verify(autoExecService).createReleaseSegmentJob(any(), eq(batch), anyString(), anyBoolean(),
+            eq(ErrorStrategy.NONE), any(), eq(UID));
+        verify(autoExecService).startJob(anyString(), eq(UID));
+        verify(stmtMapper, never()).updateExecStatus(eq(STMT_ID), eq("FAILED"), any());
+        // NO RELEASE_ROUTE_UNSUPPORTED event (the block was released, not imposed)
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_ROUTE_UNSUPPORTED".equals(e.getEventType())));
+        // the released segment carries the jobBizId binding (the completion callback locates it by it)
+        assertNotNull(batch.getJobBizId());
+    }
+
+    @Test
+    public void dispatchFirst_ghostCapabilityFail_overrideConsumed_releasesAsDirectJob_noLaunch() {
+        DmProdReleaseStmtSegmentDO ghost = seg(1, "GHOST", null, null, 1, "t_big", 8000000L,
+            "ALTER TABLE t_big ADD c INT", null, null, null, "PENDING");
+        when(stmtMapper.queryById(STMT_ID)).thenReturn(stmt("PENDING"));
+        when(segmentMapper.queryByReleaseStmtId(STMT_ID)).thenReturn(new ArrayList<>(List.of(ghost)));
+        when(ghostService.probeReleaseCapability(anyString(), eq(PROD_DS_ID), eq(PROD_DB), eq("t_big")))
+            .thenReturn(ReleaseGhostCapability.fail("NO_UNIQUE_KEY", "no PK/UK on prod"));
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO override
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmGovRouteOverrideDO();
+        override.setId(78L);
+        when(govRouteOverrideService.findAndConsume(any(), any(), eq(ghost),
+            eq(com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService.BLOCK_ROUTE_CAPABILITY),
+            anyString())).thenReturn(override);
+
+        segmentService.dispatchFirstReleaseSegment(stmt("PENDING"), UID);
+
+        // explicit lock-risk acceptance → DIRECT replay; the gh-ost launch is never attempted
+        verify(autoExecService).createReleaseSegmentJob(any(), eq(ghost), anyString(), anyBoolean(),
+            eq(ErrorStrategy.NONE), any(), eq(UID));
+        verify(autoExecService).startJob(anyString(), eq(UID));
+        verify(ghostService, never()).executeForRelease(anyString(), anyString(), any(), anyLong(), anyLong(), any());
+        verify(stmtMapper, never()).updateExecStatus(eq(STMT_ID), eq("FAILED"), any());
+        verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_ROUTE_CAPABILITY".equals(e.getEventType())));
+    }
+
+    @Test
+    public void completeSegment_overrideReleasedGhostSegment_locatedByJobBizId() {
+        // an override-released GHOST segment keeps its frozen plan type but is JOB-driven — the
+        // completion callback locates it by the recorded jobBizId (the M2 AUTOEXEC-only locator
+        // would strand it EXECUTING forever)
+        DmProdReleaseStmtSegmentDO released = seg(1, "GHOST", null, null, 1, "t_big", 8000000L,
+            "ALTER TABLE t_big ADD c INT", null, null, null, "EXECUTING");
+        released.setJobBizId("job-direct");
+        when(segmentMapper.queryByReleaseStmtId(STMT_ID)).thenReturn(new ArrayList<>(List.of(released)));
+
+        boolean stmtTerminal = segmentService.completeReleaseAutoexecSegmentUnderLock(
+            release(), stmt("EXECUTING"), "job-direct", true, null, UID);
+
+        assertTrue(stmtTerminal);
+        assertEquals("SUCCESS", released.getStatus());
+        verify(stmtMapper).updateExecStatus(STMT_ID, "SUCCESS", null);
+    }
+
+    @Test
+    public void probeSegment_overrideReleasedGhost_jobDriven_skipsGhostProbe() {
+        // sweep guard: an EXECUTING GHOST segment carrying a jobBizId is override-released
+        // (job-driven — no ghost task exists); probing it as a ghost session would falsely
+        // FAIL it ("task record missing") — the AUTOEXEC callback + aggregation backstop it
+        DmProdReleaseStmtSegmentDO released = seg(1, "GHOST", null, null, 1, "t_big", 8000000L,
+            "ALTER TABLE t_big ADD c INT", null, null, null, "EXECUTING");
+        released.setJobBizId("job-direct");
+        when(stmtMapper.queryById(STMT_ID)).thenReturn(stmt("EXECUTING"));
+        when(segmentMapper.queryByReleaseStmtId(STMT_ID)).thenReturn(new ArrayList<>(List.of(released)));
+
+        segmentService.probeReleaseSegmentUnderLock(release(), stmt("EXECUTING"));
+
+        verify(ghostService, never()).findTaskForReleaseStmt(anyLong(), anyInt());
+        verify(stmtMapper, never()).updateExecStatus(anyLong(), anyString(), any());
+        assertEquals("EXECUTING", released.getStatus());
+    }
+
+    @Test
+    public void createReleaseSegmentJob_overrideReleasedSingleStatement_execOrderIsStmtIndex() {
+        // D5 mechanics: an override-released GHOST/DML_BATCH segment (no stmtRange, single
+        // stmtIndex) builds exactly ONE task row with exec_order = stmtIndex (global-with-holes
+        // domain — never re-densed, never the whole text)
+        AutoExecServiceImpl svc = autoExecWithSplit(4);
+        wireAutoExec(svc, mock(ReleaseSegmentService.class), Collections.emptyList());
+        DmProdReleaseStmtSegmentDO releasedGhost = seg(2, "GHOST", null, null, 3, "t_big", 8000000L,
+            "ALTER TABLE t_big ADD c INT", null, null, null, "EXECUTING");
+
+        svc.createReleaseSegmentJob(stmt("EXECUTING"), releasedGhost, "job-seg", false,
+            ErrorStrategy.NONE, "zh-CN", UID);
+
+        List<DmExecAutoTaskDO> tasks = capturedAutoExecTasks(svc);
+        assertEquals(1, tasks.size());
+        assertEquals(Integer.valueOf(3), tasks.get(0).getExecOrder()); // = stmtIndex, holes domain
+        assertEquals("ALTER TABLE t_big ADD c INT", tasks.get(0).getExecSql());
     }
 
     // ==================== helpers ====================

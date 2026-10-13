@@ -15,6 +15,7 @@
  */
 package com.clougence.rdp.controller;
 
+import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.GOV_ROUTE_OVERRIDE;
 import static com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel.GOV_SCHEMA_GATE_OVERRIDE;
 
 import java.util.List;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.clougence.clouddm.api.common.rpc.ResWebData;
 import com.clougence.clouddm.api.common.rpc.ResWebDataUtils;
+import com.clougence.clouddm.console.web.component.governance.GovRouteOverrideService;
 import com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService;
 import com.clougence.clouddm.console.web.constants.DmControllerUrlPrefix;
 import com.clougence.clouddm.console.web.global.jwtsession.RequestAuth;
@@ -37,11 +39,14 @@ import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseResubmi
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseReturnStmtFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.ProdReleaseRetryStmtFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.RouteOverrideGrantFO;
+import com.clougence.clouddm.console.web.model.fo.prodrelease.RouteOverrideListFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideGrantFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideListFO;
 import com.clougence.clouddm.console.web.model.fo.prodrelease.SchemaGateOverrideRevokeFO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseListVO;
+import com.clougence.clouddm.console.web.model.vo.prodrelease.RouteOverrideVO;
 import com.clougence.clouddm.console.web.model.vo.prodrelease.SchemaGateOverrideVO;
 import com.clougence.clouddm.console.web.service.auth.RdpUserService;
 import com.clougence.clouddm.console.web.service.governance.ProdReleaseService;
@@ -59,7 +64,9 @@ import lombok.extern.slf4j.Slf4j;
  * Production release controller — create (RefAnyOnes), list/detail (RefAnyOnes + tenant filter),
  * retryStmt/returnStmt (RefPrimaryOrMaintainer — processing side only), override grant/list/revoke
  * (GOV_SCHEMA_GATE_OVERRIDE — ADR-011 governed schema-gate override, actually wired here +
- * releaseDetail.vue myAuth gating, heeding the PROD_PROMOTE "defined but never enforced" precedent).
+ * releaseDetail.vue myAuth gating, heeding the PROD_PROMOTE "defined but never enforced" precedent),
+ * route override grant/list (GOV_ROUTE_OVERRIDE — ADR-013 M3 governed route override, isolated
+ * from the schema-gate override, same wiring discipline).
  */
 @RestController
 @RequestMapping(value = DmControllerUrlPrefix.CONSOLE_PREFIX)
@@ -70,6 +77,8 @@ public class GovReleaseController {
     private ProdReleaseService prodReleaseService;
     @Resource
     private SchemaGateOverrideService schemaGateOverrideService;
+    @Resource
+    private GovRouteOverrideService govRouteOverrideService;
     @Resource
     private RdpOpAuditService rdpOpAuditService;
 
@@ -185,5 +194,35 @@ public class GovReleaseController {
             fo.getId(), fo, SecurityLevel.HIGH, AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE,
             ResourceType.PURE_URL, "override:" + fo.getId());
         return ResWebDataUtils.buildSuccess();
+    }
+
+    // ==================== ADR-013 M3 governed route override ====================
+    // Dedicated label (GOV_ROUTE_OVERRIDE, tag=DBA) on BOTH endpoints — the "define but never
+    // wire" PROD_PROMOTE precedent is explicitly heeded (the C4 override block's twin). Tenant
+    // check (puid == release.primaryUid) + stmt ownership live in the service; the grant carries
+    // a SecurityLevel.HIGH operation audit (the consumption writes its own HIGH audit row in the
+    // GRANTOR's name inside findAndConsume). PLAN DRIFT and TEXT HASH DRIFT are NOT overridable
+    // — this override covers exactly the two route-block classes (DML_BATCH unsupported ∨ GHOST
+    // capability failure), fully isolated from the C4 schema-gate override (裁决 4). No revoke
+    // endpoint — the design D8 column set has no revoke face (a grant lives until consume/expiry).
+
+    @RequestAuth(GOV_ROUTE_OVERRIDE)
+    @RequestMapping(value = "/govrelease/routeOverrideGrant", method = RequestMethod.POST)
+    public ResWebData<?> routeOverrideGrant(@Valid @RequestBody RouteOverrideGrantFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        String uid = (String) request.getAttribute(RdpUserService.UID);
+        long overrideId = govRouteOverrideService.create(puid, uid, fo);
+        rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
+            fo.getReleaseId(), fo, SecurityLevel.HIGH, AuditType.GOV_ROUTE_OVERRIDE_GRANT,
+            ResourceType.PURE_URL, "release:" + fo.getReleaseId());
+        return ResWebDataUtils.buildSuccess(overrideId);
+    }
+
+    @RequestAuth(GOV_ROUTE_OVERRIDE)
+    @RequestMapping(value = "/govrelease/routeOverrideList", method = RequestMethod.POST)
+    public ResWebData<?> routeOverrideList(@Valid @RequestBody RouteOverrideListFO fo, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        List<RouteOverrideVO> data = govRouteOverrideService.list(puid, fo.getReleaseId());
+        return ResWebDataUtils.buildSuccess(data);
     }
 }

@@ -359,6 +359,63 @@ public class AutoExecReleaseJobCompletionTest {
             eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
     }
 
+    // ==================== ADR-013 M3: plan drift in chained execution (design D7) ====================
+
+    /**
+     * The chain-advance dispatch point carries the same frozen-plan gate (three-point
+     * consistency; order hash → PLAN → precheck → diff): a successor whose plan_hash pin no
+     * longer matches its manifest (here: pinned over rows, manifest emptied) is FAILED with
+     * RELEASE_PLAN_DRIFT, the chain stops (PARTIAL_FAILED), and the C4 precheck is never
+     * reached (A7 order pin). The drift is NEVER overridable — no override surface consulted.
+     */
+    @Test
+    public void handleReleaseJobCompletion_chainedPlanDrift_marksFailedStopsChain() {
+        long releaseId = 1006L;
+        long stmtId = 2010L;
+        long nextId = 2011L;
+        long jobId = 3008L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(4006L);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        // Successor with a plan_hash pin over a manifest that no longer exists (the setUp's
+        // default empty-manifest stub is the tamper arm "plan_hash set + manifest empty")
+        DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
+        next.setPlanHash("pinned-over-a-manifest-that-was-emptied-000000000000000000");
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
+
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        DmProdReleaseStmtDO failedNext = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "FAILED");
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt, failedNext));
+
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-4006");
+        when(approvalMapper.queryById(4006L)).thenReturn(approval);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        verify(stmtMapper).updateExecStatus(eq(nextId), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+        // A7 order pin: the plan gate denied BEFORE the C4 schema gates ran for the successor
+        verify(releaseSchemaPrecheckService, never()).precheck(any());
+        // NEVER overridable: the C4 schema-gate override surface is not consulted
+        verify(schemaGateOverrideService, never()).findAndConsume(anyLong(), anyLong(), anyString(), any());
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+    }
+
     // ==================== Guard: deny when release not EXECUTING ====================
 
     @Test

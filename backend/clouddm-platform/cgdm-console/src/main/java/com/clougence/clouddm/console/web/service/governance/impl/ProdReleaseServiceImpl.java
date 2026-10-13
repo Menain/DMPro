@@ -410,6 +410,12 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 continue;
             }
 
+            // Gate: frozen-plan integrity (ADR-013 M3, design D7 — order hash → PLAN → B precheck
+            // → A diff; plan drift is NEVER overridable, the hash-drift twin)
+            if (!passPlanGate(releaseId, first, uid)) {
+                continue;
+            }
+
             // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless a
             // governed override is consumed; hash drift above stays NOT overridable)
             PrecheckConclusion precheckResult = releaseSchemaPrecheckService.precheck(first);
@@ -542,6 +548,13 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                     "stmtId", stmt.getId(),
                     "storedHash", stmt.getHash(),
                     "recomputedHash", recomputed)));
+            return;
+        }
+
+        // Gate: frozen-plan integrity (ADR-013 M3, design D7 — order hash → PLAN → B precheck → A
+        // diff; NEVER overridable). The sweep aggregation backstops the early return (the
+        // hash-drift return path's convention — no callback exists to aggregate a denied retry).
+        if (!passPlanGate(stmt.getReleaseId(), stmt, uid)) {
             return;
         }
 
@@ -1218,6 +1231,34 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             se.setExecStatus(s.getExecStatus());
             se.setExecDetail(s.getExecDetail());
             se.setGmtCreate(DateFormatType.s_yyyyMMdd_HHmmss.format(s.getGmtCreate()));
+            // ADR-013 M3 (design D10): frozen-plan review surface — plan_hash pin + the manifest
+            // rows (plan + runtime face). A null-plan legacy stmt keeps both null (byte-identical
+            // VO shape; the frontend renders the block only when segments exist).
+            se.setPlanHash(s.getPlanHash());
+            List<DmProdReleaseStmtSegmentDO> manifest =
+                prodReleaseDal.segmentMapper().queryByReleaseStmtId(s.getId());
+            if (manifest != null && !manifest.isEmpty()) {
+                List<ProdReleaseDetailVO.SegmentEntry> segEntries = new ArrayList<>(manifest.size());
+                for (DmProdReleaseStmtSegmentDO m : manifest) {
+                    ProdReleaseDetailVO.SegmentEntry ge = new ProdReleaseDetailVO.SegmentEntry();
+                    ge.setSegIdx(m.getSegIdx());
+                    ge.setType(m.getType());
+                    ge.setStmtRangeFrom(m.getStmtRangeFrom());
+                    ge.setStmtRangeTo(m.getStmtRangeTo());
+                    ge.setStmtIndex(m.getStmtIndex());
+                    ge.setTableName(m.getTableName());
+                    ge.setRowsEstimated(m.getRowsEstimated());
+                    ge.setBatchKeyColumn(m.getBatchKeyColumn());
+                    ge.setBatchKeyType(m.getBatchKeyType());
+                    ge.setIdempotent(m.getIdempotent());
+                    ge.setStatus(m.getStatus());
+                    ge.setError(m.getError());
+                    ge.setStartedAt(m.getStartedAt());
+                    ge.setFinishedAt(m.getFinishedAt());
+                    segEntries.add(ge);
+                }
+                se.setSegments(segEntries);
+            }
             group.getStmts().add(se);
         }
         vo.setStmtGroups(new ArrayList<>(groupMap.values()));
@@ -1754,6 +1795,40 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             return GovEventType.RELEASE_SCHEMA_SNAPSHOT_MISSING;
         }
         return GovEventType.RELEASE_SCHEMA_DRIFT_WARN;
+    }
+
+    /**
+     * ADR-013 M3 frozen-plan integrity gate (design D7) for the console-side gate points
+     * (startExecution / retryReleaseStmt — the chain-advance twin lives in AutoExecServiceImpl).
+     * Recomputes the canonical manifest hash ({@link ReleasePlanHashUtils} over the seg_idx-ordered
+     * rows) and compares against the stmt-level plan_hash pin. Runs AFTER the text-hash gate and
+     * BEFORE the C4 schema gates (order: hash → plan → precheck → diff, A7 pin). A mismatch — a
+     * tampered/dirty-written plan row, or a plan_hash pin over an EMPTY manifest — writes stmt
+     * FAILED + RELEASE_PLAN_DRIFT and denies dispatch. INTEGRITY CLASS: NEVER overridable (no
+     * override service is consulted — the text-hash-drift twin). A null-plan stmt (plan_hash NULL)
+     * skips the comparison entirely (legacy/stock shape, byte-identical — no manifest read).
+     *
+     * @return true → dispatch proceeds; false → stmt marked FAILED and the drift event recorded.
+     */
+    private boolean passPlanGate(long releaseId, DmProdReleaseStmtDO stmt, String uid) {
+        if (stmt.getPlanHash() == null) {
+            return true; // null-plan legacy — no pin, no gate
+        }
+        List<DmProdReleaseStmtSegmentDO> manifest =
+            prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        String recomputed = ReleasePlanHashUtils.hash(manifest); // null when the manifest is empty
+        if (stmt.getPlanHash().equals(recomputed)) {
+            return true;
+        }
+        prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,
+            "Plan drift: stored=" + stmt.getPlanHash() + " recomputed=" + recomputed);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("stmtId", stmt.getId());
+        data.put("storedPlanHash", stmt.getPlanHash());
+        data.put("recomputedPlanHash", recomputed);
+        appendReleaseEvent(releaseId, GovEventType.RELEASE_PLAN_DRIFT, null, null, uid,
+            JsonUtils.toJson(data));
+        return false;
     }
 
     /**
