@@ -123,6 +123,9 @@ public class ProdReleaseResubmitTest {
         when(prodReleaseDal.releaseMapper()).thenReturn(releaseMapper);
         when(prodReleaseDal.stmtMapper()).thenReturn(stmtMapper);
         when(prodReleaseDal.schemaMapper()).thenReturn(schemaMapper);
+        // ADR-013 M1: frozen segment manifest mapper (resubmit re-propagation)
+        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
 
         ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);

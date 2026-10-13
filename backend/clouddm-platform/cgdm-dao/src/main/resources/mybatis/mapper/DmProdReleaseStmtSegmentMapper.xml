@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper">
+
+    <resultMap id="dmProdReleaseStmtSegmentDO" type="com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO">
+        <result column="id" property="id"/>
+        <result column="gmt_create" property="gmtCreate"/>
+        <result column="gmt_modified" property="gmtModified"/>
+        <result column="release_id" property="releaseId"/>
+        <result column="release_stmt_id" property="releaseStmtId"/>
+        <result column="seg_idx" property="segIdx"/>
+        <result column="type" property="type"/>
+        <result column="stmt_range_from" property="stmtRangeFrom"/>
+        <result column="stmt_range_to" property="stmtRangeTo"/>
+        <result column="stmt_index" property="stmtIndex"/>
+        <result column="table_name" property="tableName"/>
+        <result column="rows_estimated" property="rowsEstimated"/>
+        <result column="sql_text" property="sqlText"/>
+        <result column="batch_key_column" property="batchKeyColumn"/>
+        <result column="batch_key_type" property="batchKeyType"/>
+        <result column="idempotent" property="idempotent"/>
+        <result column="status" property="status"/>
+        <result column="task_id" property="taskId"/>
+        <result column="session_id" property="sessionId"/>
+        <result column="job_biz_id" property="jobBizId"/>
+        <result column="summary" property="summary"/>
+        <result column="error" property="error"/>
+        <result column="checkpoint" property="checkpoint"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="finished_at" property="finishedAt"/>
+    </resultMap>
+
+    <sql id="dmProdReleaseStmtSegment">
+        id,
+        gmt_create,
+        gmt_modified,
+        release_id,
+        release_stmt_id,
+        seg_idx,
+        type,
+        stmt_range_from,
+        stmt_range_to,
+        stmt_index,
+        table_name,
+        rows_estimated,
+        sql_text,
+        batch_key_column,
+        batch_key_type,
+        idempotent,
+        status,
+        task_id,
+        session_id,
+        job_biz_id,
+        summary,
+        error,
+        checkpoint,
+        started_at,
+        finished_at
+    </sql>
+
+    <select id="queryByReleaseStmtId" resultMap="dmProdReleaseStmtSegmentDO">
+        SELECT
+            <include refid="dmProdReleaseStmtSegment"/>
+        FROM
+            dm_prod_release_stmt_segment
+        WHERE
+            release_stmt_id = #{releaseStmtId}
+        ORDER BY
+            seg_idx
+    </select>
+
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO dm_prod_release_stmt_segment
+            (release_id, release_stmt_id, seg_idx, type,
+             stmt_range_from, stmt_range_to, stmt_index,
+             table_name, rows_estimated, sql_text,
+             batch_key_column, batch_key_type, idempotent, status)
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (#{row.releaseId}, #{row.releaseStmtId}, #{row.segIdx}, #{row.type},
+             #{row.stmtRangeFrom}, #{row.stmtRangeTo}, #{row.stmtIndex},
+             #{row.tableName}, #{row.rowsEstimated}, #{row.sqlText},
+             #{row.batchKeyColumn}, #{row.batchKeyType}, #{row.idempotent}, #{row.status})
+        </foreach>
+    </insert>
+
+    <!-- Runtime-column update ONLY (plan columns are frozen at merge — never listed here).
+         Called inside the release-row-lock window (single-writer discipline, M2). -->
+    <update id="updateRuntime">
+        UPDATE
+            dm_prod_release_stmt_segment
+        SET
+            status = #{row.status},
+            task_id = #{row.taskId},
+            session_id = #{row.sessionId},
+            job_biz_id = #{row.jobBizId},
+            summary = #{row.summary},
+            error = #{row.error},
+            checkpoint = #{row.checkpoint},
+            started_at = #{row.startedAt},
+            finished_at = #{row.finishedAt}
+        WHERE
+            id = #{row.id}
+    </update>
+
+    <delete id="deleteByReleaseStmtId">
+        DELETE FROM
+            dm_prod_release_stmt_segment
+        WHERE
+            release_stmt_id = #{releaseStmtId}
+    </delete>
+
+    <delete id="deleteByReleaseId">
+        DELETE FROM
+            dm_prod_release_stmt_segment
+        WHERE
+            release_id = #{releaseId}
+    </delete>
+
+</mapper>

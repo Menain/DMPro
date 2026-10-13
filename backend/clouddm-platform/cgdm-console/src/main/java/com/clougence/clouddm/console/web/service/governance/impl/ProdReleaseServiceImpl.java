@@ -41,8 +41,10 @@ import com.clougence.clouddm.console.web.component.governance.GhostRouteMarks;
 import com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils;
 import com.clougence.clouddm.console.web.component.governance.PrecheckConclusion;
 import com.clougence.clouddm.console.web.component.governance.ProdReleaseStateMachine;
+import com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaDiffService;
 import com.clougence.clouddm.console.web.component.governance.ReleaseSchemaPrecheckService;
+import com.clougence.clouddm.console.web.component.governance.TicketSegment;
 import com.clougence.clouddm.console.web.component.governance.GovReturnNotifyService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
 import com.clougence.clouddm.console.web.global.i18n.I18nDmMsgKeys;
@@ -78,6 +80,7 @@ import com.clougence.clouddm.platform.dal.model.govticket.DmTicketStmtSchemaDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSchemaDO;
+import com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO;
 import com.clougence.clouddm.platform.dal.model.prodrelease.ProdReleaseStatus;
 import com.clougence.utils.JsonUtils;
 import com.clougence.utils.StringUtils;
@@ -265,10 +268,20 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 stmt.setSourceStmtId(be.source.stmt.getId());
                 stmt.setExecutionKey(be.executionKey);
                 stmt.setExecStatus(EXEC_STATUS_PENDING);
+                // ADR-013 M1: freeze the source group's segment plan into the release-side
+                // manifest. plan_hash rides the stmt insert (same transaction); the rows go in
+                // right after (releaseStmtId known post-insert). WRITE-ONLY this milestone —
+                // no dispatch path reads the manifest yet, execution behavior byte-identical.
+                List<DmProdReleaseStmtSegmentDO> segmentRows = buildSegmentRows(release.getId(), be);
+                if (!segmentRows.isEmpty()) {
+                    stmt.setPlanHash(ReleasePlanHashUtils.hash(segmentRows));
+                }
                 prodReleaseDal.stmtMapper().insert(stmt);
 
                 // Sub-task A: propagate CAPTURED snapshots to the release side
                 propagateSnapshots(release.getId(), stmt.getId(), be, buildEntries);
+                // ADR-013 M1: propagate the frozen segment manifest (lifecycle twin)
+                propagateSegments(stmt.getId(), segmentRows);
             }
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(
@@ -598,6 +611,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
         // Step 3: delete release_stmt_schema rows for this stmt (orphan cleanup)
         prodReleaseDal.schemaMapper().deleteByReleaseStmtId(stmtId);
+        // ADR-013 M1: delete the stmt's frozen segment manifest (same orphan-cleanup contract)
+        prodReleaseDal.segmentMapper().deleteByReleaseStmtId(stmtId);
 
         // Step 4: source ticket side — set group FAILED + ticket REVISION (idempotent for multi-stmt returns)
         DmTicketDbStmtDO sourceStmt = ticketDbStmtDal.stmtMapper().queryById(stmt.getSourceStmtId());
@@ -683,6 +698,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Step 4: Delete stmt + schema rows (release source tickets: ledger promoted=false)
         int deletedStmtCount = prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
         prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
+        // ADR-013 M1: cascade-delete the frozen segment manifests (resubmit re-propagates)
+        prodReleaseDal.segmentMapper().deleteByReleaseId(releaseId);
 
         // Step 5: Cancel the approval flow WITHOUT triggering handler dispatch.
         //   cancelAllProcess + updateApprovalStatus are public methods that bypass
@@ -875,9 +892,19 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 stmt.setSourceStmtId(be.source.stmt.getId());
                 stmt.setExecutionKey(be.executionKey);
                 stmt.setExecStatus(EXEC_STATUS_PENDING);
+                // ADR-013 M1: resubmit re-freezes the manifest exactly like the first merge —
+                // the return path cascade-deleted the old rows, and the source plan may have
+                // been recomputed by the ticket-side resubmit (authoritative precheck re-run).
+                // Same transaction window as the stmt re-insert, BEFORE createSqlTicket (the
+                // C5 approval-round reset rides that call — ordering per design D2).
+                List<DmProdReleaseStmtSegmentDO> segmentRows = buildSegmentRows(releaseId, be);
+                if (!segmentRows.isEmpty()) {
+                    stmt.setPlanHash(ReleasePlanHashUtils.hash(segmentRows));
+                }
                 prodReleaseDal.stmtMapper().insert(stmt);
 
                 propagateSnapshots(releaseId, stmt.getId(), be, buildEntries);
+                propagateSegments(stmt.getId(), segmentRows);
             }
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(
@@ -1053,6 +1080,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Delete stmt rows + schema snapshot rows (release UK locks, orphan cleanup)
         prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
         prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
+        // ADR-013 M1: cascade-delete the frozen segment manifests (same orphan-cleanup contract)
+        prodReleaseDal.segmentMapper().deleteByReleaseId(releaseId);
 
         // Event
         appendReleaseEvent(releaseId, GovEventType.RELEASE_REJECTED,
@@ -1077,6 +1106,8 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Delete stmt rows + schema snapshot rows (release UK locks, orphan cleanup)
         prodReleaseDal.stmtMapper().deleteByReleaseId(releaseId);
         prodReleaseDal.schemaMapper().deleteByReleaseId(releaseId);
+        // ADR-013 M1: cascade-delete the frozen segment manifests (same orphan-cleanup contract)
+        prodReleaseDal.segmentMapper().deleteByReleaseId(releaseId);
 
         // Event
         appendReleaseEvent(releaseId, GovEventType.RELEASE_CANCELLED,
@@ -1565,6 +1596,71 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         if (!rows.isEmpty()) {
             prodReleaseDal.schemaMapper().batchInsert(rows);
         }
+    }
+
+    /**
+     * ADR-013 M1: build the frozen segment-manifest rows from the source group's
+     * {@code precheck_result.segments} plan (plan of record, frozen at the ticket-side
+     * authoritative precheck). The copy is FAITHFUL — plan columns only, runtime columns
+     * stay null (status = PENDING); releaseStmtId is assigned by {@link #propagateSegments}
+     * after the stmt insert.
+     * <p>
+     * Write condition mirrors the ticket-side carrier: rows are built ONLY when the plan
+     * carries ≥1 routed (GHOST ∨ DML_BATCH) segment — a pure-normal group (or no plan /
+     * unparsable plan, TicketSegment.parsePlan is never-throw) keeps the null-plan legacy
+     * shape (empty list → no manifest, plan_hash stays NULL, dispatch byte-identical).
+     * <p>
+     * Field mapping note: GHOST freezes {@code rows} (probe estimate), DML_BATCH freezes
+     * {@code estimatedRows} (routing signal) — only one is ever set per segment by
+     * construction, so the single rows_estimated column carries both unambiguously.
+     */
+    private List<DmProdReleaseStmtSegmentDO> buildSegmentRows(long releaseId, StmtBuildEntry be) {
+        List<TicketSegment> plan = TicketSegment.parsePlan(be.source.stmt.getPrecheckResult());
+        if (!TicketSegment.hasRoutedSegment(plan)) {
+            return java.util.Collections.emptyList();
+        }
+        List<DmProdReleaseStmtSegmentDO> rows = new ArrayList<>(plan.size());
+        for (TicketSegment seg : plan) {
+            if (seg == null) {
+                continue;
+            }
+            DmProdReleaseStmtSegmentDO row = new DmProdReleaseStmtSegmentDO();
+            row.setReleaseId(releaseId);
+            row.setSegIdx(seg.getSegIdx());
+            row.setType(seg.getType());
+            if (seg.getStmtRange() != null && seg.getStmtRange().size() >= 2) {
+                row.setStmtRangeFrom(seg.getStmtRange().get(0));
+                row.setStmtRangeTo(seg.getStmtRange().get(1));
+            }
+            row.setStmtIndex(seg.getStmtIndex());
+            row.setTableName(seg.getTable());
+            row.setRowsEstimated(seg.getRows() != null ? seg.getRows() : seg.getEstimatedRows());
+            row.setSqlText(seg.getSql());
+            if (seg.getBatchKey() != null) {
+                row.setBatchKeyColumn(seg.getBatchKey().getColumn());
+                row.setBatchKeyType(seg.getBatchKey().getKeyType());
+            }
+            row.setIdempotent(seg.getIdempotent());
+            row.setStatus(TicketSegment.STATUS_PENDING);
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * ADR-013 M1: batch-insert the frozen manifest rows (releaseStmtId stamped here —
+     * known only after the stmt insert). Lifecycle twin of {@link #propagateSnapshots}:
+     * same merge transaction, cascade-deleted by returnStmt (deleteByReleaseStmtId) and
+     * returnRelease/handleRejected/handleCancelled (deleteByReleaseId).
+     */
+    private void propagateSegments(long releaseStmtId, List<DmProdReleaseStmtSegmentDO> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (DmProdReleaseStmtSegmentDO row : rows) {
+            row.setReleaseStmtId(releaseStmtId);
+        }
+        prodReleaseDal.segmentMapper().batchInsert(rows);
     }
 
     /**

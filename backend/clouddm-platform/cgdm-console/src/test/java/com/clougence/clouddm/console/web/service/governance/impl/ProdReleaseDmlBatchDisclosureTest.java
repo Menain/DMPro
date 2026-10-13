@@ -133,6 +133,9 @@ public class ProdReleaseDmlBatchDisclosureTest {
         when(prodReleaseDal.stmtMapper()).thenReturn(stmtMapper);
         DmProdReleaseStmtSchemaMapper prodSchemaMapper = mock(DmProdReleaseStmtSchemaMapper.class);
         when(prodReleaseDal.schemaMapper()).thenReturn(prodSchemaMapper);
+        // ADR-013 M1: frozen segment manifest mapper (the DML_BATCH/GHOST plan fixtures now propagate)
+        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
 
         TicketDbStmtDal ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);

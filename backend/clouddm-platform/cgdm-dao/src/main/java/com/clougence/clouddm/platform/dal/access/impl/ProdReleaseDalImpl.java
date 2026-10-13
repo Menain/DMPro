@@ -22,6 +22,7 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOver
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper;
 
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +37,8 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     private DmProdReleaseStmtMapper  stmtMapper;
     @Resource
     private DmProdReleaseStmtSchemaMapper schemaMapper;
+    @Resource
+    private DmProdReleaseStmtSegmentMapper segmentMapper;
     @Resource
     private DmGovSchemaGateOverrideMapper gateOverrideMapper;
 
@@ -52,6 +55,11 @@ public class ProdReleaseDalImpl implements ProdReleaseDal {
     @Override
     public DmProdReleaseStmtSchemaMapper schemaMapper() {
         return schemaMapper;
+    }
+
+    @Override
+    public DmProdReleaseStmtSegmentMapper segmentMapper() {
+        return segmentMapper;
     }
 
     @Override

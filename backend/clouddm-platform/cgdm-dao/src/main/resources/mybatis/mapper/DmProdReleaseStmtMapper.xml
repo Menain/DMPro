@@ -18,6 +18,7 @@
         <result column="execution_key" property="executionKey"/>
         <result column="exec_status" property="execStatus"/>
         <result column="exec_detail" property="execDetail"/>
+        <result column="plan_hash" property="planHash"/>
     </resultMap>
 
     <sql id="dmProdReleaseStmt">
@@ -34,7 +35,8 @@
         source_stmt_id,
         execution_key,
         exec_status,
-        exec_detail
+        exec_detail,
+        plan_hash
     </sql>
 
     <select id="queryById" resultMap="dmProdReleaseStmtDO">

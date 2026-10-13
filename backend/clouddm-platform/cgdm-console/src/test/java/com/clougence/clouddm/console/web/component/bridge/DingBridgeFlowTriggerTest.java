@@ -318,6 +318,9 @@ public class DingBridgeFlowTriggerTest {
         when(prodReleaseDal.releaseMapper()).thenReturn(releaseMapper);
         when(prodReleaseDal.stmtMapper()).thenReturn(releaseStmtMapper);
         when(prodReleaseDal.schemaMapper()).thenReturn(prodSchemaMapper);
+        // ADR-013 M1: frozen segment manifest mapper (createRelease propagation)
+        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
 
         TicketDbStmtDal ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);

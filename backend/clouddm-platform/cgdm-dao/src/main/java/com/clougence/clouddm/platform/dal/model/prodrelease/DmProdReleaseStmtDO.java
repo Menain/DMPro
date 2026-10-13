@@ -67,4 +67,16 @@ public class DmProdReleaseStmtDO {
     private String execStatus;
 
     private String execDetail;
+
+    /**
+     * ADR-013 M1 (additive, V202610120001): canonical hash of the frozen segment-plan
+     * manifest rows (dm_prod_release_stmt_segment, ReleasePlanHashUtils single point),
+     * written at merge propagation. NULL = no frozen plan (pure-normal group, or a
+     * release merged before the manifest existed — legacy, never backfilled). Distinct
+     * from executionKey by design: executionKey is the execute-once idempotence key
+     * (sourceStmtId|prodDsId|prodDbName, NO content), plan_hash is the plan-integrity
+     * pin. M1 is write-only — the M3 dispatch gate compares it against a recompute
+     * from the manifest rows (RELEASE_PLAN_DRIFT, never overridable).
+     */
+    private String planHash;
 }

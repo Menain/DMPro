@@ -19,12 +19,15 @@ import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmGovSchemaGateOver
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper;
 import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSchemaMapper;
+import com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper;
 
 /**
  * Dal aggregation for production release tables.
  * release table is mutable via controlled state-machine methods (transitStatus / updateApprovalId / updateGateResult).
  * stmt table has insert, select, updateExecStatus, deleteByReleaseId — no arbitrary update/delete.
  * stmt_schema table has batchInsert, queryByReleaseStmtId, queryByReleaseId.
+ * stmt_segment table (ADR-013 frozen plan manifest) has batchInsert, queryByReleaseStmtId,
+ * lock-window updateRuntime + the two cascade deletes — plan columns frozen at merge.
  * gate_override table (ADR-011) has insert/select + CAS consume/revoke only.
  */
 public interface ProdReleaseDal {
@@ -34,6 +37,8 @@ public interface ProdReleaseDal {
     DmProdReleaseStmtMapper stmtMapper();
 
     DmProdReleaseStmtSchemaMapper schemaMapper();
+
+    DmProdReleaseStmtSegmentMapper segmentMapper();
 
     DmGovSchemaGateOverrideMapper gateOverrideMapper();
 }

@@ -122,6 +122,9 @@ public class ProdReleaseServiceImplTest {
         // Sub-task A: schema mapper for freeze propagation
         DmProdReleaseStmtSchemaMapper prodSchemaMapper = mock(DmProdReleaseStmtSchemaMapper.class);
         when(prodReleaseDal.schemaMapper()).thenReturn(prodSchemaMapper);
+        // ADR-013 M1: frozen segment manifest mapper (propagate + cascade deletes)
+        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
 
         ticketDbStmtDal = mock(TicketDbStmtDal.class);
         ticketStmtMapper = mock(DmTicketDbStmtMapper.class);

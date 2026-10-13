@@ -103,6 +103,9 @@ public class ProdReleaseReturnTest {
         when(prodReleaseDal.releaseMapper()).thenReturn(releaseMapper);
         when(prodReleaseDal.stmtMapper()).thenReturn(stmtMapper);
         when(prodReleaseDal.schemaMapper()).thenReturn(schemaMapper);
+        // ADR-013 M1: frozen segment manifest mapper (returnRelease cascade delete)
+        when(prodReleaseDal.segmentMapper()).thenReturn(mock(
+            com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class));
 
         approvalDal = mock(ApprovalDal.class);
         approvalMapper = mock(DmApprovalMapper.class);
