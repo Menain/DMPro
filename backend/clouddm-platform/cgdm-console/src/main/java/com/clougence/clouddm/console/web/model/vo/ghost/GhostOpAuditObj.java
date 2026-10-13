@@ -45,8 +45,16 @@ public class GhostOpAuditObj {
     private Long   groupId;
     /** B6 M2: the 1-based segment position of an auto-dispatched GHOST segment (null = M1/standalone shape) */
     private Integer segmentIndex;
-    /** dispatch origin label, e.g. TICKET_AUTO_ROUTE / TICKET_RETRY / TICKET_SEGMENT_CHAIN */
+    /** dispatch origin label, e.g. TICKET_AUTO_ROUTE / TICKET_RETRY / TICKET_SEGMENT_CHAIN / RELEASE_SEGMENT_CHAIN */
     private String via;
+
+    /**
+     * ADR-013 M2: release-source annotation of a release-chain-dispatched migration — MUTUALLY
+     * EXCLUSIVE with the ticketId/groupId pair above (a launch is annotated with exactly one chain
+     * binding; null on every ticket-chain and standalone audit row, additive shape).
+     */
+    private Long   releaseStmtId;
+    private Long   releaseId;
 
     /** max length of the DDL text stored in the audit row */
     public static final int DDL_MAX_LENGTH = 2000;

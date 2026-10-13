@@ -102,17 +102,59 @@ public interface AutoExecService {
      * <p>
      * Inheritance fix (design §8): EXECUTING mark is applied AFTER job insert succeeds;
      * failure path resets stmt to PENDING.
+     * <p>
+     * ADR-013 M2 (segment-aware dispatch, design D3): the stmt's frozen manifest
+     * ({@code dm_prod_release_stmt_segment}) decides the shape — an EMPTY manifest keeps the
+     * legacy whole-text re-split DIRECT job byte-identical and returns {@code true} (the caller
+     * starts the job it just had built with {@code jobBizId}); a NON-EMPTY manifest delegates the
+     * WHOLE dispatch to {@code ReleaseSegmentService.dispatchFirstReleaseSegment} (AUTOEXEC segment
+     * job built+started internally / GHOST launched / DML_BATCH blocked) and returns {@code false}
+     * (the caller MUST NOT startJob — there is no whole-stmt job, and a GHOST/DML_BATCH first
+     * segment has no job at all). A manifest-carrying stmt has NO DIRECT fallback (red line 1).
      *
      * @param stmt           the release statement snapshot row
-     * @param jobBizId       generated job bizId
+     * @param jobBizId       generated job bizId (legacy shape only; the segment shape generates its own)
      * @param transactional  whether to wrap tasks in a transaction
      * @param errorStrategy  error strategy for the job
      * @param languageTag    locale language tag for worker messages
      * @param uid            operator uid
+     * @return true ⟺ a legacy whole-stmt job was created that the CALLER must {@link #startJob};
+     *         false ⟺ the segment orchestrator fully owned the dispatch (started/launched/blocked).
      */
-    void createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+    boolean createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
                              String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
                              String languageTag, String uid);
+
+    /**
+     * ADR-013 M2 (design D3): build the AUTOEXEC SEGMENT job of a manifest-carrying release stmt —
+     * the release twin of {@link #createGroupJob}'s segment-aware task construction. Re-splits the
+     * stmt's {@code sql_content} and emits task rows ONLY for the segment's {@code [stmtRangeFrom,
+     * stmtRangeTo]} bounds, keeping the GLOBAL exec_order numbering WITH HOLES (a GHOST/DML_BATCH
+     * statement consumes its global number without a task row — per-segment re-densing is FORBIDDEN,
+     * governance-contracts stmt_index alignment). Sets {@code depend_on_release_stmt_id} + the
+     * additive {@code segmentIdx} config key. Caller: {@code ReleaseSegmentService} (under the
+     * release row lock); the caller {@link #startJob}s the returned job.
+     */
+    void createReleaseSegmentJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                             com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO segment,
+                             String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
+                             String languageTag, String uid);
+
+    /**
+     * ADR-013 M2 (design D4): the release serial-chain successor dispatch + release aggregation tail,
+     * extracted verbatim from {@link #handleReleaseJobCompletion} so the GHOST terminal hook
+     * ({@code ReleaseSegmentService.onReleaseGhostTerminal}) and the sweep re-drive share ONE
+     * implementation. Assumes the CALLER holds the release row lock and the stmt terminal is already
+     * written. On stmt SUCCESS: gate (hash → B precheck → A diff) + dispatch the next PENDING stmt
+     * of the same DB; otherwise (stmt FAILED, or no successor): aggregate all stmts → DONE /
+     * PARTIAL_FAILED. Idempotent under the held lock (the chain-advance CAS + the aggregation's
+     * locking read see every committed stmt status).
+     *
+     * @param stmtSuccess whether the just-terminal stmt SUCCEEDED (drives chain-advance vs aggregate)
+     */
+    void advanceReleaseChainUnderLock(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                             com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                             boolean stmtSuccess, String uid);
 
     /**
      * P3 release job completion handler: updates the stmt's exec_status and, when all stmts

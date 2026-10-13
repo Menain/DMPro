@@ -4580,6 +4580,8 @@
   "gov-event-type-RELEASE_SCHEMA_GATE_UNVERIFIABLE": "Schema Gate Unverifiable",
   "gov-event-type-RELEASE_SCHEMA_GATE_OVERRIDE": "Schema Gate Override",
   "gov-event-type-RELEASE_SCHEMA_PRECHECK_UNCERTAIN": "Schema Precheck Uncertain",
+  "gov-event-type-RELEASE_ROUTE_UNSUPPORTED": "Route Unsupported (Blocked)",
+  "gov-event-type-RELEASE_ROUTE_CAPABILITY": "Route Capability Failed",
   "gov-event-type-RELEASE_DONE": "Release Done",
   "gov-event-type-TICKET_RETURNED": "Ticket Returned for Revision",
   "gov-event-type-RELEASE_STMT_RETURNED": "Release Statement Returned",

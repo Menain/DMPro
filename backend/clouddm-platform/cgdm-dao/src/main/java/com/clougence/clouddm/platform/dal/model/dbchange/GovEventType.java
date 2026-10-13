@@ -125,5 +125,27 @@ public enum GovEventType {
      * unresolvedIntent. eventData{groupId,segmentIndex,resolution,intentSeq}; the audit twin is
      * the DML_BATCH_EXECUTE row annotated with resolution+intentSeq (四点注册复用, §12).
      */
-    DML_BATCH_RESOLUTION
+    DML_BATCH_RESOLUTION,
+    /**
+     * ADR-013 M2 (release-chain segment-aware dispatch, 裁决 3): a release stmt whose frozen
+     * manifest carries a DML_BATCH segment reached its dispatch turn — the release chain has NO
+     * DML_BATCH executor (O-C7-1 follow-up), so the segment is BLOCKED, never silently downgraded
+     * to a direct single-statement replay (red line 1). stmt → FAILED; recovery = a route override
+     * (M3, explicit risk acceptance → the segment replays as AUTOEXEC) ∨ returnStmt to the ticket
+     * chain (full DML_BATCH capability) ∨ the O-C7-1 executor. operator_uid = SYSTEM (dispatch scope).
+     * eventData{stmtId,segIdx,table,rowsEstimated,batchKeyColumn,batchKeyType,sourceTicketId} —
+     * NO SQL text (C2 eventData discipline).
+     */
+    RELEASE_ROUTE_UNSUPPORTED,
+    /**
+     * ADR-013 M2 (裁决 2, R6 capability re-check): a GHOST segment's prod replay was blocked because
+     * the target environment cannot run gh-ost — the frozen routing decision is NEVER re-evaluated
+     * (red line 4); only the gh-ost hard preconditions are re-verified at dispatch (prod DS dialect
+     * = MySQL family, direct connection, channel-C session reachable, target table exists with a
+     * PK/UK; the binary/tool availability is proven by the launch itself). Any failure → stmt FAILED
+     * + this event (the failed item disclosed); recovery = a route override (M3, explicit lock-risk
+     * acceptance → the segment replays as AUTOEXEC). operator_uid = SYSTEM (dispatch scope).
+     * eventData{stmtId,segIdx,table,failCode,failReason}.
+     */
+    RELEASE_ROUTE_CAPABILITY
 }

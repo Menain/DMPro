@@ -55,6 +55,11 @@ public class GhostAsyncTask extends AsyncTask {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.governance.GhostGroupCompletionService ghostGroupCompletionService;
+    // @Lazy: ADR-013 M2 release-chain segment orchestrator (the release-bound terminal branch) —
+    //   safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService releaseSegmentService;
 
     @Override
     protected void executeTask(int retryCnt, String configData) {
@@ -68,15 +73,16 @@ public class GhostAsyncTask extends AsyncTask {
             // reflect the persisted tool state so a retry can never flip a failed migration to COMPLETE
             if (GhostService.STATUS_FAILED.equals(taskConfig.getLastStatus())) {
                 String reason = "ghost migration failed: " + safeMessage(taskConfig);
-                this.writeBackTicketTerminal(taskConfig, false, reason);
+                this.writeBackTerminal(taskConfig, false, reason);
                 this.failedTaskDoNotPause(new IllegalStateException(reason));
-            } else if (isTicketBound(taskConfig)) {
-                // R3 ruling (design §6.4): a TICKET-derived task whose session vanished with a
-                // non-FAILED last status has an UNKNOWN outcome — judge it FAILED (retryable)
-                // instead of the standalone form's optimistic COMPLETE. A FINISHED ticket over
-                // an unchanged table is an unacceptable misjudgment. Standalone keeps the old shape.
+            } else if (isChainBound(taskConfig)) {
+                // R3 ruling (design §6.4): a CHAIN-derived task (ticket OR release bound) whose session
+                // vanished with a non-FAILED last status has an UNKNOWN outcome — judge it FAILED
+                // (retryable) instead of the standalone form's optimistic COMPLETE. A FINISHED ticket /
+                // a SUCCESS release stmt over an unchanged table is an unacceptable misjudgment.
+                // Standalone keeps the old shape.
                 String detail = "ghost session lost before a terminal status (result unknown)";
-                this.writeBackTicketTerminal(taskConfig, false, detail);
+                this.writeBackTerminal(taskConfig, false, detail);
                 this.failedTaskDoNotPause(new IllegalStateException(detail));
             } else {
                 this.finishTask(null);
@@ -92,15 +98,15 @@ public class GhostAsyncTask extends AsyncTask {
             this.notifyAsyncEvent();
             if (GhostService.STATUS_FAILED.equals(status)) {
                 String reason = failureReason(statusDTO);
-                this.writeBackTicketTerminal(taskConfig, false, reason);
-                this.releaseTicketSession(taskConfig);
+                this.writeBackTerminal(taskConfig, false, reason);
+                this.releaseChainSession(taskConfig);
                 this.failedTaskDoNotPause(new IllegalStateException(reason));
             } else {
                 // COMPLETED / ABORTED — the result string becomes the task's final status message.
-                // Ticket form: 终止=ABORTED → group FAILED (R5); only COMPLETED counts as success.
+                // Chain form: 终止=ABORTED → group/stmt FAILED (R5); only COMPLETED counts as success.
                 boolean success = GhostService.STATUS_COMPLETED.equals(status);
-                this.writeBackTicketTerminal(taskConfig, success, success ? null : terminalResult(status, statusDTO));
-                this.releaseTicketSession(taskConfig);
+                this.writeBackTerminal(taskConfig, success, success ? null : terminalResult(status, statusDTO));
+                this.releaseChainSession(taskConfig);
                 this.finishTask(terminalResult(status, statusDTO));
             }
             return;
@@ -119,9 +125,10 @@ public class GhostAsyncTask extends AsyncTask {
             } else {
                 // STOP already panicked gh-ost through the controller. Standalone keeps the
                 // session for log forensics (the explicit /ghost/close owns the release); the
-                // TICKET form has no close button — the chain releases the sidecar slot here.
+                // CHAIN forms (ticket / release) have no close button — the chain releases the
+                // sidecar slot here.
                 this.updateMessage("interrupt by Stop/Close");
-                this.releaseTicketSession(taskConfig);
+                this.releaseChainSession(taskConfig);
             }
 
             this.updateProcessAndMessage(statusDTO);
@@ -141,23 +148,45 @@ public class GhostAsyncTask extends AsyncTask {
     }
 
     /**
-     * B6 M1 (design §6.4): the ticket-form terminal writeback hook — the group/ticket state
-     * machine mirror of handleV2JobCompletion, keyed on the configData ticketId/groupId binding.
-     * Standalone tasks (binding null) skip entirely — behavior completely unchanged. The hook
-     * runs BEFORE the task transition (its own transaction commits independently) and NEVER
-     * breaks the task lifecycle: a writeback failure degrades to an error log and the WAIT_EXEC
-     * sweep liveness probe backstops the group judgement.
+     * B6 M1 (design §6.4) + ADR-013 M2 (design D4): the chain-form terminal writeback hook, routed by
+     * the configData binding under a MUTUAL-EXCLUSION contract (red line 2 — the ticket path is ZERO
+     * diff):
+     * <ul>
+     * <li>{@code ticketId != null} (ticket-bound) → {@code onGhostTerminal} (the unchanged ticket
+     *     chain: group/ticket state machine mirror of handleV2JobCompletion);</li>
+     * <li>{@code ticketId == null && releaseStmtId != null} (release-bound) → {@code onReleaseGhostTerminal}
+     *     (the release chain: segment advance + stmt terminal + chain re-drive);</li>
+     * <li>both null (standalone) → skip entirely (behavior completely unchanged);</li>
+     * <li>both set → INVALID (a launch binds exactly one chain) → defensive skip + warn.</li>
+     * </ul>
+     * The hook runs BEFORE the task transition (its own transaction commits independently) and NEVER
+     * breaks the task lifecycle: a writeback failure degrades to an error log and the WAIT_EXEC sweep
+     * liveness probe backstops the judgement.
      */
-    private void writeBackTicketTerminal(GhostAsyncTaskConfig taskConfig, boolean success, String detail) {
-        if (!isTicketBound(taskConfig)) {
+    private void writeBackTerminal(GhostAsyncTaskConfig taskConfig, boolean success, String detail) {
+        boolean ticketBound = isTicketBound(taskConfig);
+        boolean releaseBound = isReleaseBound(taskConfig);
+        if (ticketBound && releaseBound) {
+            log.warn("[GhostAsyncTask] task session {} carries BOTH ticket and release bindings — invalid, "
+                    + "skipping writeback (a launch binds exactly one chain)", taskConfig.getSessionId());
             return;
         }
-        try {
-            this.ghostGroupCompletionService.onGhostTerminal(
-                    taskConfig.getTicketId(), taskConfig.getGroupId(), taskConfig.getSegmentIndex(), success, detail);
-        } catch (Exception e) {
-            log.error("[GhostAsyncTask] ticket writeback failed for ticket {} group {} (the sweep probe backstops)",
-                    taskConfig.getTicketId(), taskConfig.getGroupId(), e);
+        if (ticketBound) {
+            try {
+                this.ghostGroupCompletionService.onGhostTerminal(
+                        taskConfig.getTicketId(), taskConfig.getGroupId(), taskConfig.getSegmentIndex(), success, detail);
+            } catch (Exception e) {
+                log.error("[GhostAsyncTask] ticket writeback failed for ticket {} group {} (the sweep probe backstops)",
+                        taskConfig.getTicketId(), taskConfig.getGroupId(), e);
+            }
+        } else if (releaseBound) {
+            try {
+                this.releaseSegmentService.onReleaseGhostTerminal(
+                        taskConfig.getReleaseStmtId(), taskConfig.getSegmentIndex(), success, detail);
+            } catch (Exception e) {
+                log.error("[GhostAsyncTask] release writeback failed for release stmt {} (the sweep probe backstops)",
+                        taskConfig.getReleaseStmtId(), e);
+            }
         }
     }
 
@@ -165,16 +194,27 @@ public class GhostAsyncTask extends AsyncTask {
         return taskConfig != null && taskConfig.getTicketId() != null && taskConfig.getGroupId() != null;
     }
 
+    /** ADR-013 M2: release-chain binding (releaseStmtId present). Mutually exclusive with ticket-bound. */
+    static boolean isReleaseBound(GhostAsyncTaskConfig taskConfig) {
+        return taskConfig != null && taskConfig.getReleaseStmtId() != null;
+    }
+
+    /** true when the task is bound to EITHER chain (ticket ∨ release) — the session-ownership test. */
+    static boolean isChainBound(GhostAsyncTaskConfig taskConfig) {
+        return isTicketBound(taskConfig) || isReleaseBound(taskConfig);
+    }
+
     /**
-     * Terminal session release, TICKET form only (deviation-6 closure: the chain owns the session
-     * lifecycle — the ticket detail has no close button). The sidecar GHOST concurrency counter
-     * (cap 2) decrements ONLY on session close, so an unclosed terminal session permanently burns
-     * a slot and would starve every future auto-route dispatch after two migrations. Standalone
-     * sessions keep their explicit /ghost/close path and are NEVER touched here (dual-form
-     * compatibility). Best effort: a release failure only logs — the task transition proceeds.
+     * Terminal session release, CHAIN forms only (ticket ∨ release — deviation-6 closure: the chain
+     * owns the session lifecycle, neither detail surface has a close button). The sidecar GHOST
+     * concurrency counter (cap 2) decrements ONLY on session close, so an unclosed terminal session
+     * permanently burns a slot and would starve every future auto-route/release dispatch after two
+     * migrations. Standalone sessions keep their explicit /ghost/close path and are NEVER touched here
+     * (dual-form compatibility; the ticket-bound release behavior is byte-identical — ADR-013 M2 only
+     * widens the guard to also cover the release-bound form). Best effort: a release failure only logs.
      */
-    private void releaseTicketSession(GhostAsyncTaskConfig taskConfig) {
-        if (!isTicketBound(taskConfig)) {
+    private void releaseChainSession(GhostAsyncTaskConfig taskConfig) {
+        if (!isChainBound(taskConfig)) {
             return;
         }
         try {

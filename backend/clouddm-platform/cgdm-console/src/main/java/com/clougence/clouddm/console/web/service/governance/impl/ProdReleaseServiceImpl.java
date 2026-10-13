@@ -144,6 +144,11 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
     private GovReturnNotifyService govReturnNotifyService;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
+    // @Lazy: ADR-013 M2 release-chain segment orchestrator (retry segment reset) — the orchestrator
+    //   lazy-reaches AutoExecService back; safe-side proxy injection (governance component iron rule).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService releaseSegmentService;
     // @Lazy: DingTalk bridge outbound (task 10-09) — the bridge service lazy-reaches the alert/
     //   approval layers back; safe-side proxy injection (governance component iron rule).
     @org.springframework.context.annotation.Lazy
@@ -422,13 +427,18 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
                 continue;
             }
 
-            // Create job for this stmt
+            // Create job for this stmt. ADR-013 M2: createReleaseStmtJob is segment-aware — a
+            // manifest-carrying stmt is fully dispatched by the orchestrator (returns false, NO
+            // whole-stmt job to start); a null-plan legacy stmt returns true and the caller starts it
+            // (byte-identical to the pre-M2 shape).
             String jobBizId = DmTeamUtils.nextExecJobBizId();
             String languageTag = DmI18nUtils.getLocale().toLanguageTag();
-            this.autoExecService.createReleaseStmtJob(first, jobBizId,
+            boolean mustStart = this.autoExecService.createReleaseStmtJob(first, jobBizId,
                 resolveStmtTransactional(first.getSourceTicketId(), txCache),
                 ErrorStrategy.NONE, languageTag, uid);
-            this.autoExecService.startJob(jobBizId, uid);
+            if (mustStart) {
+                this.autoExecService.startJob(jobBizId, uid);
+            }
         }
 
         // Aggregation check: hash-drift-caused FAILED stmts may leave all stmts terminal
@@ -438,6 +448,10 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
     private void aggregateIfAllTerminal(long releaseId) {
         List<DmProdReleaseStmtDO> allStmts = prodReleaseDal.stmtMapper().queryByReleaseId(releaseId);
+        if (allStmts == null || allStmts.isEmpty()) {
+            return; // no stmts — nothing to aggregate (guards vacuous all-terminal, the
+                    // handleReleaseJobCompletion empty-list pin mirrored on the console side)
+        }
         boolean allTerminal = allStmts.stream().allMatch(s ->
             EXEC_STATUS_SUCCESS.equals(s.getExecStatus()) || EXEC_STATUS_FAILED.equals(s.getExecStatus()));
         if (allTerminal) {
@@ -552,13 +566,30 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
         // Reset stmt to PENDING
         prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_PENDING, null);
 
-        // Rebuild job — transactional resolved from source ticket type (design §6 Q3)
+        // ADR-013 M2 retry segment semantics (design D9): a manifest-carrying stmt resumes from its
+        // failed segment — reset every non-SUCCESS segment to PENDING (clear error/timestamps/stale
+        // bindings + release a GHOST target's old session), SUCCESS segments NEVER re-play (已成功段
+        // 永不重放, the option-C spirit). dispatchFirstReleaseSegment then lands on firstNonTerminal.
+        // A null-plan legacy stmt is a no-op here (byte-identical whole-text replay below). The
+        // existing stmt-level checks + hash gate + C4 schema gates above are unchanged (red line).
+        releaseSegmentService.prepareRetry(stmt);
+
+        // Rebuild job — transactional resolved from source ticket type (design §6 Q3). Segment-aware:
+        // a manifest stmt is fully dispatched by the orchestrator (returns false); legacy returns true.
         String jobBizId = DmTeamUtils.nextExecJobBizId();
         String languageTag = DmI18nUtils.getLocale().toLanguageTag();
-        this.autoExecService.createReleaseStmtJob(stmt, jobBizId,
+        boolean mustStart = this.autoExecService.createReleaseStmtJob(stmt, jobBizId,
             resolveStmtTransactional(stmt.getSourceTicketId(), new HashMap<>()),
             ErrorStrategy.NONE, languageTag, uid);
-        this.autoExecService.startJob(jobBizId, uid);
+        if (mustStart) {
+            this.autoExecService.startJob(jobBizId, uid);
+        }
+        // ADR-013 M2: a retry that re-blocked a DML_BATCH segment (or re-failed a GHOST capability
+        // check) left the stmt FAILED with NO completion callback to aggregate — finish the release
+        // here so it does not stick EXECUTING (startExecution's post-loop twin). For a dispatched
+        // retry (job running / ghost launched) the stmt is EXECUTING → this is a no-op (byte-identical
+        // to the pre-M2 shape; the completion callback owns the aggregation).
+        aggregateIfAllTerminal(stmt.getReleaseId());
     }
 
     // ==================== returnStmt (layer 2 return-for-revision) ====================

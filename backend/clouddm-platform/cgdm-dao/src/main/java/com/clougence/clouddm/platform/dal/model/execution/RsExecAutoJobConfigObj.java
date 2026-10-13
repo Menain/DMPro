@@ -32,4 +32,15 @@ public class RsExecAutoJobConfigObj {
     private Long          retryWaitTime;
     private Long          retryCount;
     private String        languageTag;
+
+    /**
+     * ADR-013 M2 (release-chain segment-aware dispatch, design D3): the 1-based segIdx of the
+     * AUTOEXEC release segment this job executes — an ADDITIVE config-JSON key (no new column on
+     * dm_exec_auto_job; the depend_on_release_stmt_id column already scopes the job to its stmt).
+     * Null for every legacy/whole-stmt release job and for all ticket-chain jobs (byte-identical
+     * config shape — the field is skipped on serialization when null). Observability/completion
+     * cross-check only: the segment completion CAS keys on the EXECUTING+AUTOEXEC segment row and
+     * the recorded jobBizId, never on this value.
+     */
+    private Integer       segmentIdx;
 }

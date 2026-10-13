@@ -67,8 +67,24 @@ public class GhostAsyncTaskConfig {
      * (multi-ghost-segment groups host one task per segment — the terminal hook CAS and the
      * sweep liveness probe key on the triple). Null for the M1 single-segment degenerate shape
      * and standalone tasks (their groups carry no exec_segments runtime — M1 path unchanged).
+     * <p>
+     * ADR-013 M2: REUSED as the release-chain GHOST segment binding (the 1-based segIdx of the
+     * manifest row) — the release form carries releaseStmtId/releaseId below and keeps
+     * ticketId/groupId null, so segmentIndex disambiguates the two chains' multi-segment shapes.
      */
     private Integer segmentIndex;
+
+    /**
+     * ADR-013 M2 release-chain binding (O-C7-2 de-facto seam, design D4): non-null ONLY for
+     * release-dispatched GHOST sessions (a frozen-manifest GHOST segment replayed on prod).
+     * MUTUALLY EXCLUSIVE with the ticketId/groupId pair above — the GhostAsyncTask terminal hook
+     * routes ticketId!=null to the ticket chain (onGhostTerminal, ZERO diff) and
+     * ticketId==null && releaseStmtId!=null to the release chain (onReleaseGhostTerminal); both
+     * null = standalone (unchanged), both set = invalid (defensive skip + warn). Additive fields:
+     * every ticket-chain and standalone task keeps them null and its behavior byte-identical.
+     */
+    private Long    releaseStmtId;
+    private Long    releaseId;
 
     /**
      * B6 M1 (R14): snapshot of the EFFECTIVE gh-ost options at launch time — the resolved

@@ -432,28 +432,157 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
     }
 
     // ==================================================================================
+    // ADR-013 M2 release-chain capability re-check + task lookup (design D4, 裁决 2 / R6)
+    // ==================================================================================
+
+    /**
+     * Capability re-check (interface contract above): verify ONLY the gh-ost hard preconditions
+     * against the prod target — NEVER the routing decision. Order matters (cheapest first, a hard
+     * in-memory gate before any remote call): DS present/usable → MySQL dialect → direct connection
+     * → channel-C session reachable + table exists + PK/UK present. The binary/tool availability is
+     * proven by the launch itself (not pre-probed here). NEVER-THROW: every failure/timeout degrades
+     * to {@code capable=false} carrying the failed item code for the RELEASE_ROUTE_CAPABILITY event.
+     */
+    @Override
+    public com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability probeReleaseCapability(
+            String uid, long dsId, String dbName, String tableName) {
+        DmDsDO dsDO;
+        try {
+            dsDO = dsDal.dsMapper().queryDsIdentityById(dsId);
+        } catch (Exception e) {
+            log.warn("[Ghost] release capability probe could not load dsId={} — treating as incapable", dsId, e);
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "DS_NOT_FOUND", "prod datasource " + dsId + " is not resolvable");
+        }
+        if (!isUsable(dsDO)) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "DS_NOT_FOUND", "prod datasource " + dsId + " is not usable");
+        }
+        // ① dialect: gh-ost speaks MySQL only (the plugin's authoritative checkDataSource gate mirror)
+        if (!SUPPORTED.contains(dsDO.getDataSourceType())) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "DS_TYPE_UNSUPPORTED", "prod datasource type " + dsDO.getDataSourceType() + " is not MySQL");
+        }
+        DataSourceConfig dsConfig;
+        try {
+            dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsId);
+        } catch (Exception e) {
+            log.warn("[Ghost] release capability probe could not fetch config for dsId={}", dsId, e);
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "CHANNEL_UNAVAILABLE", "prod datasource config is not resolvable");
+        }
+        // direct connection: SSH tunnel / SSL are not expressible on the gh-ost command line (R3)
+        if (Boolean.TRUE.equals(dsConfig.getSshProxyEnabled())
+                || (dsConfig.getSslMode() != null && dsConfig.getSslMode() != SslMode.DISABLED)) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "TUNNEL_UNSUPPORTED", "prod datasource uses an SSH tunnel or SSL connection");
+        }
+        // ③④ channel-C session reachable + table exists + PK/UK present (identifiers validated first)
+        try {
+            validateIdentifier(dbName);
+            validateIdentifier(tableName);
+        } catch (RuntimeException e) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "TABLE_NOT_FOUND", "target table identifier is invalid");
+        }
+        final String escapedDb = escapeMySqlStringLiteral(dbName);
+        final String escapedTable = escapeMySqlStringLiteral(tableName);
+        final boolean[] tableFound = { false };
+        final boolean[] uniqueKeyPresent = { false };
+        try {
+            diagnosticExecutor.runInSession(uid, dsDO, dsConfig, diagOpts(), session -> {
+                List<Map<String, String>> statRows = executeStatement(session, tableStatSql(escapedDb, escapedTable));
+                if (statRows.isEmpty()) {
+                    return null; // table absent → tableFound stays false
+                }
+                tableFound[0] = true;
+                List<Map<String, String>> uniqueKeyRows = executeStatement(session, uniqueKeySql(escapedDb, escapedTable));
+                uniqueKeyPresent[0] = !uniqueKeyRows.isEmpty();
+                return null;
+            });
+        } catch (DiagTimeoutException e) {
+            log.warn("[Ghost] release capability probe timed out after {}s on dsId={}, table {}.{}",
+                    queryTimeoutSeconds, dsId, dbName, tableName);
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "CHANNEL_UNAVAILABLE", "prod target unreachable (diagnostic session timed out)");
+        } catch (Exception e) {
+            // NEVER-THROW contract (incl. sneaky-thrown checked shapes) — degrade to incapable
+            log.warn("[Ghost] release capability probe failed on dsId={}, table {}.{}", dsId, dbName, tableName, e);
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "CHANNEL_UNAVAILABLE", "prod target unreachable (diagnostic session failed)");
+        }
+        if (!tableFound[0]) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "TABLE_NOT_FOUND", "target table " + dbName + "." + tableName + " does not exist on prod");
+        }
+        if (!uniqueKeyPresent[0]) {
+            return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.fail(
+                    "NO_UNIQUE_KEY", "target table " + dbName + "." + tableName + " has no PK/UK on prod");
+        }
+        return com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability.capable();
+    }
+
+    @Override
+    public DmExecAsyncTaskDO findTaskForReleaseStmt(long releaseStmtId, Integer segmentIndex) {
+        LambdaQueryWrapper<DmExecAsyncTaskDO> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(DmExecAsyncTaskDO::getBizType, GhostPluginConfig.TOOL_NAME)
+                // Targeted pre-filter on the compact-JSON release binding key (mirrors the ticket
+                // scan bound); the parse-equality check below stays the authority.
+                .like(DmExecAsyncTaskDO::getConfigData, "\"releaseStmtId\":" + releaseStmtId)
+                .orderByDesc(DmExecAsyncTaskDO::getId)
+                .last("LIMIT " + TASK_LIST_LIMIT);
+        if (segmentIndex != null) {
+            wrapper.like(DmExecAsyncTaskDO::getConfigData, "\"segmentIndex\":" + segmentIndex);
+        }
+        List<DmExecAsyncTaskDO> rows = executionDal.asyncTaskMapper().selectList(wrapper);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        for (DmExecAsyncTaskDO row : rows) {
+            GhostAsyncTaskConfig cfg = parseTaskConfig(row);
+            if (cfg == null || cfg.getReleaseStmtId() == null || cfg.getReleaseStmtId() != releaseStmtId) {
+                continue;
+            }
+            if (segmentIndex != null && !segmentIndex.equals(cfg.getSegmentIndex())) {
+                continue; // exact segment binding required
+            }
+            return row;
+        }
+        return null;
+    }
+
+    // ==================================================================================
     // execute (R2 launch: createSession + START + AsyncTask bizType=GHOST)
     // ==================================================================================
 
     @Override
     public GhostExecuteVO execute(String puid, String uid, GhostExecuteFO fo) {
-        return doExecute(puid, uid, fo, null, null, null);
+        return doExecute(puid, uid, fo, null, null, null, null, null);
     }
 
     @Override
     public GhostExecuteVO executeForTicket(String puid, String uid, GhostExecuteFO fo, long ticketId, long groupId,
                                            Integer segmentIndex) {
-        return doExecute(puid, uid, fo, ticketId, groupId, segmentIndex);
+        return doExecute(puid, uid, fo, ticketId, groupId, null, null, segmentIndex);
+    }
+
+    @Override
+    public GhostExecuteVO executeForRelease(String puid, String uid, GhostExecuteFO fo, long releaseStmtId,
+                                            long releaseId, Integer segmentIndex) {
+        return doExecute(puid, uid, fo, null, null, releaseStmtId, releaseId, segmentIndex);
     }
 
     /**
-     * Shared launch body of both forms (dual-form compatibility, design §6.4): the ticket form
-     * only differs by the ticketId/groupId(+segmentIndex, B6 M2) binding persisted into the
-     * AsyncTask configData — everything else (session chain, task submission, audit payload)
-     * is identical.
+     * Shared launch body of ALL forms (dual-form compatibility, design §6.4; ADR-013 M2 extends it
+     * to the release chain): the forms differ ONLY by the binding persisted into the AsyncTask
+     * configData — ticket (ticketId/groupId), release (releaseStmtId/releaseId), or standalone
+     * (none) — plus the shared segmentIndex. The two bindings are MUTUALLY EXCLUSIVE (a ticket
+     * launch passes null release ids and vice versa), so the ticket/standalone configData shape is
+     * byte-identical to before (the release fields stay null). Everything else (session chain, task
+     * submission, audit payload) is identical across forms.
      */
     private GhostExecuteVO doExecute(String puid, String uid, GhostExecuteFO fo, Long ticketId, Long groupId,
-                                     Integer segmentIndex) {
+                                     Long releaseStmtId, Long releaseId, Integer segmentIndex) {
         DmDsDO dsDO = requireOwnedSupportedDs(puid, fo == null ? null : fo.getDsId());
         DataSourceConfig dsConfig = dmDsConfigService.fetchDsConfigFromExists(dsDO.getId());
         checkDirectConnection(dsConfig);
@@ -512,6 +641,10 @@ public class GhostServiceImpl implements GhostService, GhostMethod {
         taskConfig.setDdlSql(fo.getDdlSql());
         taskConfig.setTicketId(ticketId);
         taskConfig.setGroupId(groupId);
+        // ADR-013 M2 release binding (mutually exclusive with the ticket pair above — null on the
+        // ticket/standalone forms, so their configData stays byte-identical)
+        taskConfig.setReleaseStmtId(releaseStmtId);
+        taskConfig.setReleaseId(releaseId);
         taskConfig.setSegmentIndex(segmentIndex);
         taskConfig.setEffectiveOptions(effectiveOptions);
 

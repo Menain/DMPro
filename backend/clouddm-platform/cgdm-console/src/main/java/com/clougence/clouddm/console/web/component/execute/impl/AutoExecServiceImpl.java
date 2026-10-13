@@ -143,6 +143,12 @@ public class AutoExecServiceImpl implements AutoExecService {
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.component.governance.TicketSegmentService ticketSegmentService;
+    // @Lazy: ADR-013 M2 release-chain segment orchestration — the orchestrator lazy-reaches this
+    //   service back (createReleaseSegmentJob / startJob / advanceReleaseChainUnderLock) — safe-side
+    //   proxy injection (iron rule). SEPARATE from ticketSegmentService (two-chain writer isolation).
+    @org.springframework.context.annotation.Lazy
+    @Resource
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService releaseSegmentService;
     @Resource
     private com.clougence.clouddm.console.web.service.governance.GovExecutionGuardService govExecutionGuardService;
     @Resource
@@ -429,13 +435,27 @@ public class AutoExecServiceImpl implements AutoExecService {
 
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     @Override
-    public void createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+    public boolean createReleaseStmtJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
                                       String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
                                       String languageTag, String uid) {
-        // Idempotency: clear old job for this stmt
+        // Idempotency: clear old job for this stmt (both shapes — a retry/re-dispatch replaces the
+        // prior segment job; the segment runtime reset lives in ReleaseSegmentService.prepareRetry).
         DmExecAutoJobDO oldJob = this.execDal.autoJobMapper().queryByDependOnReleaseStmtId(stmt.getId());
         if (oldJob != null) {
             this.doDeleteJob(oldJob.getId());
+        }
+
+        // ADR-013 M2 segment-aware dispatch (design D3): the frozen manifest decides the shape.
+        // segments → the orchestrator owns the WHOLE dispatch (AUTOEXEC segment job built+started /
+        // GHOST launched / DML_BATCH blocked) and there is NO whole-stmt job for the caller to start;
+        // empty manifest → the legacy whole-text DIRECT job below (byte-identical, caller starts it).
+        // A manifest-carrying stmt has NO DIRECT fallback here (red line 1 — structural).
+        List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
+            = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        if (manifest != null && !manifest.isEmpty()) {
+            // the orchestrator resolves the AUTOEXEC exec-config itself (self-contained mid-chain parity)
+            this.releaseSegmentService.dispatchFirstReleaseSegment(stmt, uid);
+            return false;
         }
 
         // Fetch DS config
@@ -523,6 +543,120 @@ public class AutoExecServiceImpl implements AutoExecService {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+        // legacy whole-stmt job created — the CALLER starts it (byte-identical to the pre-M2 shape)
+        return true;
+    }
+
+    /**
+     * ADR-013 M2 (design D3): the AUTOEXEC SEGMENT job builder of a manifest-carrying release stmt —
+     * the release twin of {@link #createGroupJob}'s segment-aware task construction. Re-splits
+     * {@code stmt.sqlContent} and emits task rows ONLY within the segment's {@code [from,to]} bounds,
+     * keeping the GLOBAL exec_order numbering WITH HOLES (a GHOST/DML_BATCH statement consumes its
+     * global number without a task row — per-segment re-densing FORBIDDEN, stmt_index alignment).
+     * Sets {@code depend_on_release_stmt_id} + the additive {@code segmentIdx} config key. The
+     * EXECUTING mark rides AFTER the job insert (design §8 inheritance fix); the failure path resets
+     * the stmt to PENDING. Caller ({@code ReleaseSegmentService}) {@link #startJob}s the built job.
+     */
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void createReleaseSegmentJob(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                                      com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO segment,
+                                      String jobBizId, boolean transactional, ErrorStrategy errorStrategy,
+                                      String languageTag, String uid) {
+        // Idempotency: one job row per release stmt AT A TIME (the uk_exec_auto_job_release_stmt
+        // single-row ruling mirrored) — the next AUTOEXEC segment's job replaces the prior segment's.
+        DmExecAutoJobDO oldJob = this.execDal.autoJobMapper().queryByDependOnReleaseStmtId(stmt.getId());
+        if (oldJob != null) {
+            this.doDeleteJob(oldJob.getId());
+        }
+
+        DmDsDO dsDO = this.dsDal.dsMapper().queryDsIdentityById(stmt.getProdDsId());
+        DataSourceConfig dsConfig = this.configService.fetchDsConfigFromExists(dsDO.getId());
+
+        List<String> levels = new ArrayList<>();
+        levels.add(dsDO.getDsEnvId().toString());
+        levels.add(dsDO.getId().toString());
+        levels.add(stmt.getProdDbName());
+        DsLevels dsLevels = this.configService.parseLevels(levels);
+
+        DmExecAutoJobDO job = new DmExecAutoJobDO();
+        job.setLevels(dsLevels.dbLevels());
+        job.setDataSourceId(dsDO.getId());
+        job.setDependOnBizId(null);
+        job.setDependOnGroupId(null);
+        job.setDependOnReleaseStmtId(stmt.getId());
+        job.setBizId(jobBizId);
+        job.setUid(uid);
+        job.setExecType(AutoExecType.IMMEDIATE);
+        job.setStatus(AutoExecJobStatus.PREPARING);
+
+        RsExecAutoJobConfigObj jobConfig = new RsExecAutoJobConfigObj();
+        jobConfig.setEnableTransactional(transactional);
+        jobConfig.setErrorStrategy(errorStrategy);
+        jobConfig.setLanguageTag(languageTag);
+        jobConfig.setSegmentIdx(segment.getSegIdx()); // additive config key (no new column)
+        job.setConfig(jobConfig);
+        job.setScheduleTime(new Date());
+
+        this.execDal.autoJobMapper().insert(job);
+        this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "EXECUTING", null);
+
+        // segment-filtered task construction: GLOBAL exec_order WITH HOLES (stmt_index alignment)
+        final int segFrom = segment.getStmtRangeFrom() == null ? 1 : segment.getStmtRangeFrom();
+        final int segTo = segment.getStmtRangeTo() == null ? Integer.MAX_VALUE : segment.getStmtRangeTo();
+        try (StringReader reader = new StringReader(stmt.getSqlContent());
+             Stream<SplitScript> scripts = this.analysisService.analysisSplitStream(
+                 dsConfig, reader, Collections.emptyList(), 1, 0)) {
+
+            int order = 1;
+            int taskCount = 0;
+            List<DmExecAutoTaskDO> taskBatch = new ArrayList<>(AUTO_EXEC_TASK_INSERT_BATCH_SIZE);
+            Iterator<SplitScript> iterator = scripts.iterator();
+            while (iterator.hasNext()) {
+                SplitScript script = iterator.next();
+                int execOrder = order++;
+                if (execOrder < segFrom || execOrder > segTo) {
+                    continue; // outside this AUTOEXEC segment (a routed statement's exec_order hole)
+                }
+                DmExecAutoTaskDO execTask = new DmExecAutoTaskDO();
+                execTask.setExecSql(script.getScript());
+                execTask.setExecOrder(execOrder);
+                execTask.setStatus(AutoExecTaskStatus.WAIT_EXEC);
+                execTask.setAutoExecJobId(job.getId());
+                execTask.setBizId(DmTeamUtils.nextExecTaskBizId());
+                execTask.setQueryId(UUID.randomUUID().toString());
+                taskBatch.add(execTask);
+                taskCount++;
+                if (taskBatch.size() == AUTO_EXEC_TASK_INSERT_BATCH_SIZE) {
+                    if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                        throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                    }
+                    taskBatch.clear();
+                }
+            }
+            if (taskCount == 0) {
+                throw new IllegalStateException("Release segment job must contain at least one SQL statement.");
+            }
+            if (!taskBatch.isEmpty()) {
+                if (this.execDal.autoTaskMapper().batchInsert(taskBatch) != taskBatch.size()) {
+                    throw new IllegalStateException("Batch insert auto execution tasks failed.");
+                }
+            }
+        } catch (RuntimeException e) {
+            try {
+                TransactionTemplate cleanup = new TransactionTemplate(this.txManager);
+                cleanup.executeWithoutResult(status -> {
+                    this.doDeleteJob(job.getId());
+                    this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "PENDING", e.getMessage());
+                });
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+                log.error("Cleanup partially created release segment job failed, jobId={}", job.getId(), cleanupError);
+            }
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     // ==================== P3 release job completion aggregation ====================
@@ -548,61 +682,64 @@ public class AutoExecServiceImpl implements AutoExecService {
             return;
         }
 
-        // Update stmt exec_status
+        // ADR-013 M2 segment-aware completion (design D3/D9): a manifest-carrying stmt's job is ONE
+        // AUTOEXEC segment — delegate the segment terminal + next-segment dispatch to the release
+        // orchestrator (fresh under-lock re-read + segment CAS + jobBizId cross-check). Only when the
+        // STMT reached terminal (last segment landed / a segment FAILED / a mid-chain DML_BATCH block)
+        // does the shared chain-advance+aggregation tail run; a CAS skip or a dispatched next segment
+        // returns WITHOUT re-driving the tail (exactly-once, the first writer owns it).
+        List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
+            = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        if (manifest != null && !manifest.isEmpty()) {
+            boolean stmtTerminal = this.releaseSegmentService.completeReleaseAutoexecSegmentUnderLock(
+                release, stmt, job.getBizId(), success, errorDetail, job.getUid());
+            if (!stmtTerminal) {
+                return;
+            }
+            DmProdReleaseStmtDO fresh = this.prodReleaseDal.stmtMapper().queryById(stmt.getId());
+            boolean stmtSuccess = fresh != null && "SUCCESS".equals(fresh.getExecStatus());
+            appendReleaseStmtEvent(release.getId(), stmt.getId(),
+                stmtSuccess ? com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_SUCCESS
+                            : com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_FAILED,
+                stmtSuccess ? "SUCCESS" : "FAILED", errorDetail);
+            advanceReleaseChainUnderLock(release, fresh == null ? stmt : fresh, stmtSuccess, job.getUid());
+            return;
+        }
+
+        // Legacy null-plan shape (byte-identical): write the stmt terminal, then the shared tail.
         String stmtStatus = success ? "SUCCESS" : "FAILED";
         this.prodReleaseDal.stmtMapper().updateExecStatus(job.getDependOnReleaseStmtId(), stmtStatus, errorDetail);
-
-        // Append stmt event
         appendReleaseStmtEvent(release.getId(), stmt.getId(),
             success ? com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_SUCCESS
                    : com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_STMT_FAILED,
             stmtStatus, errorDetail);
+        advanceReleaseChainUnderLock(release, stmt, success, job.getUid());
+    }
 
+    /**
+     * ADR-013 M2 (design D4): the release serial-chain successor dispatch + aggregation tail,
+     * extracted VERBATIM from the pre-M2 {@code handleReleaseJobCompletion} so the AUTOEXEC callback,
+     * the GHOST terminal hook ({@code ReleaseSegmentService.onReleaseGhostTerminal}) and the sweep
+     * re-drive share ONE implementation (the legacy null-plan behavior is byte-identical). Assumes the
+     * CALLER holds the release row lock and the stmt terminal is already written.
+     */
+    @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
+    @Override
+    public void advanceReleaseChainUnderLock(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                                             com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtDO stmt,
+                                             boolean stmtSuccess, String uid) {
         // Chained execution: on success, start the next PENDING stmt for the same DB
-        if (success) {
+        if (stmtSuccess) {
             DmProdReleaseStmtDO next = this.prodReleaseDal.stmtMapper().nextPendingStmt(
                 release.getId(), stmt.getProdDsId(), stmt.getProdDbName(), stmt.getSeq());
             if (next != null) {
-                // Gate: re-hash before building job (anti-drift, design §4)
-                String recomputed = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(next.getSqlContent());
-                if (!recomputed.equals(next.getHash())) {
-                    this.prodReleaseDal.stmtMapper().updateExecStatus(next.getId(), "FAILED",
-                        "Hash drift: stored=" + next.getHash() + " recomputed=" + recomputed);
-                    appendReleaseStmtEvent(release.getId(), next.getId(),
-                        com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_HASH_DRIFT,
-                        "FAILED", "Hash drift detected");
-                    // Mark release as PARTIAL_FAILED
-                    aggregateReleaseCompletion(release, false);
-                    return;
+                boolean running = dispatchReleaseStmtUnderLock(release, next, uid);
+                if (running) {
+                    return; // successor dispatched (job running / GHOST launched) — its callback owns the tail
                 }
-
-                // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless
-                // a governed override is consumed; hash drift above stays NOT overridable)
-                com.clougence.clouddm.console.web.component.governance.PrecheckConclusion precheckResult
-                    = this.releaseSchemaPrecheckService.precheck(next);
-                if (!passChainSchemaGate(release, next,
-                    com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK,
-                    precheckResult)) {
-                    aggregateReleaseCompletion(release, false);
-                    return;
-                }
-
-                // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
-                com.clougence.clouddm.console.web.component.governance.PrecheckConclusion diffResult
-                    = this.releaseSchemaDiffService.diff(next);
-                if (!passChainSchemaGate(release, next,
-                    com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_DIFF,
-                    diffResult)) {
-                    aggregateReleaseCompletion(release, false);
-                    return;
-                }
-
-                String nextJobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
-                String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
-                this.createReleaseStmtJob(next, nextJobBizId,
-                    resolveStmtTransactional(next.getSourceTicketId(), new HashMap<>()),
-                    com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE, languageTag, job.getUid());
-                this.startJob(nextJobBizId, job.getUid());
+                // gate-denied OR blocked-at-dispatch (DML_BATCH / GHOST capability → next FAILED): the
+                // serial chain stops here — force PARTIAL_FAILED (never leave the release stuck EXECUTING).
+                aggregateReleaseCompletion(release, false);
                 return;
             }
         }
@@ -624,6 +761,60 @@ public class AutoExecServiceImpl implements AutoExecService {
         }
     }
 
+    /**
+     * ADR-013 M2: gate + dispatch ONE release stmt (the shared body of the chain-advance successor and
+     * the sweep re-drive). Gate order hash → B precheck → A diff (governance-contracts P3, ADR-011
+     * fail-closed), then the segment-aware {@link #createReleaseStmtJob}. Assumes the CALLER holds the
+     * release row lock. The legacy null-plan behavior is byte-identical to the pre-M2 inline chain gate.
+     *
+     * @return true ONLY when the stmt was dispatched and is left EXECUTING (legacy job started /
+     *         segment AUTOEXEC job started / GHOST launched) — its completion callback owns the tail;
+     *         false when NOT dispatched (hash drift / gate denial / segment block → stmt FAILED).
+     */
+    private boolean dispatchReleaseStmtUnderLock(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                                                 DmProdReleaseStmtDO stmt, String uid) {
+        // Gate: re-hash before building job (anti-drift, design §4)
+        String recomputed = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(stmt.getSqlContent());
+        if (!recomputed.equals(stmt.getHash())) {
+            this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "FAILED",
+                "Hash drift: stored=" + stmt.getHash() + " recomputed=" + recomputed);
+            appendReleaseStmtEvent(release.getId(), stmt.getId(),
+                com.clougence.clouddm.platform.dal.model.dbchange.GovEventType.RELEASE_HASH_DRIFT,
+                "FAILED", "Hash drift detected");
+            return false;
+        }
+        // Gate: schema precondition check (design §6; ADR-011 fail-closed — deny unless a governed
+        // override is consumed; hash drift above stays NOT overridable)
+        com.clougence.clouddm.console.web.component.governance.PrecheckConclusion precheckResult
+            = this.releaseSchemaPrecheckService.precheck(stmt);
+        if (!passChainSchemaGate(release, stmt,
+            com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_PRECHECK,
+            precheckResult)) {
+            return false;
+        }
+        // Gate: schema drift diff (sub-task A — order: hash → B precheck → A diff)
+        com.clougence.clouddm.console.web.component.governance.PrecheckConclusion diffResult
+            = this.releaseSchemaDiffService.diff(stmt);
+        if (!passChainSchemaGate(release, stmt,
+            com.clougence.clouddm.console.web.component.governance.SchemaGateOverrideService.GATE_DIFF,
+            diffResult)) {
+            return false;
+        }
+        String jobBizId = com.clougence.clouddm.console.web.util.DmTeamUtils.nextExecJobBizId();
+        String languageTag = com.clougence.clouddm.console.web.global.i18n.DmI18nUtils.getLocale().toLanguageTag();
+        boolean mustStart = this.createReleaseStmtJob(stmt, jobBizId,
+            resolveStmtTransactional(stmt.getSourceTicketId(), new HashMap<>()),
+            com.clougence.clouddm.api.console.autoexec.ErrorStrategy.NONE, languageTag, uid);
+        if (mustStart) {
+            this.startJob(jobBizId, uid);
+            return true; // legacy whole-stmt job dispatched
+        }
+        // segment shape: the orchestrator owned the dispatch — EXECUTING means in flight (AUTOEXEC job /
+        // GHOST launched, its callback owns the tail); FAILED means blocked (DML_BATCH / capability).
+        DmProdReleaseStmtDO fresh = this.prodReleaseDal.stmtMapper().queryById(stmt.getId());
+        return fresh != null && "EXECUTING".equals(fresh.getExecStatus());
+    }
+
     @Override
     @Transactional(rollbackFor = Throwable.class, propagation = Propagation.REQUIRED)
     public void recoverReleaseCompletionIfDue(long releaseId) {
@@ -640,6 +831,37 @@ public class AutoExecServiceImpl implements AutoExecService {
         if (allStmts.isEmpty()) {
             return;
         }
+
+        // ADR-013 M2 (design D4 sweep): segment-level liveness probe of every EXECUTING manifest stmt
+        // — a GHOST segment whose terminal writeback was lost (the hook died) is repaired here
+        // (REQUIRES_NEW fresh-read inner, per-stmt failures caught and retried next cycle). The inner
+        // never re-takes the release row lock (this sweep holds it — self-deadlock guard, check F1).
+        boolean probed = false;
+        for (DmProdReleaseStmtDO s : allStmts) {
+            if (!"EXECUTING".equals(s.getExecStatus())) {
+                continue;
+            }
+            List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
+                = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(s.getId());
+            if (manifest == null || manifest.isEmpty()) {
+                continue; // legacy null-plan stmt — its job callback + the aggregation below backstop it
+            }
+            try {
+                this.releaseSegmentService.probeReleaseSegmentUnderLock(release, s);
+                probed = true;
+            } catch (RuntimeException e) {
+                log.warn("[AutoExec] release segment sweep probe failed for stmt {} (retried next cycle)", s.getId(), e);
+            }
+        }
+        if (probed) {
+            // fresh locking re-read (sees the probe's committed stmt terminals) + chain re-drive: a
+            // probe-recovered SUCCESS stmt whose serial successor was never dispatched (the lost hook
+            // owned that dispatch) is re-driven here so the chain does not stall.
+            allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseIdForUpdate(releaseId);
+            redriveStalledReleaseChains(release, allStmts);
+            allStmts = this.prodReleaseDal.stmtMapper().queryByReleaseIdForUpdate(releaseId);
+        }
+
         boolean allTerminal = allStmts.stream().allMatch(s ->
             "SUCCESS".equals(s.getExecStatus()) || "FAILED".equals(s.getExecStatus()));
         if (!allTerminal) {
@@ -647,6 +869,47 @@ public class AutoExecServiceImpl implements AutoExecService {
         }
         boolean anyFailed = allStmts.stream().anyMatch(s -> "FAILED".equals(s.getExecStatus()));
         aggregateReleaseCompletion(release, !anyFailed);
+    }
+
+    /**
+     * ADR-013 M2 sweep chain re-drive: for each (prodDsId, prodDbName) serial chain with NO EXECUTING
+     * stmt (the live body died / its writeback was lost and the probe recovered the predecessor to a
+     * terminal), dispatch the first PENDING successor whose predecessors are all SUCCESS — the chain
+     * stalled because the lost hook owned that dispatch. Caller holds the release row lock; the gate +
+     * dispatch reuse {@link #dispatchReleaseStmtUnderLock} (no aggregation here — the caller's single
+     * aggregation tail owns it). A chain with an EXECUTING stmt or a FAILED predecessor is left alone
+     * (a live callback drives the former; the latter already stopped the chain).
+     */
+    private void redriveStalledReleaseChains(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
+                                             List<DmProdReleaseStmtDO> allStmts) {
+        Map<String, List<DmProdReleaseStmtDO>> byDb = new HashMap<>();
+        for (DmProdReleaseStmtDO s : allStmts) {
+            byDb.computeIfAbsent(s.getProdDsId() + "|" + s.getProdDbName(), k -> new ArrayList<>()).add(s);
+        }
+        for (List<DmProdReleaseStmtDO> group : byDb.values()) {
+            boolean anyExecuting = group.stream().anyMatch(s -> "EXECUTING".equals(s.getExecStatus()));
+            if (anyExecuting) {
+                continue; // a live body owns this chain — its callback advances it
+            }
+            DmProdReleaseStmtDO firstPending = group.stream()
+                .filter(s -> "PENDING".equals(s.getExecStatus()))
+                .min(java.util.Comparator.comparingInt(DmProdReleaseStmtDO::getSeq))
+                .orElse(null);
+            if (firstPending == null) {
+                continue; // nothing left to dispatch in this chain
+            }
+            // every predecessor (smaller seq) must be SUCCESS — a FAILED predecessor means the chain
+            // legitimately stopped (the aggregation tail owns the PARTIAL_FAILED), not a lost dispatch
+            boolean predecessorsAllSuccess = group.stream()
+                .filter(s -> s.getSeq() < firstPending.getSeq())
+                .allMatch(s -> "SUCCESS".equals(s.getExecStatus()));
+            if (!predecessorsAllSuccess) {
+                continue;
+            }
+            log.warn("[AutoExec] sweep re-driving the stalled release chain: release {} stmt {} (seq {})",
+                release.getId(), firstPending.getId(), firstPending.getSeq());
+            dispatchReleaseStmtUnderLock(release, firstPending, SYSTEM_OPERATOR);
+        }
     }
 
     private void aggregateReleaseCompletion(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release, boolean allSuccess) {

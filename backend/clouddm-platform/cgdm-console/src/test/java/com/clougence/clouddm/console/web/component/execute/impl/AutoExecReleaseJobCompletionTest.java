@@ -83,6 +83,12 @@ public class AutoExecReleaseJobCompletionTest {
         stmtMapper = mock(DmProdReleaseStmtMapper.class);
         when(prodReleaseDal.releaseMapper()).thenReturn(releaseMapper);
         when(prodReleaseDal.stmtMapper()).thenReturn(stmtMapper);
+        // ADR-013 M2: handleReleaseJobCompletion + createReleaseStmtJob read the frozen manifest —
+        // an EMPTY list keeps every stmt on the legacy null-plan path (byte-identical assertions).
+        com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper segmentMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtSegmentMapper.class);
+        when(prodReleaseDal.segmentMapper()).thenReturn(segmentMapper);
+        when(segmentMapper.queryByReleaseStmtId(anyLong())).thenReturn(java.util.Collections.emptyList());
 
         execDal = mock(ExecutionDal.class);
         autoJobMapper = mock(DmExecAutoJobMapper.class);

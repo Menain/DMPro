@@ -156,4 +156,40 @@ public interface GhostService {
      * parse-equality check stays the authority.
      */
     DmExecAsyncTaskDO findTaskForTicketGroup(long ticketId, long groupId, Integer segmentIndex);
+
+    // ---- ADR-013 M2 release-chain GHOST surface (trusted console-internal: release chain only) ----
+
+    /**
+     * Release-dispatched launch (design D4, the O-C7-2 de-facto seam): the release-chain twin of
+     * {@link #executeForTicket} — identical session/launch/AsyncTask shape, but the configData
+     * binding carries {@code releaseStmtId/releaseId/segmentIndex} INSTEAD OF {@code ticketId/
+     * groupId} (mutually exclusive — the GhostAsyncTask terminal hook routes on it). NEVER expose
+     * through a controller (the binding is a system decision). The launch itself proves the gh-ost
+     * binary/tool availability (a GHOST_BINARY_MISSING failure surfaces as an ErrorMessageException
+     * the caller translates into RELEASE_ROUTE_CAPABILITY).
+     */
+    com.clougence.clouddm.console.web.model.vo.ghost.GhostExecuteVO executeForRelease(
+        String puid, String uid, com.clougence.clouddm.console.web.model.fo.ghost.GhostExecuteFO fo,
+        long releaseStmtId, long releaseId, Integer segmentIndex);
+
+    /**
+     * ADR-013 M2 capability re-check (裁决 2, R6): verify the gh-ost HARD PRECONDITIONS against the
+     * prod target before a frozen GHOST segment replays — dialect (MySQL family), direct connection
+     * (no SSH/SSL), the channel-C diagnostic session reachable, and the target table present with a
+     * PK/UK. CAPABILITY ONLY: the routing decision (thresholds/rows/matrix) is NEVER re-evaluated
+     * (red line 4). NEVER-THROW — every failure/timeout degrades to {@code capable=false} carrying
+     * the failed item code (the caller writes RELEASE_ROUTE_CAPABILITY + blocks; it does not throw).
+     * Not cached (the plan is frozen, the environment is not).
+     */
+    com.clougence.clouddm.console.web.model.vo.ghost.ReleaseGhostCapability probeReleaseCapability(
+        String uid, long dsId, String dbName, String tableName);
+
+    /**
+     * ADR-013 M2: locate the NEWEST GHOST AsyncTask bound to a release stmt's GHOST segment
+     * (configData releaseStmtId + segmentIndex); null when never dispatched. The release-side sweep
+     * liveness probe / writeback-lost repair key on it (the release twin of
+     * {@link #findTaskForTicketGroup(long, long, Integer)}). Bounded newest-first scan; the
+     * parse-equality check stays the authority.
+     */
+    DmExecAsyncTaskDO findTaskForReleaseStmt(long releaseStmtId, Integer segmentIndex);
 }

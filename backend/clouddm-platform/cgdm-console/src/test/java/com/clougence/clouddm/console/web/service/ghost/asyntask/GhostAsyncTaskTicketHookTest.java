@@ -47,17 +47,22 @@ public class GhostAsyncTaskTicketHookTest {
     private GhostAsyncTask                task;
     private GhostService                  ghostService;
     private GhostGroupCompletionService   completion;
+    private com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService releaseSegmentService;
 
     private static final String SESSION_ID = "session-1";
     private static final String USER_ID    = "uid-launcher";
     private static final long   TICKET_ID  = 900L;
     private static final long   GROUP_ID   = 100L;
+    private static final long   RELEASE_STMT_ID = 800L;
+    private static final long   RELEASE_ID = 500L;
 
     @Before
     public void setUp() {
         task = new GhostAsyncTask();
         ghostService = mock(GhostService.class);
         completion = mock(GhostGroupCompletionService.class);
+        releaseSegmentService = mock(
+            com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService.class);
 
         ExecutionDal executionDal = mock(ExecutionDal.class);
         when(executionDal.asyncTaskMapper()).thenReturn(mock(DmExecAsyncTaskMapper.class));
@@ -70,6 +75,7 @@ public class GhostAsyncTaskTicketHookTest {
 
         ReflectionTestUtils.setField(task, "ghostService", ghostService);
         ReflectionTestUtils.setField(task, "ghostGroupCompletionService", completion);
+        ReflectionTestUtils.setField(task, "releaseSegmentService", releaseSegmentService);
         ReflectionTestUtils.setField(task, "executionDal", executionDal);
         ReflectionTestUtils.setField(task, "taskDO", taskDO);
 
@@ -266,6 +272,74 @@ public class GhostAsyncTaskTicketHookTest {
         assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
     }
 
+    // ==================== ADR-013 M2 release-bound form (binding generalization, red line 2) ====================
+
+    @Test
+    public void completed_releaseBound_hooksReleaseTerminal_neverTicketChain() {
+        when(ghostService.tailStatusForTask(USER_ID, SESSION_ID)).thenReturn(status("COMPLETED", null, null));
+
+        run(releaseBoundConfig(null, 2));
+
+        // release binding routes to onReleaseGhostTerminal (releaseStmtId + segmentIndex), NOT the ticket chain
+        verify(releaseSegmentService).onReleaseGhostTerminal(RELEASE_STMT_ID, Integer.valueOf(2), true, null);
+        verifyNoInteractions(completion);
+        assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
+        // release form owns the session lifecycle too (cap-2 slot economy)
+        verify(ghostService).releaseSessionQuietly(USER_ID, SESSION_ID);
+    }
+
+    @Test
+    public void failed_releaseBound_hooksReleaseFailure_releasesSession() {
+        when(ghostService.tailStatusForTask(USER_ID, SESSION_ID))
+            .thenReturn(status("FAILED", "FATAL binlog invalid", "FATAL binlog invalid"));
+
+        run(releaseBoundConfig(null, null));
+
+        verify(releaseSegmentService).onReleaseGhostTerminal(eq(RELEASE_STMT_ID), isNull(), eq(false),
+            contains("FATAL binlog invalid"));
+        verifyNoInteractions(completion);
+        assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
+        verify(ghostService).releaseSessionQuietly(USER_ID, SESSION_ID);
+    }
+
+    @Test
+    public void bothBindingsSet_invalid_skipsWritebackBothChains() {
+        // mutual exclusion (red line 2): a task carrying BOTH bindings is invalid — defensive skip + warn
+        when(ghostService.tailStatusForTask(USER_ID, SESSION_ID)).thenReturn(status("COMPLETED", null, null));
+        GhostAsyncTaskConfig cfg = releaseBoundConfig(null, 1);
+        cfg.setTicketId(TICKET_ID);
+        cfg.setGroupId(GROUP_ID);
+
+        run(cfg);
+
+        verifyNoInteractions(completion);
+        verifyNoInteractions(releaseSegmentService);
+        // the task transition still proceeds (a writeback skip never breaks the lifecycle)
+        assertEquals(ScheduleTask.TaskStatus.Finish, ReflectionTestUtils.getField(task, "status"));
+    }
+
+    @Test
+    public void sessionMissing_releaseBoundUnknown_judgedFailed_r3Mirror() {
+        when(ghostService.hasSession(USER_ID, SESSION_ID)).thenReturn(false);
+
+        run(releaseBoundConfig("RUNNING", null)); // non-FAILED last status → outcome unknown
+
+        // R3 mirror: a release-bound task with a lost session and unknown outcome is judged FAILED
+        verify(releaseSegmentService).onReleaseGhostTerminal(eq(RELEASE_STMT_ID), isNull(), eq(false),
+            contains("session lost"));
+        assertEquals(ScheduleTask.TaskStatus.Failed, ReflectionTestUtils.getField(task, "status"));
+    }
+
+    @Test
+    public void completed_standalone_neverTouchesReleaseChain() {
+        when(ghostService.tailStatusForTask(USER_ID, SESSION_ID)).thenReturn(status("COMPLETED", null, null));
+
+        run(standaloneConfig(null));
+
+        verifyNoInteractions(releaseSegmentService);
+        verifyNoInteractions(completion);
+    }
+
     // ==================== helpers ====================
 
     private void run(GhostAsyncTaskConfig config) {
@@ -283,6 +357,15 @@ public class GhostAsyncTaskTicketHookTest {
         GhostAsyncTaskConfig cfg = standaloneConfig(lastStatus);
         cfg.setTicketId(TICKET_ID);
         cfg.setGroupId(GROUP_ID);
+        return cfg;
+    }
+
+    /** ADR-013 M2 release-bound config: releaseStmtId/releaseId set, ticketId/groupId NULL (mutually exclusive). */
+    private static GhostAsyncTaskConfig releaseBoundConfig(String lastStatus, Integer segmentIndex) {
+        GhostAsyncTaskConfig cfg = standaloneConfig(lastStatus);
+        cfg.setReleaseStmtId(RELEASE_STMT_ID);
+        cfg.setReleaseId(RELEASE_ID);
+        cfg.setSegmentIndex(segmentIndex);
         return cfg;
     }
 

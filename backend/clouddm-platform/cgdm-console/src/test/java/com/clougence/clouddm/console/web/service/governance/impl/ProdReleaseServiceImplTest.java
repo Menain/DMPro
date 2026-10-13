@@ -150,6 +150,10 @@ public class ProdReleaseServiceImplTest {
         releaseStateMachine = mock(ProdReleaseStateMachine.class);
         dmAuthServiceForBiz = mock(DmAuthServiceForBiz.class);
         autoExecService = mock(AutoExecService.class);
+        // ADR-013 M2: createReleaseStmtJob now returns boolean (callerMustStart) — legacy null-plan
+        // stmts return true so the caller's startJob fires (byte-identical to the pre-M2 shape).
+        when(autoExecService.createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString()))
+            .thenReturn(true);
         approvalControlService = mock(ApprovalControlService.class);
         approvalStateService = mock(ApprovalStateService.class);
         releaseSchemaPrecheckService = mock(ReleaseSchemaPrecheckService.class);
@@ -189,6 +193,9 @@ public class ProdReleaseServiceImplTest {
         ReflectionTestUtils.setField(service, "releaseSchemaDiffService", releaseSchemaDiffService);
         ReflectionTestUtils.setField(service, "schemaGateOverrideService", schemaGateOverrideService);
         ReflectionTestUtils.setField(service, "execDal", execDal);
+        // ADR-013 M2: retryReleaseStmt delegates the segment reset to the release orchestrator
+        ReflectionTestUtils.setField(service, "releaseSegmentService",
+            mock(com.clougence.clouddm.console.web.component.governance.ReleaseSegmentService.class));
     }
 
     // ==================== createRelease four-condition rejection branches ====================
