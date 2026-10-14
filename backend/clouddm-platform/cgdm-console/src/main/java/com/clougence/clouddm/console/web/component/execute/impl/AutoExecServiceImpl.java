@@ -1100,21 +1100,24 @@ public class AutoExecServiceImpl implements AutoExecService {
      * aggregateReleaseCompletion). Recomputes the canonical manifest hash (ReleasePlanHashUtils)
      * and compares against the stmt-level plan_hash pin — order hash → PLAN → B precheck → A diff.
      * NEVER overridable (integrity class — no override service is consulted; the text-hash-drift
-     * twin). A null-plan stmt (plan_hash NULL) skips the comparison (legacy/stock, byte-identical).
-     * Operator falls back to SYSTEM (callback scope has no user).
+     * twin). Operator falls back to SYSTEM (callback scope has no user).
+     * <p>
+     * C8 M5.2 (O-C7-5 residual face — the console twin's REVISED null-plan semantics verbatim):
+     * a null-plan stmt reads the manifest ONCE — EMPTY = genuine legacy pass (byte-identical),
+     * NON-EMPTY = the pin was lost/dirty-written → drift.
      *
      * @return true → chain proceeds; false → stmt FAILED + RELEASE_PLAN_DRIFT recorded.
      */
     private boolean passChainPlanGate(com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseDO release,
                                       DmProdReleaseStmtDO stmt) {
-        if (stmt.getPlanHash() == null) {
-            return true; // null-plan legacy — no pin, no gate
-        }
         java.util.List<com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO> manifest
             = this.prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        if (stmt.getPlanHash() == null && (manifest == null || manifest.isEmpty())) {
+            return true; // null-plan legacy — no pin, no plan
+        }
         String recomputedPlan = com.clougence.clouddm.console.web.component.governance.ReleasePlanHashUtils
             .hash(manifest); // null when the manifest is empty
-        if (stmt.getPlanHash().equals(recomputedPlan)) {
+        if (java.util.Objects.equals(stmt.getPlanHash(), recomputedPlan)) {
             return true;
         }
         this.prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), "FAILED",

@@ -378,15 +378,15 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
 
             if (CollectionUtils.isEmpty(request.getColumnList())) {
                 QueryAnalysisServiceImpl.this.configMaskingWithoutProvenance(request, this.registry, this.parameters.version(), this.options.getCurrentUid(), this.options
-                    .getDsId(), this.currentResourcePath, this.instanceResourcePath, this.maskingRules.getOwnerUid());
+                    .getDsId(), this.currentResourcePath, this.instanceResourcePath, this.maskingRules.getOwnerUid(), this.maskingRules);
             } else {
-                QueryAnalysisServiceImpl.this.configMaskingWithProvenance(request, this.options.getCurrentUid(), this.options.getDsId(), this.maskingRules.getOwnerUid());
+                QueryAnalysisServiceImpl.this.configMaskingWithProvenance(request, this.options.getCurrentUid(), this.options.getDsId(), this.maskingRules.getOwnerUid(), this.maskingRules);
             }
         }
     }
 
     private void configMaskingWithoutProvenance(QueryRequest request, SysObjectRegistrySpi sysObjRegistry, String dbVersion, String userUid, long dsId,//
-                                                String currentResourcePath, String instanceResourcePath, String ownerUid) {
+                                                String currentResourcePath, String instanceResourcePath, String ownerUid, SecCheckerRules maskingRules) {
         List<DsResPathObj> objList = BehaviorRelations.flattenResource(sysObjRegistry, dbVersion, request.getRelations()).stream().filter(b -> {
             return b.authKind() == SecDataAuthKind.READ;
         }).map(b -> {
@@ -402,11 +402,11 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
             // C6/M5: an explicit DM_DAUTH_SENSITIVE grant suppressed masking for this query —
             // trailed in op_audit (HIGH), obj carries paths only, never data values.
             auditSensitiveOriginalView(ownerUid, userUid, dsId, SensitiveOriginalViewObj.EXEMPT_DAUTH_ALL_PATHS, objList
-                .stream().map(DsResPathObj::getResPath).toList(), request.getQueryId());
+                .stream().map(DsResPathObj::getResPath).toList(), request.getQueryId(), maskingRules);
         }
     }
 
-    private void configMaskingWithProvenance(QueryRequest request, String userUid, long dsId, String ownerUid) {
+    private void configMaskingWithProvenance(QueryRequest request, String userUid, long dsId, String ownerUid, SecCheckerRules maskingRules) {
         boolean hasEmptyColumnName = request.getColumnList().keySet().stream().anyMatch(StringUtils::isEmpty);
         if (hasEmptyColumnName) {
             throw new ErrorMessageException(DmI18nUtils.getMessage(I18nDmMsgKeys.CONSOLE_QUERY_NOT_SUPPORT_SPECIAL_FIELD_NOT_ALIAS.name()));
@@ -436,7 +436,7 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
             // C6/M5: every provenance source column is DM_DAUTH_SENSITIVE-authorized — the whole
             // query is exempt; trailed in op_audit (HIGH), paths only, never data values.
             auditSensitiveOriginalView(ownerUid, userUid, dsId, SensitiveOriginalViewObj.EXEMPT_DAUTH_ALL_COLUMNS, pathList, request
-                .getQueryId());
+                .getQueryId(), maskingRules);
         }
     }
 
@@ -493,16 +493,21 @@ public class QueryAnalysisServiceImpl implements QueryAnalysisService {
      * audit succeeding). Shared core: {@link MaskingAuditUtils}.
      */
     private void auditMaskingRejected(String uid, SecCheckerRules rules, String queryId) {
+        // C8 M2: the analysis chain is the system face (semantic /system/masking/... URI) →
+        // explicit SYSTEM_AUTO (design D3 matrix "按落点")
         MaskingAuditUtils.auditRejected(this.rdpOpAuditService, rules.getOwnerUid(), uid, rules.getDsId(), rules
-            .getEnvId(), queryId);
+            .getEnvId(), queryId, rules, com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO);
     }
 
     /**
      * C6/M5: an explicit DM_DAUTH_SENSITIVE exemption served ORIGINAL values (SENSITIVE_ORIGINAL_
      * VIEW, HIGH) — shared core: {@link MaskingAuditUtils} (path cap + never-throw inside).
      */
-    private void auditSensitiveOriginalView(String ownerUid, String uid, long dsId, String exemption, List<String> resPaths, String queryId) {
-        MaskingAuditUtils.auditOriginalView(this.rdpOpAuditService, ownerUid, uid, dsId, exemption, resPaths, queryId);
+    private void auditSensitiveOriginalView(String ownerUid, String uid, long dsId, String exemption, List<String> resPaths, String queryId,
+                                            SecCheckerRules maskingRules) {
+        // C8 M2: analysis-chain landing = SYSTEM_AUTO + the masking-spec snapshot (design D3 matrix)
+        MaskingAuditUtils.auditOriginalView(this.rdpOpAuditService, ownerUid, uid, dsId, exemption, resPaths, queryId,
+            maskingRules, com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO);
     }
 
     /** the per-day dedup predicate of the M4 observation (calendar-day granularity, system zone). */

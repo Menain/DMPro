@@ -70,6 +70,20 @@
             seg_idx
     </select>
 
+    <!-- C8 M5.4 (O-C7-6b): the getDetail N+1 replacement — ONE by-release read (idx_release),
+         grouped in memory by release_stmt_id; the (release_stmt_id, seg_idx) ordering keeps each
+         stmt's manifest in the exact queryByReleaseStmtId order. -->
+    <select id="queryByReleaseId" resultMap="dmProdReleaseStmtSegmentDO">
+        SELECT
+            <include refid="dmProdReleaseStmtSegment"/>
+        FROM
+            dm_prod_release_stmt_segment
+        WHERE
+            release_id = #{releaseId}
+        ORDER BY
+            release_stmt_id, seg_idx
+    </select>
+
     <insert id="batchInsert" parameterType="java.util.List">
         INSERT INTO dm_prod_release_stmt_segment
             (release_id, release_stmt_id, seg_idx, type,

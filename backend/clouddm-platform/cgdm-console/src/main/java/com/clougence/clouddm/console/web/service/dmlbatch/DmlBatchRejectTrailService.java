@@ -106,8 +106,17 @@ public class DmlBatchRejectTrailService {
             obj.setSqlSummary(reject.getSqlSummary());
             obj.setStmtIndex(reject.getStmtIndex());
             obj.setAlertPushed(alertPushed);
+            // C8 M2 chain columns (design D3 matrix, channel per the 2026-10-14 main-session
+            // ruling): fingerprint rides the typed rejection out of the rolled-back transaction
+            // (full-text hash captured at the throw site — never the ≤500 sqlSummary); NO
+            // ticket_id (the ticket never landed — by design); channel stays NULL → the sink's
+            // URI inference yields the true arrival channel (console submit → CONSOLE, open-API
+            // submit → OPENAPI — the two callers pass the real request URI / the /open/ marker).
+            // The "system-generated rejection" semantics rides audit_type=DML_BATCH_REJECT
+            // itself, never the channel column.
             rdpOpAuditService.logAndAddOperationAudit(puid, uid, uri, remoteAddr, reject.getDsId(), obj,
-                SecurityLevel.HIGH, AuditType.DML_BATCH_REJECT, ResourceType.DATASOURCE);
+                SecurityLevel.HIGH, AuditType.DML_BATCH_REJECT, ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(null, reject.getSqlFingerprint(), null));
         } catch (Exception e) {
             // the audit facility swallows internally already (logOperation try-catch); this guard
             // is the spec's belt-and-braces ①②隔离 — the rejection rethrow must never be preempted

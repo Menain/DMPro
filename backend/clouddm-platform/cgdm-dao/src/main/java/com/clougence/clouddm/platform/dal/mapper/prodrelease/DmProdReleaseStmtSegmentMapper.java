@@ -38,6 +38,14 @@ public interface DmProdReleaseStmtSegmentMapper extends BaseMapper<DmProdRelease
     List<DmProdReleaseStmtSegmentDO> queryByReleaseStmtId(@Param("releaseStmtId") long releaseStmtId);
 
     /**
+     * C8 M5.4 (O-C7-6b): ALL manifest rows of one release in a single read (idx_release),
+     * ordered by (release_stmt_id, seg_idx) — the getDetail per-stmt N+1 replacement; the
+     * caller groups by releaseStmtId in memory, each group keeping the queryByReleaseStmtId
+     * seg_idx order.
+     */
+    List<DmProdReleaseStmtSegmentDO> queryByReleaseId(@Param("releaseId") long releaseId);
+
+    /**
      * Batch-insert the frozen manifest rows (createRelease / resubmit merge transaction,
      * propagateSegments — lifecycle twin of the schema table's batchInsert).
      */

@@ -27,4 +27,11 @@ public class QueryOpAuditFO {
     private PageData      pageData;
 
     private String        uid;
+
+    // ---- C8 M2 additive audit-chain filters (design D4; all optional — null = no predicate) ----
+    /** AuditChannel enum name: CONSOLE / OPENAPI / SYSTEM_AUTO. */
+    private String        channel;
+    private Long          ticketId;
+    private Long          releaseId;
+    private String        sqlFingerprint;
 }

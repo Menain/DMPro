@@ -49,6 +49,17 @@ public class SensitiveOriginalViewObj {
     /** rejection rows only: why the query was blocked (e.g. DANGLING_BINDING). */
     private String       reason;
 
+    /**
+     * C8 M2 additive (design D3, 裁决 2 — the masking policy snapshot stays JSON, readable via
+     * the detail endpoint): which masking spec the env binding resolved to AT QUERY TIME —
+     * answers "该查询当时套用了哪个脱敏策略" without reverse-engineering the (mutable) env binding.
+     * Never-throw caliber: unresolvable values stay null, the row is written regardless.
+     */
+    private Long         maskingSpecId;
+    private String       maskingSpecName;
+    /** the C6/M3 tri-state at query time (VALID / NOT_BOUND / DANGLING — the rejection rows carry DANGLING). */
+    private String       maskingBindingState;
+
     /** DM_DAUTH_SENSITIVE label covers every READ resource path of the query (no provenance). */
     public static final String EXEMPT_DAUTH_ALL_PATHS   = "DAUTH_SENSITIVE_ALL_PATHS";
     /** DM_DAUTH_SENSITIVE label covers every provenance source column of the query. */

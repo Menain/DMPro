@@ -28,4 +28,11 @@ public interface DmMonBizLogMapper extends BaseMapper<DmMonBizLogDO> {
     List<DmMonBizLogDO> queryListByBizId(@Param("bizId") String bizId);
 
     List<DmMonBizLogDO> queryListByBizIdAndType(String bizId, LogDependBizType bizType);
+
+    /**
+     * C8 M1 (design D2): retention cleanup — delete one LIMIT-500 batch of rows older than
+     * {@code date} (gmt_create; the table has no owner column — platform-global rows). The
+     * caller loops until 0.
+     */
+    int deleteBeforeDate(@Param("date") java.util.Date date);
 }

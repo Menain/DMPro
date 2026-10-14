@@ -26,6 +26,8 @@
         <result column="ds_desc" property="dsDesc"/>
         <result column="message" property="message"/>
         <result column="data_source_type" property="dataSourceType"/>
+        <!-- C8 M2 (V202610130003): governance-chain join key -->
+        <result column="sql_fingerprint" property="sqlFingerprint"/>
     </resultMap>
 
     <sql id="dmSqlAuditDOMap">
@@ -50,7 +52,8 @@
         exec_sql,
         original_sql,
         message,
-        data_source_type
+        data_source_type,
+        sql_fingerprint
     </sql>
 
     <sql id="sqlAuditCondition">

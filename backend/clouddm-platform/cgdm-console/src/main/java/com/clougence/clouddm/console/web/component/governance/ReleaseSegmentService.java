@@ -349,11 +349,17 @@ public class ReleaseSegmentService {
             auditObj.setVia(GHOST_AUDIT_VIA);
         }
         try {
+            // C8 M2 chain columns (design D3 matrix, release-chain row): release binding +
+            // fingerprint over the segment's FULL frozen sql_text (never the obj's ≤2000
+            // ddlSql truncation) + explicit SYSTEM_AUTO.
             this.rdpOpAuditService.logAndAddOperationAudit(puid, ownerUid,
                 GHOST_AUDIT_URI, null, stmt.getProdDsId(), auditObj,
                 com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
                 com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE,
-                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofRelease(release.getId(),
+                    GovSqlHashUtils.hash(seg.getSqlText()),
+                    com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
         } catch (RuntimeException e) {
             log.error("[ReleaseSegment] GHOST_EXECUTE audit failed for release stmt {} segment {} (dispatch kept)",
                 stmt.getId(), seg.getSegIdx(), e);

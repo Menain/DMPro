@@ -603,6 +603,67 @@ public class DmlBatchAsyncTaskTest {
     }
 
     // ==================================================================================
+    // C8 M5.1: the UNRESOLVED raw-text concatenations ride DbErrorSanitizer (the detail text
+    // reaches the user-visible segment exec_detail via the hook/sweep writeback). Functional
+    // zero-breakage basis: isCommLinkError classifies the RAW text BEFORE the message is built,
+    // the UNRESOLVED verdict keys off the intent marker (never the text), lastBatchError is
+    // display-only. biz_log batchForensics keeps RAW values by design (red line 5 — untouched).
+    // ==================================================================================
+
+    @Test
+    public void tick_transportLoss_unresolvedDetail_sanitized() {
+        rangeThrows = new RuntimeException("write EIO after Duplicate entry '13800001234' for key 'uk_phone'");
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> summary = ArgumentCaptor.forClass(Map.class);
+        verify(completion).onBatchTerminal(anyLong(), anyLong(), any(), any(), eq(false), detail.capture(),
+            summary.capture());
+        assertFalse("the raw key value must not reach the trail", detail.getValue().contains("13800001234"));
+        assertTrue(detail.getValue().contains("Duplicate entry '***' for key"));
+        assertEquals(Boolean.TRUE, summary.getValue().get("unresolvedIntent")); // verdict unchanged
+    }
+
+    @Test
+    public void tick_commLinkDbError_unresolvedDetail_sanitizedAfterClassification() {
+        // the comm-link classifier reads the RAW text ("Communications link failure"); the trail
+        // copy is sanitized — the classification must survive (UNKNOWN, not the retry class)
+        rangeResult = errorResult("Communications link failure — last packet received 0ms ago; "
+            + "nested: Duplicate entry '13900004321' for key 'uk_phone'");
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> summary = ArgumentCaptor.forClass(Map.class);
+        verify(completion).onBatchTerminal(anyLong(), anyLong(), any(), any(), eq(false), detail.capture(),
+            summary.capture());
+        assertTrue("still classified UNKNOWN via the comm-link arm", detail.getValue().contains("communication failure"));
+        assertFalse(detail.getValue().contains("13900004321"));
+        assertTrue(detail.getValue().contains("Duplicate entry '***' for key"));
+        assertEquals(Boolean.TRUE, summary.getValue().get("unresolvedIntent"));
+        // the intent stays on the carrier (the UNRESOLVED manual-verdict basis — unchanged)
+        assertNotNull(persistedCheckpoint(persistedConfigs.size() - 1).getIntent());
+    }
+
+    @Test
+    public void tick_donePersistFailure_unresolvedDetail_sanitized() {
+        when(asyncTaskMapper.updateById(any(DmExecAsyncTaskDO.class)))
+            .thenReturn(1) // the intent write succeeds
+            .thenThrow(new RuntimeException("Duplicate entry '13700009999' for key 'uk_biz'")); // the done write fails
+
+        invokeTick(bootstrapConfig(new DmlBatchCheckpoint(), 5_000_000L));
+
+        ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+        verify(completion).onBatchTerminal(anyLong(), anyLong(), any(), any(), eq(false), detail.capture(), any());
+        assertTrue(detail.getValue().contains("checkpoint persist failed"));
+        assertFalse(detail.getValue().contains("13700009999"));
+        assertTrue(detail.getValue().contains("Duplicate entry '***' for key"));
+    }
+
+    // ==================================================================================
     // loud non-retryable failures (obligation #4: rewrite null → NEVER direct execution)
     // ==================================================================================
 

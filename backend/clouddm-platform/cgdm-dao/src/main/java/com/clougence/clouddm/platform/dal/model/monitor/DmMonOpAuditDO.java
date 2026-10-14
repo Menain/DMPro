@@ -54,4 +54,14 @@ public class DmMonOpAuditDO {
     private String        uuidKey;
     private String        logInfo;
     private String        logPath;
+
+    // ---- C8 M2 audit-chain columns (V202610130003; NULL on pre-C8 stock rows) ----
+    /** GovSqlHashUtils hash of the FULL frozen statement text (governance stmt_hash join caliber). */
+    private String        sqlFingerprint;
+    /** the dm_approval ticket the audited action belongs to (mutually exclusive with releaseId). */
+    private Long          ticketId;
+    /** the dm_prod_release the audited action belongs to (mutually exclusive with ticketId). */
+    private Long          releaseId;
+    /** the arrival channel (CONSOLE / OPENAPI / SYSTEM_AUTO) — URI-inferred or explicit. */
+    private AuditChannel  channel;
 }

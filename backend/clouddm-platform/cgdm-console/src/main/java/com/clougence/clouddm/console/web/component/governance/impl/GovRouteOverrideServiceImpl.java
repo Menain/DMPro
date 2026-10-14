@@ -106,13 +106,16 @@ public class GovRouteOverrideServiceImpl implements GovRouteOverrideService {
         if (fo.getExpireAt() - now.getTime() > MAX_VALIDITY_MS) {
             throw new ErrorMessageException("Override expireAt exceeds the maximum validity window of 7 days");
         }
-        // Active uniqueness (design D8 "每 (release_id,stmt_id) 至多一条 PENDING"): service-enforced —
-        // the C4 migration shape has no DB partial-unique constraint (MySQL cannot express one),
-        // so a second grant while a consumable row exists is rejected here.
+        // Active uniqueness (design D8 "每 (release_id,stmt_id) 至多一条 PENDING"): the friendly
+        // service-level check is KEPT (C8 M5.3 adds the DB backstop below, not a replacement).
         if (prodReleaseDal.routeOverrideMapper().findConsumable(release.getId(), stmt.getId(), now) != null) {
             throw new ErrorMessageException(
                 "An active route override already exists for release statement " + stmt.getId());
         }
+        // C8 M5.3 (V202610130004): converge the time-expired PENDING row(s) of this (release,
+        // stmt) to the stored EXPIRED status — they are not consumable (the check above) but
+        // their generated active_key would otherwise block the uk_route_override_active insert.
+        prodReleaseDal.routeOverrideMapper().expireStalePending(release.getId(), stmt.getId(), now);
 
         DmGovRouteOverrideDO row = new DmGovRouteOverrideDO();
         row.setReleaseId(release.getId());
@@ -121,7 +124,14 @@ public class GovRouteOverrideServiceImpl implements GovRouteOverrideService {
         row.setCreatedBy(uid);
         row.setStatus(STATUS_PENDING);
         row.setExpireAt(expireAt);
-        prodReleaseDal.routeOverrideMapper().insert(row);
+        try {
+            prodReleaseDal.routeOverrideMapper().insert(row);
+        } catch (org.springframework.dao.DuplicateKeyException dup) {
+            // the race the service check cannot see: a concurrent grant landed first — the DB
+            // constraint (uk_route_override_active) is the backstop, the copy stays friendly
+            throw new ErrorMessageException(
+                "An active route override already exists for release statement " + stmt.getId());
+        }
         log.info("[RouteOverride] granted id={} release={} stmt={} creator={} expireAt={}",
             row.getId(), release.getId(), stmt.getId(), uid, expireAt);
         return row.getId();
@@ -229,10 +239,14 @@ public class GovRouteOverrideServiceImpl implements GovRouteOverrideService {
         if (StringUtils.isNotBlank(blockReason)) {
             obj.setBlockReason(truncate(blockReason, BLOCK_REASON_MAX));
         }
+        // C8 M2 chain columns (design D3 matrix): release binding + explicit SYSTEM_AUTO
+        // (the consumption is a dispatch-plane action; the subject stays the GRANTOR)
         rdpOpAuditService.logAndAddOperationAudit(release.getPrimaryUid(), row.getCreatedBy(),
             CONSUME_AUDIT_URI, null, release.getId(), obj,
             SecurityLevel.HIGH, AuditType.GOV_ROUTE_OVERRIDE_CONSUME,
-            ResourceType.PURE_URL, "release:" + release.getId());
+            ResourceType.PURE_URL, "release:" + release.getId(),
+            com.clougence.rdp.service.model.AuditChainMO.ofRelease(release.getId(), null,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
     }
 
     private RouteOverrideVO toVO(DmGovRouteOverrideDO row, Date now) {

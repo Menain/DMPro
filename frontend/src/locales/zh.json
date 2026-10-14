@@ -4968,5 +4968,12 @@
   "ding-qiao-liu-cheng-hao": "钉钉流程号",
   "ding-qiao-shi-bai-yuan-yin": "失败原因",
   "ding-qiao-chong-xin-fa-qi": "重新发起",
-  "ding-qiao-chong-xin-fa-qi-cheng-gong": "钉钉审批流程重新发起成功"
+  "ding-qiao-chong-xin-fa-qi-cheng-gong": "钉钉审批流程重新发起成功",
+  "tong-dao": "通道",
+  "tong-dao-console": "控制台",
+  "tong-dao-openapi": "开放 API",
+  "tong-dao-system-auto": "系统自动",
+  "gong-dan-fa-bu": "工单/发布",
+  "fa-bu": "发布",
+  "sql-zhi-wen": "SQL指纹"
 }

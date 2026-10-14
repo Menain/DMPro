@@ -58,8 +58,14 @@ public interface SchemaGateOverrideService {
     /** All override rows of a release (tenant-checked), with derived display status. */
     List<SchemaGateOverrideVO> list(String puid, long releaseId);
 
-    /** Revoke an unconsumed grant (tenant-checked, CAS-guarded). */
-    void revoke(String puid, String uid, long overrideId);
+    /**
+     * Revoke an unconsumed grant (tenant-checked, CAS-guarded).
+     *
+     * @return the revoked row's releaseId — C8 M2: the audit chain column source (the revoke FO
+     *         only carries the override id; the row is ALREADY loaded by the tenant check, so
+     *         returning the key keeps the red-line-4 "caller-supplied, zero extra SELECT" discipline).
+     */
+    long revoke(String puid, String uid, long overrideId);
 
     /**
      * Gate-side consumption: find the newest consumable (unexpired, unconsumed, unrevoked)

@@ -754,27 +754,68 @@ public class ProdReleaseServiceImplTest {
             e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
     }
 
-    /** null-plan legacy (plan_hash NULL): the gate skips entirely — no manifest read, byte-identical. */
+    /**
+     * Null-plan legacy (plan_hash NULL) + EMPTY manifest → the genuine legacy/stock shape passes
+     * and dispatch proceeds byte-identical through the C4 gates.
+     * <p>
+     * C8 M5.2 EXPLICIT PIN REVISION (O-C7-5 residual face): the former pin here was "the gate
+     * skips entirely — NO manifest read". The revised contract reads the manifest ONCE even for
+     * a null pin: empty = legacy pass (this test), non-empty = the pin was lost/dirty-written →
+     * drift (the next test). The plan_hash and the manifest propagate in ONE transaction
+     * (ADR-013 M1), so the drift arm is unreachable through any writer — accidental damage is
+     * the threat model.
+     */
     @Test
-    public void startExecution_nullPlan_skipsPlanGate_noManifestRead() {
+    public void startExecution_nullPlanEmptyManifest_legacyPass_singleManifestRead() {
         long releaseId = 563L;
         DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
         when(releaseMapper.queryById(releaseId)).thenReturn(release);
         when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
 
         DmProdReleaseStmtDO stmt = buildReleaseStmt(663L, releaseId, "PENDING"); // planHash null
+        when(segmentMapper.queryByReleaseStmtId(663L)).thenReturn(List.of()); // no plan rows
         when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
         when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
 
         service.startExecution(releaseId, UID);
 
-        // the plan gate never reads the manifest for a null-plan stmt (legacy short-circuit);
-        // dispatch proceeds byte-identical through the C4 gates
-        verify(segmentMapper, never()).queryByReleaseStmtId(anyLong());
+        // the revised contract: ONE manifest read, the legacy pass stands, dispatch byte-identical
+        verify(segmentMapper).queryByReleaseStmtId(663L);
         verify(releaseSchemaPrecheckService).precheck(stmt);
         verify(autoExecService).createReleaseStmtJob(eq(stmt), anyString(), anyBoolean(), any(), anyString(), eq(UID));
         verify(eventMapper, never()).insert(argThat((DmDbChangeEventDO e) ->
             e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+    }
+
+    /** C8 M5.2 (O-C7-5): null pin + a NON-EMPTY manifest = the pin was lost → drift disposal. */
+    @Test
+    public void startExecution_nullPlanWithManifest_marksStmtFailed_planDrift() {
+        long releaseId = 564L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.APPROVED);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseStateMachine.transit(eq(releaseId), anySet(), eq(ProdReleaseStatus.EXECUTING))).thenReturn(true);
+
+        DmProdReleaseStmtDO stmt = buildReleaseStmt(664L, releaseId, "PENDING"); // planHash null
+        // a manifest exists under the null pin — unreachable via any writer (same-tx propagate),
+        // accidental damage is the threat model → treated as drift
+        when(segmentMapper.queryByReleaseStmtId(664L)).thenReturn(List.of(segmentRow(1, "GHOST", "t_big")));
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt));
+        when(stmtMapper.firstPendingStmt(releaseId, 10L, "prod_db")).thenReturn(stmt);
+        DmProdReleaseStmtDO failedStmt = buildReleaseStmt(664L, releaseId, "FAILED");
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(stmt), List.of(failedStmt));
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-564");
+        when(approvalMapper.queryById(anyLong())).thenReturn(approval);
+
+        service.startExecution(releaseId, UID);
+
+        verify(stmtMapper).updateExecStatus(eq(664L), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())
+                && e.getEventData() != null && e.getEventData().contains("\"stmtId\":664")));
+        verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
+        // integrity class: NEVER overridable (no override surface consulted)
+        verify(schemaGateOverrideService, never()).findAndConsume(anyLong(), anyLong(), anyString(), any());
     }
 
     /** retryReleaseStmt carries the same gate (three-point consistency): drift denies the retry. */
@@ -806,6 +847,67 @@ public class ProdReleaseServiceImplTest {
         verify(releaseSegmentService, never()).prepareRetry(any());
         verify(autoExecService, never()).createReleaseStmtJob(any(), anyString(), anyBoolean(), any(), anyString(), anyString());
         verify(releaseSchemaPrecheckService, never()).precheck(any());
+    }
+
+    // ==================== C8 M5.4 (O-C7-6b): getDetail merged manifest read ====================
+
+    /**
+     * The per-stmt queryByReleaseStmtId N+1 is replaced by ONE by-release read + in-memory
+     * groupBy — each stmt entry must still carry exactly its own manifest rows, in seg_idx
+     * order (the merged query's (release_stmt_id, seg_idx) ordering).
+     */
+    @Test
+    public void getDetail_singleManifestRead_groupedByStmt() {
+        long releaseId = 570L;
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setGmtCreate(new java.util.Date());
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+
+        DmProdReleaseStmtDO s1 = buildReleaseStmt(701L, releaseId, "SUCCESS");
+        s1.setGmtCreate(new java.util.Date());
+        s1.setSourceTicketId(0L); // the VO's source id fields are primitive — getDetail unboxes them
+        s1.setSourceStmtId(0L);
+        DmProdReleaseStmtDO s2 = buildReleaseStmt(702L, releaseId, "PENDING");
+        s2.setGmtCreate(new java.util.Date());
+        s2.setSourceTicketId(0L);
+        s2.setSourceStmtId(0L);
+        when(stmtMapper.queryByReleaseId(releaseId)).thenReturn(List.of(s1, s2));
+
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO seg1
+            = segmentRow(1, "GHOST", "t_a");
+        seg1.setReleaseStmtId(701L);
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO seg2
+            = segmentRow(1, "AUTOEXEC", "t_b");
+        seg2.setReleaseStmtId(702L);
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO seg3
+            = segmentRow(2, "DML_BATCH", "t_b");
+        seg3.setReleaseStmtId(702L);
+        when(segmentMapper.queryByReleaseId(releaseId)).thenReturn(List.of(seg1, seg2, seg3));
+
+        com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO vo
+            = service.getDetail(PUID, releaseId);
+
+        // the single-query pin: ONE by-release manifest read, the per-stmt N+1 is gone
+        verify(segmentMapper).queryByReleaseId(releaseId);
+        verify(segmentMapper, never()).queryByReleaseStmtId(anyLong());
+
+        // grouping fidelity: same (prodDsId, prodDbName) → one group holding both stmts;
+        // each stmt entry carries exactly its own rows in seg_idx order
+        assertEquals(1, vo.getStmtGroups().size());
+        com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO.StmtGroup group
+            = vo.getStmtGroups().get(0);
+        assertEquals(2, group.getStmts().size());
+        com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO.StmtEntry e1
+            = group.getStmts().get(0);
+        com.clougence.clouddm.console.web.model.vo.prodrelease.ProdReleaseDetailVO.StmtEntry e2
+            = group.getStmts().get(1);
+        assertEquals(701L, e1.getId());
+        assertEquals(1, e1.getSegments().size());
+        assertEquals("t_a", e1.getSegments().get(0).getTableName());
+        assertEquals(702L, e2.getId());
+        assertEquals(2, e2.getSegments().size());
+        assertEquals(1, e2.getSegments().get(0).getSegIdx());
+        assertEquals(2, e2.getSegments().get(1).getSegIdx());
     }
 
     private static com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO segmentRow(

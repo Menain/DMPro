@@ -91,7 +91,13 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 ResourceType.ACCOUNT, //
                 ResourceType.ROLE, //
                 ResourceType.DS_ENV, //
-                ResourceType.PERM_GROUP));
+                ResourceType.PERM_GROUP, //
+                // C8 M3 (O-C4-3, red line 2): PURE_URL enters the filter whitelist — the C4/C7
+                // override HIGH rows (resource_name "release:<id>"/"override:<id>") were visible
+                // but unfilterable. Deliberately NO getResourceName case is added: every PURE_URL
+                // write point uses the explicit-resourceName overload (the 10-arg bypass); adding
+                // a case would violate the resId-must-be-the-ResourceType's-own-PK contract.
+                ResourceType.PURE_URL));
 
         auditTypes.addAll(Arrays.asList(AuditType.ADD_DATA_SOURCE, //
                 AuditType.DELETE_DATA_SOURCE, //
@@ -123,6 +129,12 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.RESET_ACCOUNT_AK_SK, //
                 AuditType.UPDATE_ACCOUNT_EMAIL, //
                 AuditType.UPDATE_ACCOUNT_PHONE, //
+                // C8 M3 (survey A2/C12): the ONLY live-write type missing from the whitelist —
+                // RdpUserController.updateUserName wrote rows the UI could not filter. The 22
+                // DATA_JOB + 4 LOGICAL_DB dead types deliberately stay OUT (主会话裁量 b — no
+                // rows to filter on an internal deployment; historical-deserialization tolerance
+                // enums are not a UI surface).
+                AuditType.UPDATE_ACCOUNT_USER_NAME, //
                 AuditType.UPDATE_ACCOUNT_PWD, //
                 AuditType.UPDATE_ACCOUNT_OP_PWD, //
                 AuditType.UPDATE_SYSTEM_CONFIG, //
@@ -206,7 +218,7 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
         List<RdpOpAuditVO> auditVOs = auditDOs.stream().map(auditDO -> {
             //            RdpOpAuditVO rdpOpAuditVO = fillAuditVO(new RdpOpAuditVO().convertFromDO(auditDO));
             RdpOpAuditVO rdpOpAuditVO = new RdpOpAuditVO().convertFromDO(auditDO);
-            rdpOpAuditVO.setIsExistsLog(StringUtils.isNotBlank(rdpOpAuditVO.getAuditType()) && isExistsLogSet.contains(rdpOpAuditVO.getAuditType()));
+            rdpOpAuditVO.setIsExistsLog(hasViewableDetail(auditDO, rdpOpAuditVO));
             return rdpOpAuditVO;
         }).collect(Collectors.toList());
 
@@ -220,18 +232,38 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
     @Override
     public void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType type,
                                         ResourceType resType, String oldName) {
-        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, oldName);
+        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, oldName, null);
     }
 
     @Override
     public void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType type,
                                         ResourceType resType) {
         String resourceName = getResourceName(resId, resType);
-        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, resourceName);
+        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, resourceName, null);
     }
 
+    @Override
+    public void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType type,
+                                        ResourceType resType, com.clougence.rdp.service.model.AuditChainMO chain) {
+        String resourceName = getResourceName(resId, resType);
+        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, resourceName, chain);
+    }
+
+    @Override
+    public void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType type,
+                                        ResourceType resType, String oldName, com.clougence.rdp.service.model.AuditChainMO chain) {
+        logOperation(puid, uid, requestUri, remoteAddr, resId, obj, securityLevel, type, resType, oldName, chain);
+    }
+
+    /**
+     * The single sink of every op_audit row (C8 M2: the 11-arg additive shape — the pre-C8
+     * 10-arg callers delegate with chain=null, red line 1). The chain columns are written from
+     * caller-supplied keys ONLY (red line 4 — zero new SELECTs here); channel resolution order:
+     * explicit {@code chain.channel} &gt; the single-point URI inference
+     * ({@link com.clougence.clouddm.platform.dal.model.monitor.AuditChannel#inferFromUri}) &gt; null.
+     */
     private void logOperation(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType type,
-                              ResourceType resType, String resourceName) {
+                              ResourceType resType, String resourceName, com.clougence.rdp.service.model.AuditChainMO chain) {
         try {
             DmAuthUserDO rdpUserDO = authDal.userMapper().queryByUid(uid);
             DmMonOpAuditDO opAuditDO = new DmMonOpAuditDO();
@@ -250,6 +282,17 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
             opAuditDO.setSecurityLevel(securityLevel);
             opAuditDO.setIp(RdpHostUtil.getHostIp());
             opAuditDO.setOperateDate(currentTime);
+            // C8 M2 audit-chain columns (all nullable — pre-C8 rows and non-governance types stay NULL)
+            if (chain != null) {
+                opAuditDO.setSqlFingerprint(chain.getSqlFingerprint());
+                opAuditDO.setTicketId(chain.getTicketId());
+                opAuditDO.setReleaseId(chain.getReleaseId());
+            }
+            com.clougence.clouddm.platform.dal.model.monitor.AuditChannel channel =
+                chain != null && chain.getChannel() != null
+                    ? chain.getChannel()
+                    : com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.inferFromUri(requestUri);
+            opAuditDO.setChannel(channel);
             // opAuditDO.setLogPath(this.opAuditLogPath);
             // record update detail info to log
             if (obj != null) {
@@ -309,6 +352,75 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
         };
     }
 
+    /** the audit-detail-label dictionary prefix (the original RdpLogViewServiceImpl convention). */
+    private static final String AUDIT_DETAIL_LABEL_PREFIX = "audit_detail_label_";
+
+    @Override
+    public AuditDetailVO queryAuditDetail(String puid, long id) {
+        DmMonOpAuditDO auditDO = monitorDal.opAuditMapper().selectById(id);
+        // tenant isolation: a cross-tenant or missing id reads as not-found (never 403-leaks
+        // existence — the requireTenantRelease discipline)
+        if (auditDO == null || !StringUtils.equals(puid, auditDO.getOwnerUid())) {
+            throw new com.clougence.clouddm.api.common.exception.ErrorMessageException("Audit record not found: " + id);
+        }
+        AuditDetailVO vo = new AuditDetailVO();
+        vo.setId(auditDO.getId());
+        vo.setPath(auditDO.getOperationUri());
+        vo.setDesc(DmI18nUtils.getMessage(com.clougence.clouddm.console.web.global.i18n.I18nRdpMsgKeys.RDP_CONSOLE_OPERATION_LOG_DESC.name()));
+        if (StringUtils.isNotBlank(auditDO.getLogInfo())) {
+            // sanitization兜底 FIRST (pre-C1 stock rows may carry plaintext credentials), then the
+            // old/new label translation over the sanitized structure
+            String sanitized = com.clougence.clouddm.console.web.util.AuditSanitizeUtils.sanitizeLogInfoJson(auditDO.getLogInfo());
+            vo.setContent(translateDetailLabels(sanitized));
+        }
+        return vo;
+    }
+
+    /** the original buildContent key-dictionary rendering (missing key → raw key fallback). */
+    private static String translateDetailLabels(String sanitizedJson) {
+        Object parsed;
+        try {
+            parsed = JsonUtils.toObj(sanitizedJson, Object.class);
+        } catch (Exception e) { // JsonUtils is @SneakyThrows — a checked JsonParseException must be caught too
+            return sanitizedJson;
+        }
+        if (parsed == null) {
+            return sanitizedJson;
+        }
+        try {
+            return JsonUtils.toJson(translateDetailNode(parsed));
+        } catch (Exception e) { // JsonUtils is @SneakyThrows — a checked JsonParseException must be caught too
+            return sanitizedJson;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object translateDetailNode(Object node) {
+        if (node instanceof Map) {
+            Map<String, Object> source = (Map<String, Object>) node;
+            Map<String, Object> translated = new LinkedHashMap<>(source.size());
+            source.forEach((key, value) -> translated.put(translateDetailKey(key), translateDetailNode(value)));
+            return translated;
+        }
+        if (node instanceof List) {
+            List<Object> source = (List<Object>) node;
+            List<Object> translated = new ArrayList<>(source.size());
+            for (Object element : source) {
+                translated.add(translateDetailNode(element));
+            }
+            return translated;
+        }
+        return node;
+    }
+
+    private static String translateDetailKey(String key) {
+        String message = DmI18nUtils.getMessage(AUDIT_DETAIL_LABEL_PREFIX + key);
+        if (message == null || message.startsWith(AUDIT_DETAIL_LABEL_PREFIX)) {
+            return key; // dictionary miss — the I18nUtils fallback returns the raw code
+        }
+        return message;
+    }
+
     @Override
     public OpAuditConditionVO queryListCondition() {
         OpAuditConditionVO opAuditVO = new OpAuditConditionVO();
@@ -349,13 +461,14 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
 
     @Override
     public List<RdpOpAuditVO> queryUserAllAudit(String puid, String uid, SecurityLevel securityLevel, String userNameLike, String auditType, String resourceType, Date start,
-                                                Date end, long startId, int pageSize) {
+                                                Date end, long startId, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint) {
         if (pageSize == 0) {
             pageSize = DEFAULT_PAGE_SIZE;
         } else if (pageSize > MAX_PAGE_SIZE) {
             pageSize = MAX_PAGE_SIZE;
         }
-        List<DmMonOpAuditDO> auditDOs = monitorDal.opAuditMapper().queryByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end, startId, pageSize);
+        List<DmMonOpAuditDO> auditDOs = monitorDal.opAuditMapper()
+            .queryByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end, startId, pageSize, channel, ticketId, releaseId, sqlFingerprint);
 
         if (auditDOs == null || auditDOs.isEmpty()) {
             return new ArrayList<>();
@@ -363,7 +476,7 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
 
         List<RdpOpAuditVO> auditVOs = auditDOs.stream().map(auditDO -> {
             RdpOpAuditVO rdpOpAuditVO = new RdpOpAuditVO().convertFromDO(auditDO);
-            rdpOpAuditVO.setIsExistsLog(StringUtils.isNotBlank(rdpOpAuditVO.getAuditType()) && isExistsLogSet.contains(rdpOpAuditVO.getAuditType()));
+            rdpOpAuditVO.setIsExistsLog(hasViewableDetail(auditDO, rdpOpAuditVO));
             return rdpOpAuditVO;
         }).collect(Collectors.toList());
 
@@ -374,7 +487,7 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
 
     @Override
     public DmPageVO<RdpOpAuditVO> pageUserAllAudit(String puid, String uid, SecurityLevel securityLevel, String userNameLike, String auditType, String resourceType, Date start,
-                                                   Date end, int pageNumber, int pageSize) {
+                                                   Date end, int pageNumber, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint) {
         if (pageSize == 0) {
             pageSize = DEFAULT_PAGE_SIZE;
         } else if (pageSize > MAX_PAGE_SIZE) {
@@ -385,19 +498,35 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
         }
 
         int offset = (pageNumber - 1) * pageSize;
-        List<DmMonOpAuditDO> auditDOs = monitorDal.opAuditMapper().pageByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end, offset, pageSize);
+        List<DmMonOpAuditDO> auditDOs = monitorDal.opAuditMapper()
+            .pageByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end, offset, pageSize, channel, ticketId, releaseId, sqlFingerprint);
         List<RdpOpAuditVO> auditVOs = new ArrayList<>();
         if (auditDOs != null && !auditDOs.isEmpty()) {
             auditVOs = auditDOs.stream().map(auditDO -> {
                 RdpOpAuditVO auditVO = new RdpOpAuditVO().convertFromDO(auditDO);
-                auditVO.setIsExistsLog(StringUtils.isNotBlank(auditVO.getAuditType()) && isExistsLogSet.contains(auditVO.getAuditType()));
+                auditVO.setIsExistsLog(hasViewableDetail(auditDO, auditVO));
                 return auditVO;
             }).collect(Collectors.toList());
             fillExtraVO(auditVOs);
         }
 
-        long total = monitorDal.opAuditMapper().countByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end);
+        long total = monitorDal.opAuditMapper()
+            .countByCondition(puid, uid, securityLevel, auditType, resourceType, userNameLike, start, end, channel, ticketId, releaseId, sqlFingerprint);
         return new DmPageVO<>(pageNumber, pageSize, total, auditVOs);
+    }
+
+    /**
+     * C8 M3 (裁决 3 — the detail endpoint makes log_info readable): the "查看" link is available
+     * for the legacy isExistsLogSet types AND for ANY row carrying a log_info body (the
+     * governance chain rows — override reasons, DML batch facts, ghost bindings — used to be
+     * invisible in both the UI and the export). The detail endpoint sanitizes before output, so
+     * pre-C1 stock rows are safe to open too.
+     */
+    private boolean hasViewableDetail(DmMonOpAuditDO auditDO, RdpOpAuditVO auditVO) {
+        if (StringUtils.isNotBlank(auditDO.getLogInfo())) {
+            return true;
+        }
+        return StringUtils.isNotBlank(auditVO.getAuditType()) && isExistsLogSet.contains(auditVO.getAuditType());
     }
 
     private String genUUIDKey(Date currentTime) {
@@ -512,7 +641,7 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 int currentBatchSize = (int) Math.min(batchSize, maxRows - preparedRows);
                 List<DmMonOpAuditDO> auditDOs = monitorDal.opAuditMapper()
                     .pageByCondition(fo.getPuid(), fo.getUid(), fo.getSecurityLevel(), fo.getAuditType(), fo.getResourceType(), fo.getUserNameLike(), fo.getOpStart(), fo
-                        .getOpEnd(), offset, currentBatchSize);
+                        .getOpEnd(), offset, currentBatchSize, fo.getChannel(), fo.getTicketId(), fo.getReleaseId(), fo.getSqlFingerprint());
 
                 if (auditDOs == null || auditDOs.isEmpty()) {
                     break;
@@ -555,6 +684,15 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
         columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_LOG_PATH_WORKER_IP"), JDBCType.VARCHAR);
         columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_SECURITY_LEVEL"), JDBCType.VARCHAR);
         columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_UUID_KEY"), JDBCType.VARCHAR);
+        // C8 M2 (design D4): the audit-chain columns APPENDED (existing column order untouched —
+        // unknown downstream scripts keep their positions, O-C8-3) + operation_uri. The log_info
+        // body deliberately stays OUT of the export (the sanitized detail endpoint carries it —
+        // an export file must not become a sensitive-data surface).
+        columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_CHANNEL"), JDBCType.VARCHAR);
+        columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_TICKET_ID"), JDBCType.BIGINT);
+        columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_RELEASE_ID"), JDBCType.BIGINT);
+        columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_SQL_FINGERPRINT"), JDBCType.VARCHAR);
+        columns.put(DmI18nUtils.getMessage("EXPORT_OPAUDIT_OPERATION_URI"), JDBCType.VARCHAR);
         return columns;
     }
 
@@ -570,6 +708,12 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
         row.add(auditVO.getLogPathWorkerIp());
         row.add(auditVO.getSecurityLevel() == null ? null : auditVO.getSecurityLevel().name());
         row.add(auditVO.getUuidKey());
+        // C8 M2: the appended audit-chain columns (same order as exportColumns)
+        row.add(auditVO.getChannel());
+        row.add(auditVO.getTicketId() == null ? null : String.valueOf(auditVO.getTicketId()));
+        row.add(auditVO.getReleaseId() == null ? null : String.valueOf(auditVO.getReleaseId()));
+        row.add(auditVO.getSqlFingerprint());
+        row.add(auditVO.getOperationUri());
         return row;
     }
 

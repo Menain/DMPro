@@ -170,9 +170,12 @@ public class GovReleaseController {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
         long overrideId = schemaGateOverrideService.grant(puid, uid, fo);
+        // C8 M2 chain columns (design D3 matrix): release binding + explicit CONSOLE (UI grant)
         rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
             fo.getReleaseId(), fo, SecurityLevel.HIGH, AuditType.GOV_SCHEMA_GATE_OVERRIDE_GRANT,
-            ResourceType.PURE_URL, "release:" + fo.getReleaseId());
+            ResourceType.PURE_URL, "release:" + fo.getReleaseId(),
+            com.clougence.rdp.service.model.AuditChainMO.ofRelease(fo.getReleaseId(), null,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE));
         return ResWebDataUtils.buildSuccess(overrideId);
     }
 
@@ -189,10 +192,14 @@ public class GovReleaseController {
     public ResWebData<?> overrideRevoke(@Valid @RequestBody SchemaGateOverrideRevokeFO fo, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
-        schemaGateOverrideService.revoke(puid, uid, fo.getId());
+        // C8 M2: revoke returns the row's releaseId (already loaded by the tenant check — zero
+        // extra SELECT, red line 4) for the audit release_id column
+        long releaseId = schemaGateOverrideService.revoke(puid, uid, fo.getId());
         rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
             fo.getId(), fo, SecurityLevel.HIGH, AuditType.GOV_SCHEMA_GATE_OVERRIDE_REVOKE,
-            ResourceType.PURE_URL, "override:" + fo.getId());
+            ResourceType.PURE_URL, "override:" + fo.getId(),
+            com.clougence.rdp.service.model.AuditChainMO.ofRelease(releaseId, null,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE));
         return ResWebDataUtils.buildSuccess();
     }
 
@@ -212,9 +219,12 @@ public class GovReleaseController {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         String uid = (String) request.getAttribute(RdpUserService.UID);
         long overrideId = govRouteOverrideService.create(puid, uid, fo);
+        // C8 M2 chain columns (design D3 matrix): release binding + explicit CONSOLE (UI grant)
         rdpOpAuditService.logAndAddOperationAudit(puid, uid, request.getRequestURI(), request.getRemoteAddr(),
             fo.getReleaseId(), fo, SecurityLevel.HIGH, AuditType.GOV_ROUTE_OVERRIDE_GRANT,
-            ResourceType.PURE_URL, "release:" + fo.getReleaseId());
+            ResourceType.PURE_URL, "release:" + fo.getReleaseId(),
+            com.clougence.rdp.service.model.AuditChainMO.ofRelease(fo.getReleaseId(), null,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE));
         return ResWebDataUtils.buildSuccess(overrideId);
     }
 

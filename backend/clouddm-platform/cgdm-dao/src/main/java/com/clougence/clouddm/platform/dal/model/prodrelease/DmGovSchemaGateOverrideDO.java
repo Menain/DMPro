@@ -79,4 +79,15 @@ public class DmGovSchemaGateOverrideDO {
     private Date   revokedAt;
 
     private String revokedBy;
+
+    /**
+     * C8 M5.3 (V202610130004): the MATERIALIZED expiry mark — 0 while the row is active or
+     * merely time-expired-but-unconverged, 1 once grant()'s expireStaleActive converged it.
+     * One of the three liveness inputs of the uk_gate_override_active generated column
+     * (consumed=0 ∧ revoked=0 ∧ expired=0). Time-derived EXPIRED display semantics are
+     * unchanged (deriveStatus reads the clock; this flag only frees the unique key).
+     * NOTE: the generated column active_key itself is deliberately NOT a DO field — DB-computed,
+     * never written by the application.
+     */
+    private int    expired;
 }

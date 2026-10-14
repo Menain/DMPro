@@ -51,4 +51,14 @@ public interface DmGovRouteOverrideMapper extends BaseMapper<DmGovRouteOverrideD
 
     /** All override rows of a release (UI list: PENDING/CONSUMED + derived EXPIRED). */
     List<DmGovRouteOverrideDO> queryByReleaseId(@Param("releaseId") long releaseId);
+
+    /**
+     * C8 M5.3 (V202610130004): materialize the derived EXPIRED status on the time-expired
+     * PENDING row(s) of one (release, stmt) — the uk_route_override_active convergence step
+     * run by create() before the insert (an expired-but-PENDING row would otherwise hold its
+     * generated active_key forever and block the legitimate re-grant).
+     */
+    int expireStalePending(@Param("releaseId") long releaseId,
+                           @Param("stmtId") long stmtId,
+                           @Param("now") Date now);
 }

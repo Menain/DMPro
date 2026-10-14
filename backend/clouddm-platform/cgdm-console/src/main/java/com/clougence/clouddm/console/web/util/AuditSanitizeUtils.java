@@ -16,6 +16,7 @@
 package com.clougence.clouddm.console.web.util;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -115,6 +116,68 @@ public class AuditSanitizeUtils {
         copy.setDriver(fo.getDriver());
         copy.setConfigMap(sanitizeConfigMap(fo.getConfigMap()));
         return copy;
+    }
+
+    /**
+     * C8 M3 (裁决 3 — the audit detail endpoint's sanitization兜底): mask credential values inside a
+     * persisted {@code dm_mon_op_audit.log_info} JSON string BEFORE it is ever returned to a client.
+     * The write path is sanitized since C1, but PRE-C1 stock rows may still carry plaintext — this
+     * is the read-side second insurance (design D4 双保险).
+     *
+     * <p>Recursive traversal of the parsed JSON (Maps and Lists at any depth): a value under a
+     * sensitive key ({@link #isSensitiveKey} — the C1 two-layer detection) is masked with
+     * {@link #maskValue}; blank values stay as-is; every other key/value is preserved verbatim
+     * (troubleshooting value kept). Unparsable input (e.g. a 65535-truncated tail) is returned
+     * UNCHANGED — the method never throws and never fabricates content.
+     */
+    public static String sanitizeLogInfoJson(String logInfoJson) {
+        if (StringUtils.isBlank(logInfoJson)) {
+            return logInfoJson;
+        }
+        Object parsed;
+        try {
+            parsed = com.clougence.utils.JsonUtils.toObj(logInfoJson, Object.class);
+        } catch (Exception e) { // JsonUtils is @SneakyThrows — a checked JsonParseException must be caught too
+            return logInfoJson; // not JSON (or truncated) — nothing to traverse; pass through
+        }
+        if (parsed == null) {
+            return logInfoJson;
+        }
+        try {
+            return com.clougence.utils.JsonUtils.toJson(sanitizeNode(parsed));
+        } catch (Exception e) { // JsonUtils is @SneakyThrows — a checked JsonParseException must be caught too
+            return logInfoJson;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object sanitizeNode(Object node) {
+        if (node instanceof Map) {
+            Map<String, Object> source = (Map<String, Object>) node;
+            Map<String, Object> sanitized = new LinkedHashMap<>(source.size());
+            source.forEach((key, value) -> sanitized.put(key, isSensitiveKey(key) ? maskAnyValue(value) : sanitizeNode(value)));
+            return sanitized;
+        }
+        if (node instanceof List) {
+            List<Object> source = (List<Object>) node;
+            List<Object> sanitized = new java.util.ArrayList<>(source.size());
+            for (Object element : source) {
+                sanitized.add(sanitizeNode(element));
+            }
+            return sanitized;
+        }
+        return node;
+    }
+
+    /** a sensitive key masks ANY value shape (fail-closed): strings via maskValue, everything else becomes the mask. */
+    private static Object maskAnyValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String) {
+            return maskValue((String) value);
+        }
+        return CREDENTIAL_MASK;
     }
 
     /**

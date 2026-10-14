@@ -1209,6 +1209,16 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
 
         // Stmts grouped by (prodDsId, prodDbName)
         List<DmProdReleaseStmtDO> stmts = prodReleaseDal.stmtMapper().queryByReleaseId(releaseId);
+        // C8 M5.4 (O-C7-6b): ONE by-release manifest read + in-memory groupBy replaces the
+        // per-stmt queryByReleaseStmtId N+1 (the (release_stmt_id, seg_idx) ordering keeps each
+        // group in the exact per-stmt order the loop consumed before)
+        Map<Long, List<DmProdReleaseStmtSegmentDO>> manifestByStmt = new HashMap<>();
+        List<DmProdReleaseStmtSegmentDO> allSegments = prodReleaseDal.segmentMapper().queryByReleaseId(releaseId);
+        if (allSegments != null) {
+            for (DmProdReleaseStmtSegmentDO segRow : allSegments) {
+                manifestByStmt.computeIfAbsent(segRow.getReleaseStmtId(), k -> new ArrayList<>()).add(segRow);
+            }
+        }
         Map<String, ProdReleaseDetailVO.StmtGroup> groupMap = new LinkedHashMap<>();
         Map<Long, String> sourceTicketTypeCache = new HashMap<>();
         for (DmProdReleaseStmtDO s : stmts) {
@@ -1235,8 +1245,7 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
             // rows (plan + runtime face). A null-plan legacy stmt keeps both null (byte-identical
             // VO shape; the frontend renders the block only when segments exist).
             se.setPlanHash(s.getPlanHash());
-            List<DmProdReleaseStmtSegmentDO> manifest =
-                prodReleaseDal.segmentMapper().queryByReleaseStmtId(s.getId());
+            List<DmProdReleaseStmtSegmentDO> manifest = manifestByStmt.get(s.getId());
             if (manifest != null && !manifest.isEmpty()) {
                 List<ProdReleaseDetailVO.SegmentEntry> segEntries = new ArrayList<>(manifest.size());
                 for (DmProdReleaseStmtSegmentDO m : manifest) {
@@ -1805,19 +1814,25 @@ public class ProdReleaseServiceImpl implements ProdReleaseService {
      * BEFORE the C4 schema gates (order: hash → plan → precheck → diff, A7 pin). A mismatch — a
      * tampered/dirty-written plan row, or a plan_hash pin over an EMPTY manifest — writes stmt
      * FAILED + RELEASE_PLAN_DRIFT and denies dispatch. INTEGRITY CLASS: NEVER overridable (no
-     * override service is consulted — the text-hash-drift twin). A null-plan stmt (plan_hash NULL)
-     * skips the comparison entirely (legacy/stock shape, byte-identical — no manifest read).
+     * override service is consulted — the text-hash-drift twin).
+     * <p>
+     * C8 M5.2 (O-C7-5 residual face — pin semantics explicitly REVISED from "null-plan skips
+     * without a manifest read"): a null-plan stmt reads the manifest ONCE — an EMPTY manifest is
+     * the genuine legacy/stock shape (pass, dispatch byte-identical), but a NON-EMPTY manifest
+     * under a null pin means the pin was lost/dirty-written → treated as drift (the plan_hash and
+     * the manifest propagate in ONE transaction, so this shape is unreachable through any writer —
+     * accidental damage is the threat model).
      *
      * @return true → dispatch proceeds; false → stmt marked FAILED and the drift event recorded.
      */
     private boolean passPlanGate(long releaseId, DmProdReleaseStmtDO stmt, String uid) {
-        if (stmt.getPlanHash() == null) {
-            return true; // null-plan legacy — no pin, no gate
-        }
         List<DmProdReleaseStmtSegmentDO> manifest =
             prodReleaseDal.segmentMapper().queryByReleaseStmtId(stmt.getId());
+        if (stmt.getPlanHash() == null && (manifest == null || manifest.isEmpty())) {
+            return true; // null-plan legacy — no pin, no plan
+        }
         String recomputed = ReleasePlanHashUtils.hash(manifest); // null when the manifest is empty
-        if (stmt.getPlanHash().equals(recomputed)) {
+        if (java.util.Objects.equals(stmt.getPlanHash(), recomputed)) {
             return true;
         }
         prodReleaseDal.stmtMapper().updateExecStatus(stmt.getId(), EXEC_STATUS_FAILED,

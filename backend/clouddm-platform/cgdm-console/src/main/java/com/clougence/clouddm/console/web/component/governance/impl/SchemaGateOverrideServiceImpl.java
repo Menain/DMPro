@@ -83,6 +83,12 @@ public class SchemaGateOverrideServiceImpl implements SchemaGateOverrideService 
             }
         }
 
+        // C8 M5.3 (V202610130004): converge the time-expired ACTIVE row(s) of exactly this
+        // grant's granularity (gate_type + stmt/release level) via the materialized expired mark
+        // — they are not consumable (findConsumable* filters expire_at > now) but their generated
+        // active_key would otherwise block the uk_gate_override_active insert.
+        prodReleaseDal.gateOverrideMapper().expireStaleActive(release.getId(), fo.getStmtId(), gateType, now);
+
         DmGovSchemaGateOverrideDO row = new DmGovSchemaGateOverrideDO();
         row.setReleaseId(release.getId());
         row.setStmtId(fo.getStmtId());
@@ -92,7 +98,17 @@ public class SchemaGateOverrideServiceImpl implements SchemaGateOverrideService 
         row.setExpireAt(expireAt);
         row.setConsumed(0);
         row.setRevoked(0);
-        prodReleaseDal.gateOverrideMapper().insert(row);
+        row.setExpired(0);
+        try {
+            prodReleaseDal.gateOverrideMapper().insert(row);
+        } catch (org.springframework.dao.DuplicateKeyException dup) {
+            // C8 M5.3: the DB constraint is now the active-uniqueness authority for this table
+            // (pre-C8 multiple actives were tolerated and findAndConsume picked the newest) —
+            // a second active grant of the same granularity is rejected with a friendly copy.
+            throw new ErrorMessageException("An active schema-gate override already exists for release "
+                + release.getId() + (fo.getStmtId() == null ? "" : " stmt " + fo.getStmtId())
+                + " gate " + gateType);
+        }
         log.info("[SchemaGateOverride] granted id={} release={} stmt={} gate={} operator={} expireAt={}",
             row.getId(), release.getId(), fo.getStmtId(), gateType, uid, expireAt);
         return row.getId();
@@ -114,7 +130,7 @@ public class SchemaGateOverrideServiceImpl implements SchemaGateOverrideService 
     }
 
     @Override
-    public void revoke(String puid, String uid, long overrideId) {
+    public long revoke(String puid, String uid, long overrideId) {
         DmGovSchemaGateOverrideDO row = prodReleaseDal.gateOverrideMapper().selectById(overrideId);
         if (row == null) {
             throw new ErrorMessageException("Schema gate override not found: " + overrideId);
@@ -126,6 +142,8 @@ public class SchemaGateOverrideServiceImpl implements SchemaGateOverrideService 
                 "Schema gate override is already consumed or revoked and cannot be revoked: " + overrideId);
         }
         log.info("[SchemaGateOverride] revoked id={} release={} by={}", overrideId, row.getReleaseId(), uid);
+        // C8 M2: hand the release binding back to the audit caller (the row was loaded anyway)
+        return row.getReleaseId();
     }
 
     @Override
@@ -197,6 +215,13 @@ public class SchemaGateOverrideServiceImpl implements SchemaGateOverrideService 
         }
         if (row.getRevoked() == 1) {
             return "REVOKED";
+        }
+        // C8 M5.3: the materialized expired mark (set by the grant-time convergence) renders the
+        // same EXPIRED the clock derivation always did — a converged row has expire_at ≤ now by
+        // construction, so the two arms agree; the flag arm keeps the display correct even if the
+        // clock and the convergence ever disagree.
+        if (row.getExpired() == 1) {
+            return "EXPIRED";
         }
         if (row.getExpireAt() != null && !now.before(row.getExpireAt())) {
             return "EXPIRED";

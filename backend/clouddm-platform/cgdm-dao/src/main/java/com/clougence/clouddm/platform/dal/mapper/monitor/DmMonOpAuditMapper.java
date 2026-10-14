@@ -27,8 +27,6 @@ import com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel;
  */
 public interface DmMonOpAuditMapper extends BaseMapper<DmMonOpAuditDO> {
 
-    List<DmMonOpAuditDO> clearData();
-
     /**
      * query by basic condition.
      *
@@ -58,13 +56,25 @@ public interface DmMonOpAuditMapper extends BaseMapper<DmMonOpAuditDO> {
     List<DmMonOpAuditDO> queryByUidsJoinUrlAuth(String ownerUid, SecurityLevel securityLevel, String auditType, String resourceType, Date dateStart, Date dateEnd, long startId,
                                                 int pageSize);
 
+    /**
+     * C8 M2 (design D4): the trailing four parameters are the additive audit-chain filter
+     * dimensions (channel name / ticketId / releaseId / sqlFingerprint) — all optional; with
+     * all four null the rendered SQL is unchanged from the pre-C8 shape.
+     */
     List<DmMonOpAuditDO> queryByCondition(String puid, String uid, SecurityLevel securityLevel, String auditType, String resourceType, String userNameLike, Date dateStart,
-                                          Date dateEnd, long startId, int pageSize);
+                                          Date dateEnd, long startId, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint);
 
     List<DmMonOpAuditDO> pageByCondition(String puid, String uid, SecurityLevel securityLevel, String auditType, String resourceType, String userNameLike, Date dateStart,
-                                         Date dateEnd, int offset, int pageSize);
+                                         Date dateEnd, int offset, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint);
 
-    long countByCondition(String puid, String uid, SecurityLevel securityLevel, String auditType, String resourceType, String userNameLike, Date dateStart, Date dateEnd);
+    long countByCondition(String puid, String uid, SecurityLevel securityLevel, String auditType, String resourceType, String userNameLike, Date dateStart, Date dateEnd,
+                          String channel, Long ticketId, Long releaseId, String sqlFingerprint);
 
     List<DmMonOpAuditDO> querySection(long startId, int pageSize);
+
+    /**
+     * C8 M1 (design D2): retention cleanup — delete one LIMIT-500 batch of the primary
+     * account's rows older than {@code date} (operate_date). The caller loops until 0.
+     */
+    int deleteBeforeDate(String ownerUid, Date date);
 }

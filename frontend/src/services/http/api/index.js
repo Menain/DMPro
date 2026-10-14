@@ -19,7 +19,6 @@ import { desktopApi } from '@/services/http/api/desktop';
 import { dsEnvApi } from '@/services/http/api/dsEnv';
 import { envParamApi } from '@/services/http/api/envParam';
 import { auditApi } from '@/services/http/api/audit';
-import { logViewApi } from '@/services/http/api/logView';
 import { initApi } from '@/services/http/api/init';
 import { mfaApi } from '@/services/http/api/mfa';
 import { sshConfigApi } from '@/services/http/api/sshConfig';
@@ -57,7 +56,6 @@ export const api = {
   ...desktopApi,
   ...dsEnvApi,
   ...envParamApi,
-  ...logViewApi,
   ...initApi,
   ...mfaApi,
   ...sshConfigApi,

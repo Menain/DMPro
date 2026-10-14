@@ -488,8 +488,10 @@ public class DmlBatchAsyncTask extends AsyncTask {
                         + " (batch statement timed out after " + params.getTimeoutSec() + "s — outcome unknown)");
                 } catch (RuntimeException e) {
                     // transport-class loss while the statement was in flight — same UNKNOWN class
+                    // (C8 M5.1: the raw rootMessage rides DbErrorSanitizer — this text reaches the
+                    // user-visible segment exec_detail; the UNKNOWN classification is untouched)
                     throw new TickFailure(true, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_UNRESOLVED.name(), seq)
-                        + " (connection lost during the batch statement: " + rootMessage(e) + ")");
+                        + " (connection lost during the batch statement: " + DbErrorSanitizer.sanitize(rootMessage(e)) + ")");
                 }
                 String dbError = DiagResultUtils.firstFailureMessage(resultList);
                 if (dbError != null && isCommLinkError(dbError)) {
@@ -500,9 +502,11 @@ public class DmlBatchAsyncTask extends AsyncTask {
                     // backs the automatic retry (a non-idempotent UPDATE would double-apply
                     // silently) → the UNKNOWN class (option C: intent deliberately left on the
                     // carrier, FAILED + UNRESOLVED, manual verdict through retryGroup).
+                    // (C8 M5.1: sanitized AFTER the isCommLinkError classification above — the
+                    // classifier reads the raw text, only the display/trail copy is sanitized)
                     throw new TickFailure(true, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_UNRESOLVED.name(), seq)
                         + " (communication failure while the batch statement was in flight — the server may have committed it: "
-                        + dbError + ")");
+                        + DbErrorSanitizer.sanitize(dbError) + ")");
                 }
                 if (dbError != null) {
                     // a DB-level error: the statement atomically rolled back server-side — zero
@@ -548,8 +552,9 @@ public class DmlBatchAsyncTask extends AsyncTask {
                 } catch (RuntimeException e) {
                     // the batch COMMITTED but the checkpoint write failed — the exact
                     // commit-checkpoint window: outcome of the RECORDING unknown → UNRESOLVED class
+                    // (C8 M5.1: metadata-DB error text sanitized — it can carry row values)
                     throw new TickFailure(true, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_UNRESOLVED.name(), seq)
-                        + " (checkpoint persist failed after the batch committed: " + rootMessage(e) + ")");
+                        + " (checkpoint persist failed after the batch committed: " + DbErrorSanitizer.sanitize(rootMessage(e)) + ")");
                 }
 
                 this.batchForensics(cfg, seq, loLiteral, hiLiteral, affectRows, costMs, seq == 1 ? rangeSql : null);
@@ -560,9 +565,10 @@ public class DmlBatchAsyncTask extends AsyncTask {
         } catch (RuntimeException e) {
             // session creation / infrastructure failure: classified by whether the batch DML was in flight
             if (intentInFlight[0]) {
+                // (C8 M5.1: infra error text sanitized — the twin non-in-flight arm below already was)
                 throw new TickFailure(true, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_UNRESOLVED.name(),
                     cp.getIntent() == null ? cp.getBatchesDone() + 1 : cp.getIntent().getSeq())
-                    + " (" + rootMessage(e) + ")");
+                    + " (" + DbErrorSanitizer.sanitize(rootMessage(e)) + ")");
             }
             throw new TickFailure(false, DmI18nUtils.getMessage(I18nDmMsgKeys.DML_BATCH_EXEC_FAILED.name(), DbErrorSanitizer
                 .sanitize(rootMessage(e))));

@@ -636,11 +636,18 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             auditObj.setVia(via);
         }
         try {
+            // C8 M2 chain columns: fingerprint over the FULL frozen statement text held by the
+            // caller (the audit obj's ddlSql is a ≤2000 truncation — never the hash source),
+            // ticket binding + explicit SYSTEM_AUTO (design D3 write-point matrix).
             rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
                 GHOST_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
                 com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
                 com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE,
-                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticket.getId(),
+                    com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                        .hash(lockedGroup.getSqlContent()),
+                    com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
         } catch (RuntimeException e) {
             log.error("[GovTicketV2] GHOST_EXECUTE audit failed for ticket {} group {} (dispatch kept)",
                 ticket.getId(), group.getId(), e);
@@ -709,11 +716,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             auditObj.setVia(via);
         }
         try {
+            // C8 M2 chain columns: the segment's FULL frozen plan text (never the obj truncation)
             rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
                 GHOST_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
                 com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
                 com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE,
-                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticket.getId(),
+                    com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(segment.getSql()),
+                    com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
         } catch (RuntimeException e) {
             log.error("[GovTicketV2] GHOST_EXECUTE audit failed for ticket {} group {} segment {} (dispatch kept)",
                 ticket.getId(), group.getId(), segment.getSegIdx(), e);
@@ -768,11 +779,16 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             = buildDmlBatchAuditObj(ticket, group, segment, via);
         decorateDmlBatchAuditTaskFacts(auditObj, segment.getTaskId());
         try {
+            // C8 M2 chain columns: fingerprint over the FULL frozen statement text (segment.getSql()
+            // — NEVER the obj's ≤500 sqlSummary truncation, design D3)
             rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), submitterUid,
                 DML_BATCH_AUTO_DISPATCH_URI, null, group.getDsId(), auditObj,
                 com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
                 com.clougence.clouddm.platform.dal.model.monitor.AuditType.DML_BATCH_EXECUTE,
-                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticket.getId(),
+                    com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(segment.getSql()),
+                    com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
         } catch (RuntimeException e) {
             log.error("[GovTicketV2] DML_BATCH_EXECUTE audit failed for ticket {} group {} segment {} (dispatch kept)",
                 ticket.getId(), group.getId(), segment.getSegIdx(), e);
@@ -860,6 +876,8 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         String  table;
         Long    dsId;
         String  dbName;
+        /** C8 M2: the frozen statement's fingerprint (captured here because the runtime is reset on resume). */
+        String  sqlFingerprint;
     }
 
     /**
@@ -892,6 +910,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             trail.table = target.getTable();
             trail.dsId = group.getDsId();
             trail.dbName = group.getDbName();
+            // C8 M2: capture the fingerprint of the FULL frozen statement HERE — the resume
+            // resets the runtime, so the audit twin below can no longer reach the text
+            trail.sqlFingerprint = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                .hash(target.getSql());
             return trail;
         } catch (RuntimeException e) {
             return null; // trail-only capture — the retry proceeds regardless
@@ -935,11 +957,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             obj.setTableName(trail.table);
             obj.setResolution(trail.resolution);
             obj.setIntentSeq(trail.intentSeq);
+            // C8 M2 chain columns: ticket binding + the pre-captured fingerprint (design D3
+            // resolution-variant row) + explicit SYSTEM_AUTO
             rdpOpAuditService.logAndAddOperationAudit(ticket.getPrimaryUid(), uid,
                 DML_BATCH_RESOLUTION_URI, null, trail.dsId, obj,
                 com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH,
                 com.clougence.clouddm.platform.dal.model.monitor.AuditType.DML_BATCH_EXECUTE,
-                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE);
+                com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticket.getId(), trail.sqlFingerprint,
+                    com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO));
         } catch (RuntimeException e) {
             log.error("[GovTicketV2] DML_BATCH resolution audit failed for ticket {} group {} (the resume is kept)",
                 ticket.getId(), trail.groupId, e);
@@ -2368,6 +2394,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
                         ? rejectedSql.substring(0,
                             com.clougence.clouddm.console.web.model.vo.dmlbatch.DmlBatchOpAuditObj.SQL_MAX_LENGTH)
                         : rejectedSql);
+                // C8 M2: fingerprint over the FULL statement text, captured here (the boundary
+                // trail only carries the ≤500 summary out of the rolled-back transaction)
+                reject.setSqlFingerprint(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                    .hash(rejectedSql));
                 result.setDmlNoKeyReject(reject);
                 return outcome; // rejected — submit refuses the whole ticket; nothing else to evaluate
             }

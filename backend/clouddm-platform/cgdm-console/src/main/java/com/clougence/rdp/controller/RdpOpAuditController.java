@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.clougence.clouddm.api.common.rpc.ResWebData;
@@ -64,7 +65,8 @@ public class RdpOpAuditController {
     public ResWebData<?> queryAll(@RequestBody @Valid QueryOpAuditFO auditFO, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         DmPageVO<RdpOpAuditVO> auditPage = auditService.pageUserAllAudit(puid, auditFO.getUid(), auditFO.getSecurityLevel(), auditFO.getUserNameLike(), auditFO
-            .getAuditType(), auditFO.getResourceType(), auditFO.getOpStart(), auditFO.getOpEnd(), auditFO.getPageData().getPageNumber(), auditFO.getPageData().getPageSize());
+            .getAuditType(), auditFO.getResourceType(), auditFO.getOpStart(), auditFO.getOpEnd(), auditFO.getPageData().getPageNumber(), auditFO.getPageData().getPageSize(), auditFO
+                .getChannel(), auditFO.getTicketId(), auditFO.getReleaseId(), auditFO.getSqlFingerprint());
 
         return ResWebDataUtils.buildSuccess(auditPage);
     }
@@ -74,7 +76,8 @@ public class RdpOpAuditController {
     public ResWebData<?> queryByUser(@RequestBody @Valid QueryOpAuditFO auditFO, HttpServletRequest request) {
         String puid = (String) request.getAttribute(RdpUserService.PUID);
         List<RdpOpAuditVO> auditVos = auditService.queryUserAllAudit(puid, auditFO.getUid(), auditFO.getSecurityLevel(), auditFO.getUserNameLike(), auditFO.getAuditType(), auditFO
-            .getResourceType(), auditFO.getOpStart(), auditFO.getOpEnd(), auditFO.getPageData().getStartId(), auditFO.getPageData().getPageSize());
+            .getResourceType(), auditFO.getOpStart(), auditFO.getOpEnd(), auditFO.getPageData().getStartId(), auditFO.getPageData().getPageSize(), auditFO
+                .getChannel(), auditFO.getTicketId(), auditFO.getReleaseId(), auditFO.getSqlFingerprint());
         return ResWebDataUtils.buildSuccess(auditVos);
     }
 
@@ -100,6 +103,19 @@ public class RdpOpAuditController {
     @RequestMapping(value = "/queryListCondition", method = RequestMethod.POST)
     public ResWebData<?> queryListCondition() {
         return ResWebDataUtils.buildSuccess(auditService.queryListCondition());
+    }
+
+    /**
+     * C8 M3 (裁决 3, design D4): the audit-detail endpoint replacing the never-implemented
+     * /logview/grep/operationlog URL (survey D-2). GET by id, tenant-isolated by the session
+     * puid; the log_info body comes back sanitized (AuditSanitizeUtils兜底 — pre-C1 stock rows)
+     * with the audit-detail-label old/new key dictionary applied.
+     */
+    @RequestAuth(RDP_OP_AUDIT_READ)
+    @RequestMapping(value = "/detail", method = RequestMethod.GET)
+    public ResWebData<?> detail(@RequestParam("id") long id, HttpServletRequest request) {
+        String puid = (String) request.getAttribute(RdpUserService.PUID);
+        return ResWebDataUtils.buildSuccess(auditService.queryAuditDetail(puid, id));
     }
 
     @RequestAuth({ RDP_OP_AUDIT_EXPORT })

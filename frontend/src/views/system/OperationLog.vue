@@ -217,6 +217,7 @@ export default {
         opStart: '',
         opEnd: '',
         // securityLevel:'',
+        channel: '',
         pageData: {
           pageNumber: 1,
           pageSize: 20
@@ -290,6 +291,83 @@ export default {
           filterRemote(value) {
             this.searchData.securityLevel = value[0];
             this.handleRefresh();
+          }
+        },
+        {
+          title: this.$t('tong-dao'),
+          key: 'channel',
+          width: 110,
+          render: (h, params) => h('div', {}, this.getChannelI18n(params.row.channel)),
+          filterMultiple: false,
+          filters: [
+            {
+              label: this.$t('tong-dao-console'),
+              value: 'CONSOLE'
+            },
+            {
+              label: this.$t('tong-dao-openapi'),
+              value: 'OPENAPI'
+            },
+            {
+              label: this.$t('tong-dao-system-auto'),
+              value: 'SYSTEM_AUTO'
+            }
+          ],
+          filterRemote(value) {
+            this.searchData.channel = value[0];
+            this.handleRefresh();
+          }
+        },
+        {
+          title: this.$t('gong-dan-fa-bu'),
+          key: 'chainRef',
+          width: 110,
+          render: (h, params) => {
+            const row = params.row;
+            if (row.ticketId) {
+              return h(
+                'a',
+                {
+                  on: {
+                    click: () => this.$router.push(`/ticket/${row.ticketId}`)
+                  }
+                },
+                `${this.$t('gong-dan')} ${row.ticketId}`
+              );
+            }
+            if (row.releaseId) {
+              return h(
+                'a',
+                {
+                  on: {
+                    click: () => this.$router.push(`/dbChange/release/${row.releaseId}`)
+                  }
+                },
+                `${this.$t('fa-bu')} ${row.releaseId}`
+              );
+            }
+            return h('div', {}, '');
+          }
+        },
+        {
+          title: this.$t('sql-zhi-wen'),
+          key: 'sqlFingerprint',
+          width: 140,
+          render: (h, params) => {
+            const fingerprint = params.row.sqlFingerprint;
+            if (!fingerprint) {
+              return h('div', {}, '');
+            }
+            return h(
+              'a',
+              {
+                attrs: { title: fingerprint },
+                on: {
+                  click: () => this.copyText(fingerprint)
+                }
+              },
+              `${fingerprint.slice(0, 12)}…`
+            );
           }
         },
         {
@@ -443,6 +521,18 @@ export default {
         }
       });
       return alias;
+    },
+    getChannelI18n(channel) {
+      if (channel === 'CONSOLE') {
+        return this.$t('tong-dao-console');
+      }
+      if (channel === 'OPENAPI') {
+        return this.$t('tong-dao-openapi');
+      }
+      if (channel === 'SYSTEM_AUTO') {
+        return this.$t('tong-dao-system-auto');
+      }
+      return '';
     },
     handleExport() {
       this.ensureDefaultExportFormat();
@@ -608,9 +698,12 @@ export default {
       return `UID: ${uid || ''}`;
     },
     handleGetAuditDetail(row) {
+      // C8 M3: the /api/entry/audit/detail endpoint (sanitized log_info) replaces the dead
+      // /logview/grep/operationlog URL the modal was originally built against
       this.$services
-        .rdpLogViewGrepOperationLog({
-          data: { operationId: row.id }
+        .rdpAuditDetail({
+          method: 'get',
+          params: { id: row.id }
         })
         .then((res) => {
           if (res.success) {

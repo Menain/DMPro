@@ -203,6 +203,32 @@ public class GovRouteOverrideServiceTest {
         assertNotNull(row.getExpireAt());
     }
 
+    /**
+     * C8 M5.3 (O-C7-6a): the DB backstop of the active-uniqueness — a concurrent grant that won
+     * the service-check race window lands first, the uk_route_override_active generated-column
+     * constraint rejects the second insert (DuplicateKey), and create() converts it into the
+     * SAME friendly rejection (the service check is kept for the common path, the constraint
+     * seals the race). The expired-PENDING convergence runs BEFORE the insert (an expired row
+     * must free its active_key, or a legitimate re-grant after expiry would be blocked).
+     */
+    @Test
+    public void create_dbUniqueRace_duplicateKey_friendlyRejection_staleConvergedFirst() {
+        when(routeOverrideMapper.findConsumable(eq(RELEASE_ID), eq(STMT_ID), any(Date.class))).thenReturn(null);
+        when(routeOverrideMapper.insert(any(DmGovRouteOverrideDO.class)))
+            .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_route_override_active"));
+
+        try {
+            service.create(PUID, UID, buildGrantFO(STMT_ID, "race loser", System.currentTimeMillis() + 3600_000L));
+            fail("Expected ErrorMessageException — the DB constraint sealed the double-PENDING race");
+        } catch (ErrorMessageException expected) {
+            assertTrue(expected.getMessage().contains("already exists"));
+        }
+
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(routeOverrideMapper);
+        inOrder.verify(routeOverrideMapper).expireStalePending(eq(RELEASE_ID), eq(STMT_ID), any(Date.class));
+        inOrder.verify(routeOverrideMapper).insert(any(DmGovRouteOverrideDO.class));
+    }
+
     @Test
     public void create_blankReason_throws() {
         try {
@@ -374,15 +400,25 @@ public class GovRouteOverrideServiceTest {
         // HIGH op_audit in the GRANTOR's name (the risk-acceptance subject), release resource,
         // obj = the C4-shaped plain trail POJO (GhostOpAuditObj NOT reused)
         ArgumentCaptor<RouteOverrideAuditObj> auditCaptor = ArgumentCaptor.forClass(RouteOverrideAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(UID), anyString(), isNull(),
             eq(RELEASE_ID), auditCaptor.capture(),
             eq(SecurityLevel.HIGH), eq(AuditType.GOV_ROUTE_OVERRIDE_CONSUME),
-            eq(com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL), eq("release:" + RELEASE_ID));
+            eq(com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL), eq("release:" + RELEASE_ID),
+            chainCaptor.capture());
         RouteOverrideAuditObj obj = auditCaptor.getValue();
         assertEquals(Long.valueOf(10L), obj.getOverrideId());
         assertEquals(Integer.valueOf(2), obj.getSegIdx());
         assertEquals("ROUTE_UNSUPPORTED", obj.getBlockCode());
         assertEquals("2", obj.getCoveredSegIdxs());
+        // C8 M2 write-point matrix pin: the consumption row carries the release binding +
+        // explicit SYSTEM_AUTO (no fingerprint — an override consumption has no SQL semantics)
+        assertEquals(Long.valueOf(RELEASE_ID), chainCaptor.getValue().getReleaseId());
+        assertNull(chainCaptor.getValue().getTicketId());
+        assertNull(chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
     }
 
     @Test
@@ -534,7 +570,7 @@ public class GovRouteOverrideServiceTest {
 
         ArgumentCaptor<RouteOverrideAuditObj> auditCaptor = ArgumentCaptor.forClass(RouteOverrideAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(), isNull(),
-            anyLong(), auditCaptor.capture(), any(), any(), any(), contains("release:"));
+            anyLong(), auditCaptor.capture(), any(), any(), any(), contains("release:"), any());
         assertEquals(512, auditCaptor.getValue().getBlockReason().length());
     }
 }

@@ -17,6 +17,7 @@ package com.clougence.clouddm.console.web.service.dmlbatch;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -113,6 +114,8 @@ public class DmlBatchRejectTrailTest {
         vo.setKeyDetail("no primary key and no unique key");
         vo.setSqlSummary("DELETE FROM t_order WHERE status = 0");
         vo.setStmtIndex(2);
+        vo.setSqlFingerprint(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+            .hash("DELETE FROM t_order WHERE status = 0"));
         return vo;
     }
 
@@ -152,8 +155,25 @@ public class DmlBatchRejectTrailTest {
         trailService.trailNoKeyReject(PUID, UID, URI, ADDR, rejection());
 
         ArgumentCaptor<DmlBatchRejectAuditObj> captor = ArgumentCaptor.forClass(DmlBatchRejectAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(UID), eq(URI), eq(ADDR), eq(DS_ID),
-            captor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_REJECT), eq(ResourceType.DATASOURCE));
+            captor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_REJECT), eq(ResourceType.DATASOURCE),
+            chainCaptor.capture());
+        // C8 M2 write-point matrix pin (channel per the 2026-10-14 main-session ruling):
+        // fingerprint passthrough (throw-site full-text hash), NO ticket binding (the ticket
+        // never landed — by design), channel stays NULL on the MO → the sink's URI inference
+        // yields the true arrival channel (this console-submit URI → CONSOLE; the open-API
+        // caller's /open/ marker → OPENAPI). The system-rejection semantics rides audit_type.
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                .hash("DELETE FROM t_order WHERE status = 0"),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertNull(chainCaptor.getValue().getTicketId());
+        assertNull(chainCaptor.getValue().getReleaseId());
+        assertNull("channel must stay null — the sink infers the arrival channel from the URI",
+            chainCaptor.getValue().getChannel());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE,
+            com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.inferFromUri(URI));
         assertEquals(Boolean.FALSE, captor.getValue().getAlertPushed());
         // the rest of the obj survives intact (留痕与告警解耦)
         assertEquals("t_order", captor.getValue().getTableName());
@@ -170,14 +190,14 @@ public class DmlBatchRejectTrailTest {
 
         ArgumentCaptor<DmlBatchRejectAuditObj> captor = ArgumentCaptor.forClass(DmlBatchRejectAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(), any(),
-            any(), captor.capture(), any(), any(), any());
+            any(), captor.capture(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         assertEquals(Boolean.FALSE, captor.getValue().getAlertPushed());
     }
 
     @Test
     public void auditThrows_nothingEscapes_theCallerRethrowsTheOriginal() {
         doThrow(new RuntimeException("audit store down")).when(rdpOpAuditService)
-            .logAndAddOperationAudit(anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any());
+            .logAndAddOperationAudit(anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
 
         trailService.trailNoKeyReject(PUID, UID, URI, ADDR, rejection()); // must not throw
     }
@@ -292,7 +312,8 @@ public class DmlBatchRejectTrailTest {
 
         ArgumentCaptor<DmlBatchRejectAuditObj> captor = ArgumentCaptor.forClass(DmlBatchRejectAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(UID), eq(URI), eq(ADDR), eq(DS_ID),
-            captor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_REJECT), eq(ResourceType.DATASOURCE));
+            captor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_REJECT), eq(ResourceType.DATASOURCE),
+            any(com.clougence.rdp.service.model.AuditChainMO.class));
         DmlBatchRejectAuditObj obj = captor.getValue();
         assertEquals(Long.valueOf(DS_ID), obj.getDsId());
         assertEquals("prod_db", obj.getDbName());
@@ -313,7 +334,7 @@ public class DmlBatchRejectTrailTest {
         InOrder inOrder = Mockito.inOrder(alertPushService, rdpOpAuditService);
         inOrder.verify(alertPushService).pushAlert(eq(PUID), eq(AlertScene.DML_LARGE_TABLE_NO_KEY), any());
         inOrder.verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            anyString(), any(), any(), any(), any(), any());
+            anyString(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     @Test

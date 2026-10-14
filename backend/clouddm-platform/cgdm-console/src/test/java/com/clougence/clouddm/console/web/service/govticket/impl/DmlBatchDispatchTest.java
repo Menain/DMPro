@@ -144,7 +144,8 @@ public class DmlBatchDispatchTest {
         // the audit AFTER the launch (its failure must not roll the task back)
         inOrder.verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(SUBMITTER), eq(URI),
             isNull(), eq(DS_ID), any(DmlBatchOpAuditObj.class), eq(SecurityLevel.HIGH),
-            eq(AuditType.DML_BATCH_EXECUTE), eq(ResourceType.DATASOURCE));
+            eq(AuditType.DML_BATCH_EXECUTE), eq(ResourceType.DATASOURCE),
+            any(com.clougence.rdp.service.model.AuditChainMO.class));
         // NO group CAS here — the caller (orchestrator) owns the segment state under its lock
         verify(stmtMapper, never()).queryById(anyLong());
     }
@@ -154,8 +155,18 @@ public class DmlBatchDispatchTest {
         service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_RETRY);
 
         ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), captor.capture(), any(), any(), any());
+            isNull(), any(), captor.capture(), any(), any(), any(), chainCaptor.capture());
+        // C8 M2 write-point matrix pin: ticket binding + fingerprint over the FULL frozen
+        // statement + explicit SYSTEM_AUTO
+        assertEquals(Long.valueOf(TICKET_ID), chainCaptor.getValue().getTicketId());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                .hash("UPDATE t_order SET status = 1 WHERE status = 0"),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
         DmlBatchOpAuditObj obj = captor.getValue();
         assertEquals(Long.valueOf(TICKET_ID), obj.getTicketId());
         assertEquals(Long.valueOf(GROUP_ID), obj.getGroupId());
@@ -183,9 +194,18 @@ public class DmlBatchDispatchTest {
         service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
 
         ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), captor.capture(), any(), any(), any());
+            isNull(), any(), captor.capture(), any(), any(), any(), chainCaptor.capture());
         assertEquals(DmlBatchOpAuditObj.SQL_MAX_LENGTH, captor.getValue().getSqlSummary().length());
+        // C8 M2: the fingerprint is computed over the FULL statement text — NEVER over the
+        // ≤500 sqlSummary truncation (design D3 "非 sqlSummary 截断文" pin)
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(sql.toString()),
+            chainCaptor.getValue().getSqlFingerprint());
+        org.junit.Assert.assertNotEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                .hash(captor.getValue().getSqlSummary()),
+            chainCaptor.getValue().getSqlFingerprint());
     }
 
     @Test
@@ -209,7 +229,7 @@ public class DmlBatchDispatchTest {
     public void dispatch_auditFailure_neverRollsBackTheLaunchedTask() {
         Mockito.doThrow(new RuntimeException("audit store down"))
             .when(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
 
         service.dispatchBatchSegment(ticket, group, segment, GovTicketV2Service.GHOST_VIA_AUTO_ROUTE);
 
@@ -237,7 +257,7 @@ public class DmlBatchDispatchTest {
 
     private void verifyNoAudit() {
         verify(rdpOpAuditService, never()).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     @Test
@@ -294,7 +314,7 @@ public class DmlBatchDispatchTest {
 
         ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), captor.capture(), any(), any(), any());
+            isNull(), any(), captor.capture(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         assertEquals("batch-biz-77", captor.getValue().getTaskBizId());
         assertEquals(Integer.valueOf(2000), captor.getValue().getBatchSize());
     }
@@ -308,7 +328,7 @@ public class DmlBatchDispatchTest {
 
         ArgumentCaptor<DmlBatchOpAuditObj> captor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), captor.capture(), any(), any(), any());
+            isNull(), any(), captor.capture(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         assertNull(captor.getValue().getTaskBizId());
         assertNull(captor.getValue().getBatchSize());
     }
@@ -324,7 +344,7 @@ public class DmlBatchDispatchTest {
         assertEquals(Long.valueOf(TASK_ID), segment.getTaskId());
         verify(stmtMapper).updateExecStatus(GROUP_ID, "EXECUTING", null);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), any(DmlBatchOpAuditObj.class), any(), any(), any());
+            isNull(), any(), any(DmlBatchOpAuditObj.class), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     @Test

@@ -4986,5 +4986,12 @@
   "ding-qiao-liu-cheng-hao": "DingTalk flow ID",
   "ding-qiao-shi-bai-yuan-yin": "Failure cause",
   "ding-qiao-chong-xin-fa-qi": "Re-issue",
-  "ding-qiao-chong-xin-fa-qi-cheng-gong": "DingTalk approval flow re-issued successfully"
+  "ding-qiao-chong-xin-fa-qi-cheng-gong": "DingTalk approval flow re-issued successfully",
+  "tong-dao": "Channel",
+  "tong-dao-console": "Console",
+  "tong-dao-openapi": "Open API",
+  "tong-dao-system-auto": "System Auto",
+  "gong-dan-fa-bu": "Ticket/Release",
+  "fa-bu": "Release",
+  "sql-zhi-wen": "SQL Fingerprint"
 }

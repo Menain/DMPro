@@ -38,6 +38,22 @@
             dm_mon_biz_log
         WHERE
             depend_on_biz_id   = #{bizId}
+            <!-- C8 M1 (D-1): the AND between the two predicates was missing since the initial
+                 commit — every call raised a MySQL syntax error, swallowed by the never-throw
+                 MASKING_NOT_BOUND observation (the dedup query never ran, so the observation
+                 row never landed). Pinned by AuditRetentionTest. -->
+            AND
             depend_on_biz_type = #{bizType,javaType=com.clougence.clouddm.platform.dal.model.monitor.LogDependBizType}
     </select>
+
+    <!-- C8 M1 (design D2): retention cleanup leg of the 30-min scheduler. dm_mon_biz_log has
+         NO owner column (platform-global process/forensics rows), so the delete is global by
+         gmt_create; batching mirrors the sql_audit LIMIT-500 loop. -->
+    <delete id="deleteBeforeDate">
+        DELETE FROM
+            dm_mon_biz_log
+        WHERE
+            #{date} <![CDATA[ > ]]> gmt_create
+        LIMIT 500
+    </delete>
 </mapper>

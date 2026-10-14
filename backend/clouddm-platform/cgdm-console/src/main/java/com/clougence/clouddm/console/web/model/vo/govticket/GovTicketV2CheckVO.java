@@ -97,6 +97,13 @@ public class GovTicketV2CheckVO {
         private String sqlSummary;
         /** the statement's 1-based exec_order position (R11 domain). */
         private Integer stmtIndex;
+        /**
+         * C8 M2 additive: GovSqlHashUtils fingerprint of the FULL rejected statement text —
+         * computed at the throw site (the only point holding the untruncated text) and carried
+         * out to the DML_BATCH_REJECT audit row's sql_fingerprint column (the ≤500 sqlSummary
+         * is never the hash source).
+         */
+        private String sqlFingerprint;
     }
 
     /**

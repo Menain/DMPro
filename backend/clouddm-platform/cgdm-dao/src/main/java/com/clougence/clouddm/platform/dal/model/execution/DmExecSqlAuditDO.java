@@ -60,6 +60,12 @@ public class DmExecSqlAuditDO {
     private DataSourceType         dataSourceType;
     private String                 dsDesc;
     private String                 message;
+    /**
+     * C8 M2 (V202610130003): GovSqlHashUtils hash of the full statement text, stamped at the
+     * prepareAudit write point — the equality-join key to the governance chain
+     * (stmt_hash / dm_mon_op_audit.sql_fingerprint). NULL on pre-C8 stock rows.
+     */
+    private String                 sqlFingerprint;
 
     @Override
     public String toString() {

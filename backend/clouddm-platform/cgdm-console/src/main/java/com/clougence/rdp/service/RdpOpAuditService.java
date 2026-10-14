@@ -42,11 +42,15 @@ public interface RdpOpAuditService {
      */
     void addOperationAudit(DmMonOpAuditDO auditDO);
 
+    /**
+     * C8 M2 (design D4): the trailing four parameters are the additive audit-chain filter
+     * dimensions (channel / ticketId / releaseId / sqlFingerprint) — all optional.
+     */
     List<RdpOpAuditVO> queryUserAllAudit(String puid, String uid, SecurityLevel securityLevel, String userNameLike, String auditType, String resourceType, Date start, Date end,
-                                         long startId, int pageSize);
+                                         long startId, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint);
 
     DmPageVO<RdpOpAuditVO> pageUserAllAudit(String puid, String uid, SecurityLevel securityLevel, String userNameLike, String auditType, String resourceType, Date start, Date end,
-                                            int pageNumber, int pageSize);
+                                            int pageNumber, int pageSize, String channel, Long ticketId, Long releaseId, String sqlFingerprint);
 
     /**
      * query audit by userName and basic condition. if startId not specified, fill it with 0. if pageSize not specified, fill it with DEFAULT_PAGE_SIZE.
@@ -69,7 +73,36 @@ public interface RdpOpAuditService {
     void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType auditType,
                                  ResourceType resType, String oldName);
 
+    /**
+     * C8 M2 additive overload (design D3, red line 1 — the two overloads above keep their exact
+     * signatures for the ~59 existing call sites): the 9-arg shape PLUS the audit-chain relation
+     * keys (sql_fingerprint / ticket_id / release_id / channel columns). {@code chain} may be
+     * null; a null {@code chain.channel} defers to the sink's single-point URI inference
+     * ({@link com.clougence.clouddm.platform.dal.model.monitor.AuditChannel#inferFromUri}).
+     * resourceName resolution is unchanged (getResourceName by resType — resId must be the
+     * ResourceType's own PK, four-point contract).
+     */
+    void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType auditType,
+                                 ResourceType resType, com.clougence.rdp.service.model.AuditChainMO chain);
+
+    /**
+     * C8 M2 additive overload: the 10-arg (explicit resourceName — the PURE_URL bypass shape)
+     * PLUS the audit-chain relation keys. This is the "11-arg" sink overload of design D3; the
+     * sink performs ZERO extra SELECTs for the chain keys (red line 4 — all caller-supplied).
+     */
+    void logAndAddOperationAudit(String puid, String uid, String requestUri, String remoteAddr, Object resId, Object obj, SecurityLevel securityLevel, AuditType auditType,
+                                 ResourceType resType, String oldName, com.clougence.rdp.service.model.AuditChainMO chain);
+
     OpAuditConditionVO queryListCondition();
 
     void exportAuditLog(ExportOpAuditFO exportOpAuditFO, HttpServletResponse response);
+
+    /**
+     * C8 M3 (裁决 3, design D4): the audit-detail read — one row by id, tenant-isolated by
+     * owner_uid (a cross-tenant/missing id reads as not-found), returning the log_info body
+     * AFTER the AuditSanitizeUtils sanitization兜底 + the audit-detail-label key translation.
+     * Replaces the never-implemented {@code /logview/grep/operationlog} endpoint the UI's
+     * "查看" dialog was built against (survey D-2 dead-endpoint defect).
+     */
+    com.clougence.clouddm.console.web.model.vo.AuditDetailVO queryAuditDetail(String puid, long id);
 }

@@ -39,4 +39,10 @@ public class ExportOpAuditFO {
     private String        userNameLike;
     private String        uid;
     private String        puid;
+
+    // ---- C8 M2 additive audit-chain filters (the queryAll filter set, mirrored for export) ----
+    private String        channel;
+    private Long          ticketId;
+    private Long          releaseId;
+    private String        sqlFingerprint;
 }

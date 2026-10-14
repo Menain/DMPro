@@ -66,6 +66,15 @@ public class SecCheckerRules {
     /** C6/M5 additive: the tenant owner uid of the ds (the audit rows need puid at the call site). */
     private String                  ownerUid;
 
+    /**
+     * C8 M2 additive (design D3 — the SENSITIVE_* audit rows' masking-spec snapshot source):
+     * the id/name of the spec the SENSITIVE chain actually resolved to (new key first, legacy
+     * fallback — the dsUseSensitiveSpecName caliber), null when nothing resolves. Set by
+     * {@code SecRulesServiceImpl.resolveCheckerRules}; existing consumers never read it.
+     */
+    private Long                    maskingSpecId;
+    private String                  maskingSpecName;
+
     public SecCheckerRules(){
         this.valid = false;
         this.envId = 0L;

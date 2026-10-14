@@ -416,6 +416,65 @@ public class AutoExecReleaseJobCompletionTest {
             eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
     }
 
+    /**
+     * C8 M5.2 (O-C7-5 residual face — the console passPlanGate twin's REVISED null-plan
+     * semantics): a successor with plan_hash NULL but a NON-EMPTY manifest (the pin was
+     * lost/dirty-written — unreachable via any writer, accidental damage is the threat model)
+     * is FAILED with RELEASE_PLAN_DRIFT and the chain stops. The genuine legacy shape (null pin
+     * + the setUp's default EMPTY manifest) keeps passing byte-identical — pinned by every
+     * pre-C8 null-plan test in this class.
+     */
+    @Test
+    public void handleReleaseJobCompletion_chainedNullPlanWithManifest_marksFailedStopsChain() {
+        long releaseId = 1007L;
+        long stmtId = 2020L;
+        long nextId = 2021L;
+        long jobId = 3009L;
+
+        DmExecAutoJobDO job = mock(DmExecAutoJobDO.class);
+        when(job.getId()).thenReturn(jobId);
+        when(job.getDependOnReleaseStmtId()).thenReturn(stmtId);
+        when(job.getUid()).thenReturn(UID);
+        when(autoJobMapper.queryById(jobId)).thenReturn(job);
+
+        DmProdReleaseStmtDO stmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "EXECUTING");
+        when(stmtMapper.queryById(stmtId)).thenReturn(stmt);
+
+        DmProdReleaseDO release = buildRelease(releaseId, ProdReleaseStatus.EXECUTING);
+        release.setApprovalId(4007L);
+        when(releaseMapper.queryById(releaseId)).thenReturn(release);
+        when(releaseMapper.selectByIdForUpdate(releaseId)).thenReturn(release);
+
+        // successor: plan_hash NULL + a manifest row exists → drift (the M5.2 arm)
+        DmProdReleaseStmtDO next = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "PENDING");
+        when(stmtMapper.nextPendingStmt(releaseId, 10L, "prod_db", 1)).thenReturn(next);
+        com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO orphan
+            = new com.clougence.clouddm.platform.dal.model.prodrelease.DmProdReleaseStmtSegmentDO();
+        orphan.setReleaseStmtId(nextId);
+        orphan.setSegIdx(1);
+        orphan.setType("GHOST");
+        orphan.setTableName("t_big");
+        when(prodReleaseDal.segmentMapper().queryByReleaseStmtId(nextId)).thenReturn(List.of(orphan));
+
+        DmProdReleaseStmtDO successStmt = buildStmt(stmtId, releaseId, 10L, "prod_db", 1, "SUCCESS");
+        DmProdReleaseStmtDO failedNext = buildStmt(nextId, releaseId, 10L, "prod_db", 2, "FAILED");
+        when(stmtMapper.queryByReleaseIdForUpdate(releaseId)).thenReturn(List.of(successStmt, failedNext));
+
+        DmApprovalDO approval = mock(DmApprovalDO.class);
+        when(approval.getBizId()).thenReturn("biz-4007");
+        when(approvalMapper.queryById(4007L)).thenReturn(approval);
+
+        autoExecService.handleReleaseJobCompletion(jobId, true, null);
+
+        verify(stmtMapper).updateExecStatus(eq(nextId), eq("FAILED"), contains("Plan drift"));
+        verify(eventMapper).insert(argThat((DmDbChangeEventDO e) ->
+            e != null && "RELEASE_PLAN_DRIFT".equals(e.getEventType())));
+        verify(releaseSchemaPrecheckService, never()).precheck(any());
+        verify(schemaGateOverrideService, never()).findAndConsume(anyLong(), anyLong(), anyString(), any());
+        verify(releaseStateMachine).transit(eq(releaseId),
+            eq(Set.of(ProdReleaseStatus.EXECUTING)), eq(ProdReleaseStatus.PARTIAL_FAILED));
+    }
+
     // ==================== Guard: deny when release not EXECUTING ====================
 
     @Test

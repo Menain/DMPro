@@ -152,6 +152,35 @@ public class SchemaGateOverrideServiceTest {
         assertNotNull(row.getExpireAt());
     }
 
+    /**
+     * C8 M5.3 (O-C7-6a): the gate table gains its active-uniqueness backstop — pre-C8 multiple
+     * ACTIVE grants of one granularity were tolerated (findAndConsume picked the newest); the
+     * uk_gate_override_active generated column now rejects the second insert and grant() renders
+     * the friendly rejection. The expired-active convergence (materialized expired mark) runs
+     * BEFORE the insert so a legitimate re-grant after expiry is never blocked.
+     */
+    @Test
+    public void grant_dbUniqueRace_duplicateKey_friendlyRejection_staleConvergedFirst() {
+        DmProdReleaseStmtDO stmt = new DmProdReleaseStmtDO();
+        stmt.setId(601L);
+        stmt.setReleaseId(RELEASE_ID);
+        when(stmtMapper.queryById(601L)).thenReturn(stmt);
+        when(overrideMapper.insert(any(DmGovSchemaGateOverrideDO.class)))
+            .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_gate_override_active"));
+
+        try {
+            service.grant(PUID, UID,
+                buildGrantFO(601L, "precheck", "race loser", System.currentTimeMillis() + 3600_000L));
+            fail("Expected ErrorMessageException — the DB constraint sealed the double-active race");
+        } catch (ErrorMessageException expected) {
+            assertTrue(expected.getMessage().contains("already exists"));
+        }
+
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(overrideMapper);
+        inOrder.verify(overrideMapper).expireStaleActive(eq(RELEASE_ID), eq(601L), eq("PRECHECK"), any(java.util.Date.class));
+        inOrder.verify(overrideMapper).insert(any(DmGovSchemaGateOverrideDO.class));
+    }
+
     @Test
     public void grant_releaseLevel_nullStmtId_ok() {
         // Mimic MyBatis-Plus IdType.AUTO backfill of the generated key

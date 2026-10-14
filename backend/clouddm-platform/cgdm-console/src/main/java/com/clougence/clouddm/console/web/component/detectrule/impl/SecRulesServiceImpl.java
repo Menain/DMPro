@@ -151,10 +151,21 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
         // existing valid/rule resolution below is byte-identical to the pre-C6 behaviour.
         SecCheckerRules.MaskingBindingState maskingState = resolveMaskingBindingState(senBinding, queryBinding);
 
+        // C8 M2 additive: the spec the SENSITIVE chain effectively resolved to (new key first,
+        // legacy fallback — the senSpecName caliber below), stamped onto BOTH return paths for
+        // the SENSITIVE_* audit rows' masking-spec snapshot. Null when nothing resolves
+        // (NOT_BOUND / DANGLING) — never-throw caliber, no extra query (both DOs are in hand).
+        DmSecSpecDO effectiveSenSpec = senSpec != null ? senSpec : querySpec;
+
         if (ruleOfQuery.isEmpty() && ruleOfSen.isEmpty()) {
             // C6/M3: the invalid shell keeps ds identity + tri-state (M4/M5 consumers need them;
             // valid=false semantics unchanged for every existing consumer)
-            return new SecCheckerRules(envId, dsId, maskingState, ownerUid);
+            SecCheckerRules shell = new SecCheckerRules(envId, dsId, maskingState, ownerUid);
+            if (effectiveSenSpec != null) {
+                shell.setMaskingSpecId(effectiveSenSpec.getId());
+                shell.setMaskingSpecName(effectiveSenSpec.getName());
+            }
+            return shell;
         }
 
         // result
@@ -168,6 +179,10 @@ public class SecRulesServiceImpl implements SecRulesService, UnifiedPostConstruc
                 querySpecName, senSpecName, resultOfQuery, resultOfSen);
         rules.setMaskingBindingState(maskingState);
         rules.setOwnerUid(ownerUid);
+        if (effectiveSenSpec != null) {
+            rules.setMaskingSpecId(effectiveSenSpec.getId());
+            rules.setMaskingSpecName(effectiveSenSpec.getName());
+        }
         return rules;
     }
 

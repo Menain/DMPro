@@ -69,4 +69,21 @@
             id DESC
     </select>
 
+    <!-- C8 M5.3 (V202610130004): expiry convergence feeding uk_route_override_active —
+         materialize the derived EXPIRED status on the (release,stmt) row(s) whose expire_at has
+         passed, so the generated active_key frees up for the legitimate re-grant. Runs INSIDE
+         create() before the insert; a no-op when nothing stale exists. The read-side
+         deriveStatus already renders stored-EXPIRED rows as EXPIRED (expire_at ≤ now branch). -->
+    <update id="expireStalePending">
+        UPDATE
+            dm_gov_route_override
+        SET
+            status = 'EXPIRED'
+        WHERE
+            release_id = #{releaseId}
+            AND stmt_id = #{stmtId}
+            AND status = 'PENDING'
+            AND #{now} <![CDATA[ >= ]]> expire_at
+    </update>
+
 </mapper>

@@ -173,13 +173,22 @@ public class GhostDispatchTest {
 
         // --- R10 audit: subject = submitter, HIGH GHOST_EXECUTE, obj carries the ticket source ---
         ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(OWNER), anyString(), eq(null),
             eq(DS_ID), objCaptor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.GHOST_EXECUTE),
-            eq(ResourceType.DATASOURCE));
+            eq(ResourceType.DATASOURCE), chainCaptor.capture());
         GhostOpAuditObj auditObj = (GhostOpAuditObj) objCaptor.getValue();
         assertEquals(Long.valueOf(TICKET_ID), auditObj.getTicketId());
         assertEquals(Long.valueOf(GROUP_ID), auditObj.getGroupId());
         assertEquals(GovTicketV2Service.GHOST_VIA_AUTO_ROUTE, auditObj.getVia());
+        // C8 M2 write-point matrix pin: ticket binding + fingerprint over the FULL frozen group
+        // text (never the obj's ≤2000 ddlSql truncation) + explicit SYSTEM_AUTO
+        assertEquals(Long.valueOf(TICKET_ID), chainCaptor.getValue().getTicketId());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(ALTER),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
     }
 
     @Test
@@ -203,7 +212,7 @@ public class GhostDispatchTest {
     @Test
     public void dispatch_auditFailure_neverBreaksTheDispatch() {
         doThrow(new RuntimeException("audit store down")).when(rdpOpAuditService).logAndAddOperationAudit(
-            anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any());
+            anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         DmApprovalDO ticket = ticket(List.of(true));
         when(stmtMapper.queryById(GROUP_ID)).thenReturn(group("PENDING")); // the lock-time CAS re-read
 
@@ -284,7 +293,7 @@ public class GhostDispatchTest {
         // retry via the ghost variant annotates the audit with TICKET_RETRY
         ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(), any(),
-            any(), objCaptor.capture(), any(), any(), any());
+            any(), objCaptor.capture(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         assertEquals("TICKET_RETRY", ((GhostOpAuditObj) objCaptor.getValue()).getVia());
     }
 
@@ -443,20 +452,28 @@ public class GhostDispatchTest {
 
         // audit: submitter subject, segment position + chain via
         ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(OWNER), anyString(), eq(null),
             eq(DS_ID), objCaptor.capture(), eq(SecurityLevel.HIGH), eq(AuditType.GHOST_EXECUTE),
-            eq(ResourceType.DATASOURCE));
+            eq(ResourceType.DATASOURCE), chainCaptor.capture());
         GhostOpAuditObj auditObj = (GhostOpAuditObj) objCaptor.getValue();
         assertEquals(Long.valueOf(TICKET_ID), auditObj.getTicketId());
         assertEquals(Long.valueOf(GROUP_ID), auditObj.getGroupId());
         assertEquals(Integer.valueOf(2), auditObj.getSegmentIndex());
         assertEquals(GovTicketV2Service.GHOST_VIA_SEGMENT_CHAIN, auditObj.getVia());
+        // C8 M2: fingerprint over the SEGMENT's frozen sql (same ALTER text here) + SYSTEM_AUTO
+        assertEquals(Long.valueOf(TICKET_ID), chainCaptor.getValue().getTicketId());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(ALTER),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
     }
 
     @Test
     public void dispatchSegment_auditFailure_neverBreaksTheDispatch() {
         doThrow(new RuntimeException("audit store down")).when(rdpOpAuditService).logAndAddOperationAudit(
-            anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any());
+            anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         com.clougence.clouddm.console.web.component.governance.TicketSegment seg
             = com.clougence.clouddm.console.web.component.governance.TicketSegment
                 .ghostPlan(1, 1, "t_big", 1L, "ALTER TABLE t_big ADD COLUMN c1 INT");

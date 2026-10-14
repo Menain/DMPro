@@ -38,6 +38,7 @@ import com.clougence.clouddm.console.web.util.DbErrorSanitizer;
 import com.clougence.clouddm.console.web.util.RdpHostUtil;
 import com.clougence.clouddm.platform.dal.access.DataSourceDal;
 import com.clougence.clouddm.platform.dal.access.ExecutionDal;
+import com.clougence.clouddm.platform.dal.access.MonitorDal;
 import com.clougence.clouddm.platform.dal.access.SystemDal;
 import com.clougence.clouddm.platform.dal.model.auth.DmAuthUserDO;
 import com.clougence.clouddm.platform.dal.model.datasource.DmDsDO;
@@ -67,6 +68,8 @@ public class AuditServiceImpl implements AuditService, DmWorkerRegisterNotify, U
     private ExecutionDal                execDal;
     @Resource
     private DataSourceDal               dsDal;
+    @Resource
+    private MonitorDal                  monitorDal;
     @Resource
     private RdpUserService              userService;
 
@@ -103,6 +106,14 @@ public class AuditServiceImpl implements AuditService, DmWorkerRegisterNotify, U
         auditDO.setBehaviors(request.getRelations());
         auditDO.setExecSql(getString(request.getQueryBody()));
         auditDO.setOriginalSql(request.isHasRewrite() ? getString(request.getOriginalBody()) : null);
+        // C8 M2 (design D3): sql_fingerprint = GovSqlHashUtils over the FULL statement text
+        // (pre-truncation — the governance stmt_hash join caliber; the 65535-truncated exec_sql
+        // column value could otherwise diverge from the frozen-text hash). Single implementation,
+        // never a second hash (red line 3). Blank SQL keeps the column NULL.
+        if (StringUtils.isNotBlank(request.getQueryBody())) {
+            auditDO.setSqlFingerprint(
+                com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(request.getQueryBody()));
+        }
         auditDO.setDsId(dsId);
         auditDO.setUid(auditUid);
         auditDO.setUserName(userName);
@@ -207,32 +218,146 @@ public class AuditServiceImpl implements AuditService, DmWorkerRegisterNotify, U
 
     }
 
+    /** C8 M1 (design D2): op_audit retention defaults/clamps — long retention (compliance face). */
+    static final int OP_AUDIT_RETENTION_DEFAULT_DAYS = 365;
+    static final int OP_AUDIT_RETENTION_MIN_DAYS     = 30;
+    static final int OP_AUDIT_RETENTION_MAX_DAYS     = 3650;
+    /** C8 M1 (design D2): biz_log retention defaults/clamps — short retention (high-frequency process rows). */
+    static final int BIZ_LOG_RETENTION_DEFAULT_DAYS  = 90;
+    static final int BIZ_LOG_RETENTION_MIN_DAYS      = 7;
+    static final int BIZ_LOG_RETENTION_MAX_DAYS      = 3650;
+
+    /**
+     * The 30-min retention sweep — three independent legs (sql_audit / op_audit / biz_log), each
+     * fully try-caught: one table's failure never affects another and NEVER kills the
+     * scheduleWithFixedDelay periodic task (C8 M1, design D2 "调度不停摆" — the D-3 lesson: an
+     * unguarded exception here silently stops every future round).
+     */
     private void deleteTimeoutLog() {
-        for (DmAuthUserDO rdpUserDO : userService.listPrimaryUser()) {
-            Date now = new Date();
-            DmSysUserConfDO configDO = systemDal.userConfMapper().queryByUidAndConfigName(rdpUserDO.getUid(), RootUserConfig.Fields.sqlAuditRetentionDays);
-            int day = 30;
-            String configValue = configDO.getConfigValue();
-            if (StringUtils.isNotEmpty(configValue) && StringUtils.isNumeric(configValue)) {
-                try {
-                    day = Integer.parseInt(configValue);
-                    if (day > 60) {
-                        day = 60;
-                    } else if (day < 1) {
-                        day = 1;
-                    }
-                } catch (Exception e) {
-                    logger.error(e.getMessage());
-                }
+        Date now = new Date();
+        java.util.List<DmAuthUserDO> primaryUsers;
+        try {
+            primaryUsers = userService.listPrimaryUser();
+        } catch (RuntimeException e) {
+            logger.error("[AuditRetention] primary-user listing failed — this cleanup round is skipped", e);
+            return;
+        }
+        if (primaryUsers == null) {
+            return;
+        }
+
+        for (DmAuthUserDO rdpUserDO : primaryUsers) {
+            String uid = rdpUserDO.getUid();
+            try {
+                deleteSqlAuditBefore(uid, now);
+            } catch (RuntimeException e) {
+                logger.error("[AuditRetention] sql-audit cleanup failed for uid {} (the other legs proceed)", uid, e);
             }
+            try {
+                deleteOpAuditBefore(uid, now);
+            } catch (RuntimeException e) {
+                logger.error("[AuditRetention] op-audit cleanup failed for uid {} (the other legs proceed)", uid, e);
+            }
+        }
 
-            Date date = new Date(now.getTime() - (long) day * 24 * 60 * 60 * 1000);
+        try {
+            deleteBizLogBefore(primaryUsers, now);
+        } catch (RuntimeException e) {
+            logger.error("[AuditRetention] biz-log cleanup failed (the per-user legs already ran)", e);
+        }
+    }
 
-            int deleteCount;
+    /** The pre-existing sql_audit leg + the D-3 guard: a missing config row warns and skips the round instead of NPE-ing the scheduler dead. */
+    private void deleteSqlAuditBefore(String uid, Date now) {
+        DmSysUserConfDO configDO = systemDal.userConfMapper().queryByUidAndConfigName(uid, RootUserConfig.Fields.sqlAuditRetentionDays);
+        if (configDO == null) {
+            // D-3 (C8 M1): queryByUidAndConfigName has no row → the old code NPE-ed here and
+            // scheduleWithFixedDelay swallowed the periodic task forever (silent standstill).
+            logger.warn("[AuditRetention] sql-audit retention config row missing for uid {} — this round is skipped", uid);
+            return;
+        }
+        int day = 30;
+        String configValue = configDO.getConfigValue();
+        if (StringUtils.isNotEmpty(configValue) && StringUtils.isNumeric(configValue)) {
+            try {
+                day = Integer.parseInt(configValue);
+                if (day > 60) {
+                    day = 60;
+                } else if (day < 1) {
+                    day = 1;
+                }
+            } catch (Exception e) {
+                logger.error(e.getMessage());
+            }
+        }
 
-            do {
-                deleteCount = execDal.sqlAuditMapper().deleteAuditBeforeDate(rdpUserDO.getUid(), date);
-            } while (deleteCount > 0);
+        Date date = new Date(now.getTime() - (long) day * 24 * 60 * 60 * 1000);
+
+        int deleteCount;
+
+        do {
+            deleteCount = execDal.sqlAuditMapper().deleteAuditBeforeDate(uid, date);
+        } while (deleteCount > 0);
+    }
+
+    /**
+     * C8 M1 op_audit leg (design D2): per primary account (owner_uid scope, the tenant-isolated
+     * sql_audit shape), LIMIT-500 batches. Fail-safe KV read (missing/unparsable row → default
+     * 365 — the B7 six-KV read discipline), clamp 30-3650, {@code <= 0} = cleanup DISABLED
+     * (permanent retention — the pre-pilot-sign-off escape hatch, plan L228).
+     */
+    private void deleteOpAuditBefore(String uid, Date now) {
+        Integer configured = systemDal.fetchUserConf(uid, RootUserConfig.Fields.opAuditRetentionDays, Integer.class, OP_AUDIT_RETENTION_DEFAULT_DAYS);
+        int day = configured == null ? OP_AUDIT_RETENTION_DEFAULT_DAYS : configured;
+        if (day <= 0) {
+            return; // disabled — permanent retention by explicit configuration
+        }
+        day = Math.min(Math.max(day, OP_AUDIT_RETENTION_MIN_DAYS), OP_AUDIT_RETENTION_MAX_DAYS);
+        Date date = new Date(now.getTime() - (long) day * 24 * 60 * 60 * 1000);
+
+        long total = 0;
+        int deleteCount;
+        do {
+            deleteCount = monitorDal.opAuditMapper().deleteBeforeDate(uid, date);
+            total += deleteCount;
+        } while (deleteCount > 0);
+        if (total > 0) {
+            // per-round summary only (the cleanup itself is high-frequency — never row-audited)
+            logger.info("[AuditRetention] op_audit cleanup for uid {}: deleted {} row(s) older than {} day(s)", uid, total, day);
+        }
+    }
+
+    /**
+     * C8 M1 biz_log leg (design D2): dm_mon_biz_log has NO owner column (platform-global
+     * process/forensics/observation rows), so one global cleanup runs with the MOST CONSERVATIVE
+     * resolution across the primary accounts — any primary configuring {@code <= 0} disables the
+     * leg entirely; otherwise the LARGEST effective (clamped 7-3650, default 90) day count wins,
+     * i.e. a row is deleted only once every tenant's retention window has passed.
+     */
+    private void deleteBizLogBefore(java.util.List<DmAuthUserDO> primaryUsers, Date now) {
+        Integer days = null;
+        for (DmAuthUserDO rdpUserDO : primaryUsers) {
+            Integer configured = systemDal.fetchUserConf(rdpUserDO.getUid(), RootUserConfig.Fields.bizLogRetentionDays, Integer.class, BIZ_LOG_RETENTION_DEFAULT_DAYS);
+            int day = configured == null ? BIZ_LOG_RETENTION_DEFAULT_DAYS : configured;
+            if (day <= 0) {
+                return; // any primary disabling it disables the global leg (conservative)
+            }
+            day = Math.min(Math.max(day, BIZ_LOG_RETENTION_MIN_DAYS), BIZ_LOG_RETENTION_MAX_DAYS);
+            days = days == null ? day : Math.max(days, day);
+        }
+        if (days == null) {
+            return; // no primary account — nothing to resolve the KV from
+        }
+        Date date = new Date(now.getTime() - (long) days * 24 * 60 * 60 * 1000);
+
+        long total = 0;
+        int deleteCount;
+        do {
+            deleteCount = monitorDal.bizLogMapper().deleteBeforeDate(date);
+            total += deleteCount;
+        } while (deleteCount > 0);
+        if (total > 0) {
+            logger.info("[AuditRetention] biz_log cleanup: deleted {} row(s) older than {} day(s)", total, days);
         }
     }
 

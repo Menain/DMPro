@@ -273,6 +273,81 @@ public class DmlBatchAuditRegistrationTest {
         assertSwitchDef("govReleaseSchemaDiffBlock");
     }
 
+    // ==================== C8 M3: whitelist/label reconciliation extension ====================
+    // (task 10-13-audit-chain-enhancement — the survey A2/C12 census: PURE_URL is the only
+    // ResourceType and UPDATE_ACCOUNT_USER_NAME the only AuditType with LIVE write points missing
+    // from the init() whitelist; the 22 DATA_JOB + 4 LOGICAL_DB dead types deliberately stay OUT
+    // — 主会话裁量 b, no rows to filter on an internal deployment)
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void c8_pureUrl_whitelisted_withoutGetResourceNameCase_deadTypesStayOut() {
+        RdpOpAuditServiceImpl impl = new RdpOpAuditServiceImpl();
+        ReflectionTestUtils.invokeMethod(impl, "init");
+        List<ResourceType> resourceTypes = (List<ResourceType>) ReflectionTestUtils.getField(impl, "resourceTypes");
+        assertNotNull(resourceTypes);
+        assertTrue("PURE_URL must be filterable (the C4/C7 override HIGH rows were visible-but-unfilterable)",
+            resourceTypes.contains(ResourceType.PURE_URL));
+
+        // red line 2 (resId-PK contract): PURE_URL gets NO getResourceName case — every PURE_URL
+        // write point uses the explicit-resourceName overload (the 10-arg bypass); a case would
+        // make the default-throw contract lie and invite the Phase-2/Phase-5 defect class back
+        try {
+            ReflectionTestUtils.invokeMethod(impl, "getResourceName", 900L, ResourceType.PURE_URL);
+            org.junit.Assert.fail("PURE_URL must NOT have a getResourceName case");
+        } catch (UnsupportedOperationException expected) {
+            assertTrue(expected.getMessage().contains("PURE_URL"));
+        }
+
+        // dead types stay out of the dropdown (裁量 b pin)
+        assertTrue("TICKET has zero live write points", !resourceTypes.contains(ResourceType.TICKET));
+        assertTrue("LOGICAL_DB is a historical-deserialization tolerance enum",
+            !resourceTypes.contains(ResourceType.LOGICAL_DB));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void c8_updateAccountUserName_whitelisted_deadAuditTypesStayOut() {
+        RdpOpAuditServiceImpl impl = new RdpOpAuditServiceImpl();
+        ReflectionTestUtils.invokeMethod(impl, "init");
+        List<AuditType> auditTypes = (List<AuditType>) ReflectionTestUtils.getField(impl, "auditTypes");
+        assertNotNull(auditTypes);
+        assertTrue("UPDATE_ACCOUNT_USER_NAME has a live write point (RdpUserController.updateUserName)",
+            auditTypes.contains(AuditType.UPDATE_ACCOUNT_USER_NAME));
+        // the existing registrations stay (additive discipline regression guard)
+        assertTrue(auditTypes.contains(AuditType.UPDATE_ACCOUNT_PHONE));
+        // dead types stay out (22 DATA_JOB + 4 LOGICAL_DB representatives pinned)
+        assertTrue(!auditTypes.contains(AuditType.QUERY_JOB_INFO));
+        assertTrue(!auditTypes.contains(AuditType.CREATE_LOGICAL_DB));
+        assertTrue(!auditTypes.contains(AuditType.SET_LOGICAL_DB_BINDING));
+    }
+
+    @Test
+    public void c8_labels_threeLanguages_carryTheActiveGapKeys() throws Exception {
+        // the C12 label census: PERM_GROUP family 9 + RESET_ACCOUNT_AK_SK + UPDATE_ACCOUNT_USER_NAME
+        // (AuditType side) + PURE_URL/PERM_GROUP (ResourceType side). The dead-type labels
+        // (DATA_JOB 22 / LOGICAL_DB 4 / governance legacy 4) are deliberately NOT added (无行可显).
+        String[] keys = { "CREATE_PERM_GROUP", "UPDATE_PERM_GROUP", "DELETE_PERM_GROUP",
+                          "ENABLE_PERM_GROUP", "DISABLE_PERM_GROUP", "ADD_PERM_GROUP_MEMBER",
+                          "REMOVE_PERM_GROUP_MEMBER", "GRANT_PERM_GROUP_RESOURCE", "REVOKE_PERM_GROUP_RESOURCE",
+                          "RESET_ACCOUNT_AK_SK", "UPDATE_ACCOUNT_USER_NAME",
+                          "PURE_URL", "PERM_GROUP" };
+        for (String file : new String[] { "rdp/static/i18n/label.properties",
+                                          "rdp/static/i18n/label_en_US.properties",
+                                          "rdp/static/i18n/label_zh_CN.properties" }) {
+            Properties props = loadUtf8(file);
+            for (String key : keys) {
+                String value = props.getProperty(key);
+                assertNotNull(file + " must carry " + key, value);
+                assertFalseBlank(value, file + " " + key);
+            }
+        }
+        // the zh copy itself (same-key-different-language values pinned)
+        Properties zh = loadUtf8("rdp/static/i18n/label_zh_CN.properties");
+        assertEquals("权限组", zh.getProperty("PERM_GROUP"));
+        assertEquals("更新账户用户名", zh.getProperty("UPDATE_ACCOUNT_USER_NAME"));
+    }
+
     private static void assertSwitchDef(String fieldName) throws Exception {
         java.lang.reflect.Field field = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
             .getDeclaredField(fieldName);

@@ -141,4 +141,23 @@ public class DbErrorSanitizerTest {
         assertEquals(")))(((", DbErrorSanitizer.sanitize(")))((("));
         assertEquals("Duplicate entry '", DbErrorSanitizer.sanitize("Duplicate entry '"));
     }
+
+    // ==================== C8 M5.1: the UNRESOLVED wrapped-text shapes ====================
+    // The four DmlBatchAsyncTask UNRESOLVED concatenations embed a raw rootMessage/dbError into
+    // a parenthesized copy — sanitize must mask the embedded value while preserving the wrapper
+    // semantics (the classification text and the troubleshooting column names stay readable).
+
+    @Test
+    public void sanitize_unresolvedWrappedText_valueMaskedWrapperKept() {
+        assertEquals("(connection lost during the batch statement: Duplicate entry '***' for key 'uk_phone')",
+            DbErrorSanitizer.sanitize(
+                "(connection lost during the batch statement: Duplicate entry '13800001234' for key 'uk_phone')"));
+        // the comm-link classification text survives verbatim (isCommLinkError reads the raw text
+        // BEFORE sanitize — but a sanitized copy must stay human-diagnosable too)
+        String commLink = "Communications link failure — nested: Key (phone)=(13800001234) already exists.";
+        String sanitized = DbErrorSanitizer.sanitize(commLink);
+        assertTrue(sanitized.startsWith("Communications link failure"));
+        assertTrue(sanitized.contains("Key (phone)=(***)"));
+        assertFalse(sanitized.contains("13800001234"));
+    }
 }

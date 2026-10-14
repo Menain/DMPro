@@ -64,4 +64,14 @@ public interface DmGovSchemaGateOverrideMapper extends BaseMapper<DmGovSchemaGat
 
     /** All override rows of a release (UI list: active/consumed/expired/revoked). */
     List<DmGovSchemaGateOverrideDO> queryByReleaseId(@Param("releaseId") long releaseId);
+
+    /**
+     * C8 M5.3 (V202610130004): set the materialized {@code expired} mark on the time-expired
+     * ACTIVE row(s) of exactly the grant's granularity (gate_type + stmt/release level) — the
+     * uk_gate_override_active convergence step run by grant() before the insert.
+     */
+    int expireStaleActive(@Param("releaseId") long releaseId,
+                          @Param("stmtId") Long stmtId,
+                          @Param("gateType") String gateType,
+                          @Param("now") Date now);
 }

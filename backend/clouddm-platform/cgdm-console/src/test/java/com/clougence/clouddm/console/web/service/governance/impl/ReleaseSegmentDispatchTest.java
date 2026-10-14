@@ -254,14 +254,26 @@ public class ReleaseSegmentDispatchTest {
         // the prod dsId = the ResourceType's own PK), obj annotated with the release binding
         ArgumentCaptor<com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj> auditCaptor
             = ArgumentCaptor.forClass(com.clougence.clouddm.console.web.model.vo.ghost.GhostOpAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor
+            = ArgumentCaptor.forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(CREATOR), anyString(), isNull(),
             eq(PROD_DS_ID), auditCaptor.capture(),
             eq(com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.HIGH),
             eq(com.clougence.clouddm.platform.dal.model.monitor.AuditType.GHOST_EXECUTE),
-            eq(com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE));
+            eq(com.clougence.clouddm.platform.dal.model.ResourceType.DATASOURCE),
+            chainCaptor.capture());
         assertEquals(Long.valueOf(STMT_ID), auditCaptor.getValue().getReleaseStmtId());
         assertEquals(Long.valueOf(RELEASE_ID), auditCaptor.getValue().getReleaseId());
         assertEquals("RELEASE_SEGMENT_CHAIN", auditCaptor.getValue().getVia());
+        // C8 M2 write-point matrix pin (release-chain row): release binding + fingerprint over
+        // the segment's FULL frozen sql_text + explicit SYSTEM_AUTO; NO ticket binding
+        assertEquals(Long.valueOf(RELEASE_ID), chainCaptor.getValue().getReleaseId());
+        org.junit.Assert.assertNull(chainCaptor.getValue().getTicketId());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils
+                .hash("ALTER TABLE t_big ADD c INT"),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
     }
 
     @Test

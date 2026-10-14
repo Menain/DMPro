@@ -339,8 +339,11 @@ public class DsDataEditorServiceImpl implements DsDataEditorService {
         long dsId = levels.dsDO().getId();
         SecCheckerRules maskingRules = this.rulesService.fetchCheckerRulesByDsId(dsId);
         if (maskingRules != null && maskingRules.getMaskingBindingState() == SecCheckerRules.MaskingBindingState.DANGLING) {
+            // C8 M2: the data-editor landing is a real console UI request → explicit CONSOLE
+            // (design D3 matrix "按落点"); the tri-state carrier feeds the obj spec snapshot
             MaskingAuditUtils.auditRejected(this.rdpOpAuditService, maskingRules.getOwnerUid(), uid, dsId, maskingRules
-                .getEnvId(), null);
+                .getEnvId(), null, maskingRules,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE);
             SecRulesService.ensureMaskingBindingUsable(maskingRules);
         }
 
@@ -357,7 +360,8 @@ public class DsDataEditorServiceImpl implements DsDataEditorService {
             // C6/M5: table-level DM_SENSITIVE authorization exempts the WHOLE editor request —
             // an explicit grant serving original values, trailed in op_audit (HIGH).
             MaskingAuditUtils.auditOriginalView(this.rdpOpAuditService, puid, uid, dsId,
-                SensitiveOriginalViewObj.EXEMPT_DATA_EDITOR, Collections.singletonList(levels.asResPath().getResPath()), null);
+                SensitiveOriginalViewObj.EXEMPT_DATA_EDITOR, Collections.singletonList(levels.asResPath().getResPath()), null,
+                maskingRules, com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.CONSOLE);
         }
 
         // execute sql

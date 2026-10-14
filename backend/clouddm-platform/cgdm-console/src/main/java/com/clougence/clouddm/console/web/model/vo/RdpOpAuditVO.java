@@ -73,6 +73,13 @@ public class RdpOpAuditVO {
 
     private String        logPathWorkerIp;
 
+    // ---- C8 M2 audit-chain fields (additive; NULL on pre-C8 stock rows) ----
+    /** AuditChannel enum name (CONSOLE / OPENAPI / SYSTEM_AUTO) — String for the frontend. */
+    private String        channel;
+    private Long          ticketId;
+    private Long          releaseId;
+    private String        sqlFingerprint;
+
     public RdpOpAuditVO convertFromDO(DmMonOpAuditDO auditDO) {
         this.id = auditDO.getId();
         this.gmtCreate = auditDO.getGmtCreate();
@@ -105,6 +112,14 @@ public class RdpOpAuditVO {
         if (auditDO.getIp() != null) {
             this.logPathWorkerIp = auditDO.getIp();
         }
+
+        // C8 M2 additive audit-chain fields
+        if (auditDO.getChannel() != null) {
+            this.channel = auditDO.getChannel().name();
+        }
+        this.ticketId = auditDO.getTicketId();
+        this.releaseId = auditDO.getReleaseId();
+        this.sqlFingerprint = auditDO.getSqlFingerprint();
 
         return this;
     }

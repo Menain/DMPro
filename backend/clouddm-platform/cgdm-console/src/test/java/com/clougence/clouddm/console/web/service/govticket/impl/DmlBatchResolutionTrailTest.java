@@ -137,6 +137,9 @@ public class DmlBatchResolutionTrailTest {
 
     // ==================== fixtures ====================
 
+    /** C8 M2: the frozen statement text of the fixture segment (the resolution-row fingerprint source). */
+    private static final String FROZEN_SQL = "UPDATE t_order SET state = 1 WHERE id > 0";
+
     private DmTicketDbStmtDO unresolvedGroup() {
         TicketSegment seg = new TicketSegment();
         seg.setSegIdx(1);
@@ -144,6 +147,7 @@ public class DmlBatchResolutionTrailTest {
         seg.setStatus(TicketSegment.STATUS_FAILED);
         seg.setTaskId(55L);
         seg.setTable("t_order");
+        seg.setSql(FROZEN_SQL);
         seg.setError("批 7 执行结果未知");
         seg.setSummary(new java.util.HashMap<>(Map.of(
             "unresolvedIntent", Boolean.TRUE, "intentSeq", 7, "batchesDone", 6, "rowsDone", 30000)));
@@ -199,9 +203,19 @@ public class DmlBatchResolutionTrailTest {
         assertTrue(event.getEventData().contains("\"groupId\":" + GROUP_ID));
         // the audit twin (DML_BATCH_EXECUTE reused, obj annotated resolution+intentSeq)
         ArgumentCaptor<DmlBatchOpAuditObj> auditCaptor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
+        ArgumentCaptor<com.clougence.rdp.service.model.AuditChainMO> chainCaptor = ArgumentCaptor
+            .forClass(com.clougence.rdp.service.model.AuditChainMO.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(eq(PUID), eq(UID),
             eq("/system/dbChangeV2/dmlBatch/resolution"), isNull(), eq(DS_ID), auditCaptor.capture(),
-            eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_EXECUTE), eq(ResourceType.DATASOURCE));
+            eq(SecurityLevel.HIGH), eq(AuditType.DML_BATCH_EXECUTE), eq(ResourceType.DATASOURCE),
+            chainCaptor.capture());
+        // C8 M2 write-point matrix pin: the resolution row carries ticketId + the FULL frozen
+        // statement's GovSqlHashUtils fingerprint + explicit SYSTEM_AUTO
+        assertEquals(Long.valueOf(TICKET_ID), chainCaptor.getValue().getTicketId());
+        assertEquals(com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(FROZEN_SQL),
+            chainCaptor.getValue().getSqlFingerprint());
+        assertEquals(com.clougence.clouddm.platform.dal.model.monitor.AuditChannel.SYSTEM_AUTO,
+            chainCaptor.getValue().getChannel());
         DmlBatchOpAuditObj obj = auditCaptor.getValue();
         assertEquals(TicketSegment.RESOLUTION_SKIP_BATCH, obj.getResolution());
         assertEquals(Long.valueOf(7L), obj.getIntentSeq());
@@ -223,7 +237,7 @@ public class DmlBatchResolutionTrailTest {
         assertTrue(eventCaptor.getValue().getEventData().contains("\"resolution\":\"RERUN_BATCH\""));
         ArgumentCaptor<DmlBatchOpAuditObj> auditCaptor = ArgumentCaptor.forClass(DmlBatchOpAuditObj.class);
         verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            isNull(), any(), auditCaptor.capture(), any(), any(), any());
+            isNull(), any(), auditCaptor.capture(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
         assertEquals(TicketSegment.RESOLUTION_RERUN_BATCH, auditCaptor.getValue().getResolution());
     }
 
@@ -238,7 +252,7 @@ public class DmlBatchResolutionTrailTest {
         inOrder.verify(approvalStateService).markExecutionDispatched("biz-900");
         inOrder.verify(eventMapper).insert(any(DmDbChangeEventDO.class));
         inOrder.verify(rdpOpAuditService).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     // ==================== no-trail shapes ====================
@@ -255,7 +269,7 @@ public class DmlBatchResolutionTrailTest {
         verify(ticketSegmentService, never()).resumeGroupUnderLock(any(), anyLong(), anyString(), any());
         verify(eventMapper, never()).insert(any(DmDbChangeEventDO.class));
         verify(rdpOpAuditService, never()).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     @Test
@@ -270,7 +284,7 @@ public class DmlBatchResolutionTrailTest {
             eq(TicketSegment.RESOLUTION_SKIP_BATCH));
         verify(eventMapper, never()).insert(any(DmDbChangeEventDO.class));
         verify(rdpOpAuditService, never()).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     @Test
@@ -288,7 +302,7 @@ public class DmlBatchResolutionTrailTest {
         // a rejected resume leaves NO trail (the verdict never took effect)
         verify(eventMapper, never()).insert(any(DmDbChangeEventDO.class));
         verify(rdpOpAuditService, never()).logAndAddOperationAudit(anyString(), anyString(), anyString(),
-            any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
     }
 
     // ==================== trail resilience ====================
@@ -297,7 +311,7 @@ public class DmlBatchResolutionTrailTest {
     public void retry_auditFailure_neverBreaksTheResumedRetry() {
         unresolvedGroup();
         doThrow(new RuntimeException("audit store down")).when(rdpOpAuditService)
-            .logAndAddOperationAudit(anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any());
+            .logAndAddOperationAudit(anyString(), anyString(), anyString(), any(), any(), any(), any(), any(), any(), any(com.clougence.rdp.service.model.AuditChainMO.class));
 
         service.retryGroup(PUID, UID, GROUP_ID, TicketSegment.RESOLUTION_RERUN_BATCH); // must not throw
 

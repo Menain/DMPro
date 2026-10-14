@@ -26,6 +26,12 @@
         <result column="operation_uri" property="operationUri"/>
         <result column="log_info" property="logInfo"/>
         <result column="log_path" property="logPath"/>
+        <!-- C8 M2 audit-chain columns (V202610130003) -->
+        <result column="sql_fingerprint" property="sqlFingerprint"/>
+        <result column="ticket_id" property="ticketId"/>
+        <result column="release_id" property="releaseId"/>
+        <result column="channel" property="channel"
+                javaType="com.clougence.clouddm.platform.dal.model.monitor.AuditChannel"/>
     </resultMap>
 
     <sql id="rdpOperationAudit">
@@ -49,7 +55,11 @@
         operation_uri,
         uuid_key,
         log_info,
-        log_path
+        log_path,
+        sql_fingerprint,
+        ticket_id,
+        release_id,
+        channel
     </sql>
 
     <sql id="operationAuditCondition">
@@ -75,12 +85,25 @@
         <if test="userNameLike != null and userNameLike != ''">
             <![CDATA[ AND user_name LIKE CONCAT('%', #{userNameLike}, '%') ]]>
         </if>
+        <!-- C8 M2 (design D4): the four audit-chain dimensions, additive optional predicates —
+             with all four null the rendered SQL is byte-identical to the pre-C8 shape (pinned
+             by AuditChainColumnTest). channel filters on the varchar enum name. -->
+        <if test="channel != null and channel != ''">
+            <![CDATA[ AND channel = #{channel} ]]>
+        </if>
+        <if test="ticketId != null">
+            <![CDATA[ AND ticket_id = #{ticketId} ]]>
+        </if>
+        <if test="releaseId != null">
+            <![CDATA[ AND release_id = #{releaseId} ]]>
+        </if>
+        <if test="sqlFingerprint != null and sqlFingerprint != ''">
+            <![CDATA[ AND sql_fingerprint = #{sqlFingerprint} ]]>
+        </if>
     </sql>
 
-    <delete id="clearData">
-        DELETE FROM
-            operation_audit
-    </delete>
+    <!-- C8 M1 (M1.4): the clearData dead method (still pointing at the pre-rename table
+         operation_audit, zero callers repository-wide) was REMOVED. -->
 
     <select id="queryByConditionJoinUrlAuth" resultMap="rdpOperationAuditDO">
         SELECT
@@ -223,4 +246,17 @@
             1 = 1
             <include refid="operationAuditCondition"/>
     </select>
+
+    <!-- C8 M1 (design D2): retention cleanup leg of the 30-min scheduler — the
+         deleteAuditBeforeDate (dm_exec_sql_audit) shape: date predicate + LIMIT batching,
+         per primary-account scope via owner_uid (tenant isolation). -->
+    <delete id="deleteBeforeDate">
+        DELETE FROM
+            dm_mon_op_audit
+        WHERE
+            owner_uid = #{ownerUid}
+            AND
+            #{date} <![CDATA[ > ]]> operate_date
+        LIMIT 500
+    </delete>
 </mapper>

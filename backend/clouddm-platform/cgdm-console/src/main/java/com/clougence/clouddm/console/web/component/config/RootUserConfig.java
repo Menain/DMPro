@@ -241,6 +241,31 @@ public class RootUserConfig {
     private Boolean       dmEnableMCP;
     @UserConfigDef(name = "sqlAuditRetentionDays", defaultValue = "30", descKey = I18nUserConfigMsgKeys.SQL_AUDIT_RETENTION_DAYS, valueRange = "1 - 60", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
     private String        sqlAuditRetentionDays;
+
+    /**
+     * C8 M1 (task 10-13-audit-chain-enhancement, design D2 — 裁决 4 audit-retention mechanization):
+     * operation-audit (dm_mon_op_audit) retention in days — long retention by default (compliance
+     * face of the audit chain). Read discipline mirrors sqlAuditRetentionDays: fail-safe (missing /
+     * unparsable → the default) + defensive clamping into 30-3650 at cleanup time; {@code <= 0}
+     * DISABLES the cleanup (permanent retention — the "no deletion before the pilot sign-off"
+     * escape hatch, plan L228). Consumed by the AuditServiceImpl 30-min scheduler, per primary
+     * account (owner_uid scope), LIMIT-500 batches.
+     */
+    @UserConfigDef(name = "opAuditRetentionDays", defaultValue = "365", descKey = I18nUserConfigMsgKeys.OP_AUDIT_RETENTION_DAYS, valueRange = "30 - 3650, <=0 disables cleanup", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       opAuditRetentionDays;
+
+    /**
+     * C8 M1 (design D2): dm_mon_biz_log retention in days — short retention by default (high-
+     * frequency process/forensics/observation rows: AUTO_EXEC_JOB/TASK, DML_BATCH_TASK,
+     * MASKING_NOT_BOUND/MASKING_ROOT_EXEMPT — the C6 storm-protection ruling keeps writing them
+     * per query, this KV is the mechanized answer to their unbounded growth). Same read/clamp
+     * discipline (7-3650, {@code <= 0} disables). The table has NO owner column, so the cleanup
+     * is platform-global: it runs with the MOST CONSERVATIVE resolution across primary accounts
+     * (any primary disabling it disables the leg; otherwise the largest effective day count wins
+     * — a row is deleted only when every tenant's retention window has passed).
+     */
+    @UserConfigDef(name = "bizLogRetentionDays", defaultValue = "90", descKey = I18nUserConfigMsgKeys.BIZ_LOG_RETENTION_DAYS, valueRange = "7 - 3650, <=0 disables cleanup", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
+    private Integer       bizLogRetentionDays;
     @UserConfigDef(name = "approvalSqlFileMaxMegaByte", defaultValue = "20", descKey = I18nUserConfigMsgKeys.APPROVAL_SQL_FILE_MAX_MB, valueRange = "1 ~ 20 MB", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
     private Integer       approvalSqlFileMaxMegaByte;
     @UserConfigDef(name = "approvalDmlExplainMaxStatements", defaultValue = "100", descKey = I18nUserConfigMsgKeys.APPROVAL_DML_EXPLAIN_MAX_STATEMENTS, valueRange = "1 ~ 10000", configTagType = UserConfigTagType.COMMON, confBelong = ConfBelong.CloudDM)
