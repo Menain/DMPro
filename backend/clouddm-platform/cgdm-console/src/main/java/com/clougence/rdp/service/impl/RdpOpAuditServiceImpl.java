@@ -166,7 +166,8 @@ public class RdpOpAuditServiceImpl implements RdpOpAuditService {
                 AuditType.GOV_ROUTE_OVERRIDE_GRANT, // ADR-013 M3 registration (2/3): init whitelist
                 AuditType.GOV_ROUTE_OVERRIDE_CONSUME, // ADR-013 M3 registration (2/3): init whitelist
                 AuditType.SENSITIVE_ORIGINAL_VIEW, // C6 four-point registration (2/4): init whitelist
-                AuditType.SENSITIVE_MASKING_REJECTED)); // C6 four-point registration (2/4): init whitelist
+                AuditType.SENSITIVE_MASKING_REJECTED, // C6 four-point registration (2/4): init whitelist
+                AuditType.ROLLBACK_MATERIAL)); // C10 four-point registration (2/4): init whitelist (resourceName via the PURE_URL oldName bypass — no getResourceName case, the C4/C7 precedent)
 
         isExistsLogSet.add(AuditType.QUERY_DATA_SOURCE_CONFIG.name());
         isExistsLogSet.add(AuditType.UPDATE_DATA_SOURCE_CONFIG.name());

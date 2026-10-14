@@ -348,6 +348,59 @@ public class DmlBatchAuditRegistrationTest {
         assertEquals("更新账户用户名", zh.getProperty("UPDATE_ACCOUNT_USER_NAME"));
     }
 
+    // ==================== C10: ROLLBACK_MATERIAL four-point registration pins ====================
+    // (task 10-14-recovery-type-grading, design D7 — the rollback-material trail: enum + init
+    // whitelist + PURE_URL oldName bypass ("ticket:<id>", NO getResourceName case — the C4/C7/C8
+    // precedent) + label 三语. A missing point = silent dropdown/filter degradation.)
+
+    @Test
+    public void c10_rollbackMaterial_point1_enumExists() {
+        assertEquals(AuditType.ROLLBACK_MATERIAL, AuditType.valueOf("ROLLBACK_MATERIAL"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void c10_rollbackMaterial_point2_initWhitelist_andPoint3_pureUrlBypass() {
+        RdpOpAuditServiceImpl impl = new RdpOpAuditServiceImpl();
+        ReflectionTestUtils.invokeMethod(impl, "init");
+        List<AuditType> auditTypes = (List<AuditType>) ReflectionTestUtils.getField(impl, "auditTypes");
+        assertNotNull(auditTypes);
+        assertTrue("ROLLBACK_MATERIAL must be whitelisted (missing = the audit page filter drops the rows)",
+            auditTypes.contains(AuditType.ROLLBACK_MATERIAL));
+        // the bypass resType stays filterable (C8 M3 registration — the write points ride it)
+        List<ResourceType> resourceTypes = (List<ResourceType>) ReflectionTestUtils.getField(impl, "resourceTypes");
+        assertTrue(resourceTypes.contains(ResourceType.PURE_URL));
+        // point 3 is the DELIBERATE absence: PURE_URL has no getResourceName case — the write
+        // points must use the explicit-resourceName overload ("ticket:<id>"); a case here would
+        // violate the resId-must-be-the-ResourceType's-own-PK contract (red line 2 of C8 M3)
+        try {
+            ReflectionTestUtils.invokeMethod(impl, "getResourceName", 900L, ResourceType.PURE_URL);
+            org.junit.Assert.fail("PURE_URL must NOT have a getResourceName case (C10 rides the bypass)");
+        } catch (UnsupportedOperationException expected) {
+            assertTrue(expected.getMessage().contains("PURE_URL"));
+        }
+    }
+
+    @Test
+    public void c10_rollbackMaterial_point4_labelsThreeLanguages() throws Exception {
+        for (String file : new String[] { "rdp/static/i18n/label.properties",
+                                          "rdp/static/i18n/label_en_US.properties",
+                                          "rdp/static/i18n/label_zh_CN.properties" }) {
+            Properties props = loadUtf8(file);
+            String value = props.getProperty("ROLLBACK_MATERIAL");
+            assertNotNull(file + " must carry ROLLBACK_MATERIAL", value);
+            assertFalseBlank(value, file + " ROLLBACK_MATERIAL");
+        }
+        // the copy itself (same-key-different-language values pinned)
+        assertEquals("回滚材料变更", loadUtf8("rdp/static/i18n/label_zh_CN.properties")
+            .getProperty("ROLLBACK_MATERIAL"));
+        assertEquals("Rollback Material Change", loadUtf8("rdp/static/i18n/label_en_US.properties")
+            .getProperty("ROLLBACK_MATERIAL"));
+        assertEquals("en and default must stay in sync",
+            loadUtf8("rdp/static/i18n/label_en_US.properties").getProperty("ROLLBACK_MATERIAL"),
+            loadUtf8("rdp/static/i18n/label.properties").getProperty("ROLLBACK_MATERIAL"));
+    }
+
     private static void assertSwitchDef(String fieldName) throws Exception {
         java.lang.reflect.Field field = com.clougence.clouddm.console.web.component.config.RootUserConfig.class
             .getDeclaredField(fieldName);

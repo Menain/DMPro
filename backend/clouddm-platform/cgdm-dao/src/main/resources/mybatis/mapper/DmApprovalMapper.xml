@@ -31,6 +31,7 @@
         <result column="expected_affected_rows" property="expectedAffectedRows"/>
         <result column="roll_back_sql" property="rollBackSql"/>
         <result column="ticket_info" property="ticketInfo"/>
+        <result column="recovery_type" property="recoveryType"/>
         <result column="levels" property="levels"
                 typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
         <result column="features" property="features"
@@ -70,6 +71,7 @@
         expected_affected_rows,
         roll_back_sql,
         ticket_info,
+        recovery_type,
         levels,
         features,
         outbound_status,
@@ -316,6 +318,7 @@
             expected_affected_rows,
             roll_back_sql,
             ticket_info,
+            recovery_type,
             features
         FROM
             dm_approval

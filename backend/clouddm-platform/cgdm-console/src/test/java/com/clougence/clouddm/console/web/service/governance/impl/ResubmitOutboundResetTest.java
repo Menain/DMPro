@@ -393,6 +393,12 @@ public class ResubmitOutboundResetTest {
         assertNull("resubmit must never clear appro_identity on the ticket path",
                 updateCaptor.getValue().getApproIdentity());
         verify(tApprovalMapper, never()).clearOutboundForNewRound(anyLong());
+        // C10 D7 branch 3 (blank FO rollback + original not system-generated → material KEPT):
+        // recovery_type is not written either — the null field stays out of the MyBatis-Plus
+        // NOT_NULL update set, so the persisted grade survives the resubmit (design D4)
+        assertNull("C10 branch 3: recovery_type untouched when the rollback material is kept",
+                updateCaptor.getValue().getRecoveryType());
+        assertNull(updateCaptor.getValue().getRollBackSql());
     }
 
     private ApprovalStateService approvalStateService;

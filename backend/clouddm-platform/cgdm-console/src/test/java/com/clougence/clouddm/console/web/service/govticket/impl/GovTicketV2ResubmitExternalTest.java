@@ -480,6 +480,146 @@ public class GovTicketV2ResubmitExternalTest {
         }
     }
 
+    // ==================== C10 recovery-type re-grading (task 10-14, design D4/D7) ====================
+
+    @Test
+    public void c10_resubmit_branch1_userMaterial_gradesCompensationSql_openChannelAudit() {
+        long ticketId = 100L;
+        DmApprovalDO ticket = buildExternalRevisionTicket(ticketId, "PROD_DML", "DIRECT");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+        DmTicketDbStmtDO group = buildGroup(201L, ticketId, "FAILED", "CREATE TABLE t(id INT);");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(Collections.singletonList(group));
+        when(stmtMapper.updateSqlForRevision(anyLong(), anyString(), anyString())).thenReturn(1);
+        when(prodReleaseDal.stmtMapper()).thenReturn(mock(com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper.class));
+        when(prodReleaseDal.stmtMapper().countBySourceStmtIds(anyList())).thenReturn(0);
+        com.clougence.rdp.service.RdpOpAuditService auditSvc
+            = mock(com.clougence.rdp.service.RdpOpAuditService.class);
+        ReflectionTestUtils.setField(service, "rdpOpAuditService", auditSvc);
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        fo.setRollBackSql("DROP TABLE t2;"); // D7 branch 1: applicant provided new material
+        GovTicketV2ResubmitFO.GroupInput gi = new GovTicketV2ResubmitFO.GroupInput();
+        gi.setGroupId(201L);
+        gi.setSqlContent("CREATE TABLE t2(id INT);");
+        fo.setGroups(Collections.singletonList(gi));
+
+        service.resubmitOpenCommand(PUID, UID, fo);
+
+        ArgumentCaptor<DmApprovalDO> updateCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).updateById(updateCaptor.capture());
+        DmApprovalDO update = updateCaptor.getValue();
+        assertEquals("DROP TABLE t2;", update.getRollBackSql());
+        // 裁决 1: the fresh user material re-grades to COMPENSATION_SQL (the harness precheck
+        // signals carry no irreversible statement type / routed segment)
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.COMPENSATION_SQL,
+            update.getRecoveryType());
+
+        // the audit row rides the OPEN marker (openCommand discriminator → truthful OPENAPI channel)
+        ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(auditSvc).logAndAddOperationAudit(eq(PUID), eq(UID),
+            eq("/open/dbChange/tickets/resubmit"), isNull(), eq(ticketId), objCaptor.capture(),
+            eq(com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.NORMAL),
+            eq(com.clougence.clouddm.platform.dal.model.monitor.AuditType.ROLLBACK_MATERIAL),
+            eq(com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL),
+            eq("ticket:" + ticketId),
+            any(com.clougence.rdp.service.model.AuditChainMO.class));
+        assertEquals("USER", ((com.clougence.clouddm.console.web.model.vo.govticket
+            .RollbackMaterialAuditObj) objCaptor.getValue()).getSource());
+    }
+
+    @Test
+    public void c10_resubmit_branch3_materialKept_noGradeWrite_noAuditRow() {
+        long ticketId = 101L;
+        DmApprovalDO ticket = buildExternalRevisionTicket(ticketId, "PROD_DML", "DIRECT");
+        // the stored material is applicant-provided (generated=false) and the FO leaves it blank
+        ApprovalMO stored = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        stored.setRollBackSqlGenerated(false);
+        ticket.setTicketInfo(JsonUtils.toJson(stored));
+        ticket.setRollBackSql("DELETE FROM t WHERE id=1;");
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+        DmTicketDbStmtDO group = buildGroup(202L, ticketId, "FAILED", "CREATE TABLE t(id INT);");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(Collections.singletonList(group));
+        when(stmtMapper.updateSqlForRevision(anyLong(), anyString(), anyString())).thenReturn(1);
+        when(prodReleaseDal.stmtMapper()).thenReturn(mock(com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper.class));
+        when(prodReleaseDal.stmtMapper().countBySourceStmtIds(anyList())).thenReturn(0);
+        com.clougence.rdp.service.RdpOpAuditService auditSvc
+            = mock(com.clougence.rdp.service.RdpOpAuditService.class);
+        ReflectionTestUtils.setField(service, "rdpOpAuditService", auditSvc);
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        GovTicketV2ResubmitFO.GroupInput gi = new GovTicketV2ResubmitFO.GroupInput();
+        gi.setGroupId(202L);
+        gi.setSqlContent("CREATE TABLE t2(id INT);");
+        fo.setGroups(Collections.singletonList(gi));
+
+        service.resubmitOpenCommand(PUID, UID, fo);
+
+        ArgumentCaptor<DmApprovalDO> updateCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).updateById(updateCaptor.capture());
+        DmApprovalDO update = updateCaptor.getValue();
+        // branch 3: material kept → BOTH roll_back_sql and recovery_type stay null on the update
+        // DO, so the MyBatis-Plus NOT_NULL strategy keeps the old column values (the persisted
+        // COMPENSATION_SQL grade survives — design D4)
+        assertNull(update.getRollBackSql());
+        assertNull(update.getRecoveryType());
+        // no material change → no ROLLBACK_MATERIAL row (no change, no trail)
+        verifyNoInteractions(auditSvc);
+    }
+
+    @Test
+    public void c10_resubmit_branch2_regenerated_regradesFromFreshSignals_consoleChannel() {
+        long ticketId = 102L;
+        DmApprovalDO ticket = buildInternalRevisionTicket(ticketId, "PROD_DML", "DIRECT");
+        ApprovalMO stored = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        stored.setRollBackSqlGenerated(true); // original material was system-generated
+        ticket.setTicketInfo(JsonUtils.toJson(stored));
+        when(approvalMapper.queryById(ticketId)).thenReturn(ticket);
+        DmTicketDbStmtDO group = buildGroup(203L, ticketId, "FAILED", "UPDATE t SET a=0 WHERE id=1;");
+        when(stmtMapper.queryByTicketId(ticketId)).thenReturn(Collections.singletonList(group));
+        when(stmtMapper.updateSqlForRevision(anyLong(), anyString(), anyString())).thenReturn(1);
+        when(prodReleaseDal.stmtMapper()).thenReturn(mock(com.clougence.clouddm.platform.dal.mapper.prodrelease.DmProdReleaseStmtMapper.class));
+        when(prodReleaseDal.stmtMapper().countBySourceStmtIds(anyList())).thenReturn(0);
+        // the REAL generator for this test (the shared harness mocks it) — branch 2 must produce
+        // fresh material from the REVISED group SQL
+        ReflectionTestUtils.setField(service, "rollbackSqlGenerator", new RollbackSqlGenerator());
+        com.clougence.rdp.service.RdpOpAuditService auditSvc
+            = mock(com.clougence.rdp.service.RdpOpAuditService.class);
+        ReflectionTestUtils.setField(service, "rdpOpAuditService", auditSvc);
+
+        GovTicketV2ResubmitFO fo = new GovTicketV2ResubmitFO();
+        fo.setTicketId(ticketId);
+        GovTicketV2ResubmitFO.GroupInput gi = new GovTicketV2ResubmitFO.GroupInput();
+        gi.setGroupId(203L);
+        gi.setSqlContent("CREATE TABLE t2(id INT);"); // the revision
+        fo.setGroups(Collections.singletonList(gi));
+
+        service.resubmit(PUID, UID, fo); // console path (owner matches)
+
+        ArgumentCaptor<DmApprovalDO> updateCaptor = ArgumentCaptor.forClass(DmApprovalDO.class);
+        verify(approvalMapper).updateById(updateCaptor.capture());
+        DmApprovalDO update = updateCaptor.getValue();
+        assertNotNull(update.getRollBackSql());
+        assertTrue(update.getRollBackSql().startsWith("-- 系统自动生成"));
+        // the harness precheck classifies the revised SQL as DML (INSERT-typed SplitScript) with
+        // no routed segments → the regenerated material re-grades to TRANSACTION (arm 5)
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.TRANSACTION,
+            update.getRecoveryType());
+
+        // console arrival → the real console resubmit URI (channel inference → CONSOLE)
+        ArgumentCaptor<Object> objCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(auditSvc).logAndAddOperationAudit(eq(PUID), eq(UID),
+            eq("/api/entry/dbChangeV2/resubmit"), isNull(), eq(ticketId), objCaptor.capture(),
+            eq(com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.NORMAL),
+            eq(com.clougence.clouddm.platform.dal.model.monitor.AuditType.ROLLBACK_MATERIAL),
+            eq(com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL),
+            eq("ticket:" + ticketId),
+            any(com.clougence.rdp.service.model.AuditChainMO.class));
+        assertEquals("REGENERATED", ((com.clougence.clouddm.console.web.model.vo.govticket
+            .RollbackMaterialAuditObj) objCaptor.getValue()).getSource());
+    }
+
     // ==================== Helpers ====================
 
     private DmApprovalDO buildExternalRevisionTicket(long ticketId, String ticketType, String approvalMode) {

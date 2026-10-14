@@ -184,7 +184,22 @@ public enum AuditType {
      * {reason=DANGLING_BINDING, dsId, envId, uid}. Registration identical to
      * SENSITIVE_ORIGINAL_VIEW. Written never-throw BEFORE the i18n rejection propagates.
      */
-    SENSITIVE_MASKING_REJECTED;
+    SENSITIVE_MASKING_REJECTED,
+    //******* ROLLBACK MATERIAL (C10, task 10-14-recovery-type-grading) *******
+    /**
+     * C10 (design D7): one rollback-MATERIAL write — system generation (backup template),
+     * applicant provision, or resubmit regeneration — trailed together with its recovery-type
+     * grade. NORMAL level (a material-change trail, not a security event). resId = ticketId,
+     * ResourceType.PURE_URL with the EXPLICIT resourceName "ticket:&lt;id&gt;" via the
+     * oldName+chain overload (the C4/C7 bypass precedent — deliberately NO getResourceName
+     * case). obj = RollbackMaterialAuditObj {source GENERATED|USER|REGENERATED, recoveryType,
+     * fingerprint (GovSqlHashUtils over the FULL material text — the governance join caliber),
+     * summary ≤500} — NEVER the full SQL text (the C8 obj discipline; the material itself lives
+     * in dm_approval.roll_back_sql). Chain columns via AuditChainMO.ofTicket (channel NULL →
+     * the sink's URI inference = the real arrival plane). The resubmit "blank + original
+     * applicant-provided" branch keeps the material unchanged → NO row (no change, no trail).
+     */
+    ROLLBACK_MATERIAL;
 
     public static String genUK(AuditType type, String UUIDKey, Object resId) {
         OperationDTO operationDTO = new OperationDTO();

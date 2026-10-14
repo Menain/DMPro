@@ -199,4 +199,169 @@ public class RollbackSqlGeneratorTest {
                 result.startsWith("-- 系统自动生成"));
         }
     }
+
+    // ==================================================================================
+    // C10 (task 10-14-recovery-type-grading, design D2) — dialect-aware + typed + per-group.
+    // RED LINE 1: every test above this banner is a pre-C10 pin and stays BYTE-UNTOUCHED;
+    // the MySQL/default rendering below is pinned byte-identical to the legacy one-arg shape.
+    // ==================================================================================
+
+    private static final com.clougence.clouddm.base.metadata.ds.DataSourceType PG
+        = com.clougence.clouddm.base.metadata.ds.DataSourceType.PostgreSQL;
+    private static final com.clougence.clouddm.base.metadata.ds.DataSourceType MY
+        = com.clougence.clouddm.base.metadata.ds.DataSourceType.MySQL;
+
+    // ==================== C10: the byte-identity red line ====================
+
+    @Test
+    public void c10_explicitMysql_byteIdenticalToLegacySignature() {
+        // timestamp-free statements → deterministic byte comparison (no _bak_ minute flakiness)
+        for (String sql : new String[] {
+                "DROP TABLE old_data;",
+                "GRANT SELECT ON db.* TO 'user'@'%';",
+                "ALTER TABLE users ADD COLUMN age INT;",
+                "@#$%^&*()" }) {
+            assertEquals("MySQL arm must stay byte-identical: " + sql,
+                generator.generate(sql), generator.generate(sql, MY));
+            assertEquals("null dialect = MySQL default: " + sql,
+                generator.generate(sql), generator.generate(sql, null));
+        }
+    }
+
+    @Test
+    public void c10_pgFamilyVariantsKeepMysqlShape_conservativeExactMatch() {
+        // the DmlBatchServiceImpl exact-match precedent: only DataSourceType.PostgreSQL flips the
+        // dialect; PG-family variants keep the status-quo shape (documented conservatism)
+        String sql = "DROP TABLE t;";
+        assertEquals(generator.generate(sql),
+            generator.generate(sql, com.clougence.clouddm.base.metadata.ds.DataSourceType.PolarDBPg));
+    }
+
+    // ==================== C10: the PG arm ====================
+
+    @Test
+    public void c10_pg_updateWithWhere_doubleQuotedIdentifiers_noBackticks() {
+        String result = generator.generate("UPDATE orders SET status=1 WHERE id=42;", PG);
+        assertNotNull(result);
+        assertTrue("header comment present", result.contains("-- 系统自动生成"));
+        assertTrue("PG double-quoted backup table", result.contains("\"orders_bak_"));
+        assertTrue("PG double-quoted source table", result.contains("SELECT * FROM \"orders\""));
+        assertTrue("WHERE condition preserved", result.contains("WHERE id=42"));
+        assertFalse("no MySQL backticks anywhere", result.contains("`"));
+    }
+
+    @Test
+    public void c10_pg_insertAndDdlTemplates_doubleQuotedTables() {
+        String insert = generator.generate("INSERT INTO users (id) VALUES (1);", PG);
+        assertTrue(insert.contains("DELETE FROM \"users\""));
+        assertFalse(insert.contains("`"));
+
+        String drop = generator.generate("DROP TABLE old_data;", PG);
+        assertTrue("irreversible warning kept (zh copy is dialect-neutral)", drop.contains("不可逆"));
+        assertTrue(drop.contains("\"old_data\""));
+        assertFalse(drop.contains("`"));
+    }
+
+    // ==================== C10: typed return (RollbackGenResult) ====================
+
+    @Test
+    public void c10_typed_perStmtClassification() {
+        RollbackGenResult r = generator.generateTyped(
+            "UPDATE t SET a=1 WHERE id=1; INSERT INTO t VALUES(1); DROP TABLE x; ALTER TABLE y ADD COLUMN c INT; GRANT SELECT ON z TO u;",
+            null);
+        assertNotNull(r.getText());
+        assertEquals(5, r.getPerStmtTypes().size());
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.BACKUP_TEMPLATE,
+            r.getPerStmtTypes().get(0).getRecovery());
+        assertEquals("t", r.getPerStmtTypes().get(0).getTable());
+        // INSERT: comment-only advice — no effective auto recovery artifact (honest UNSPECIFIED)
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.UNSPECIFIED,
+            r.getPerStmtTypes().get(1).getRecovery());
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.IRREVERSIBLE,
+            r.getPerStmtTypes().get(2).getRecovery());
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.UNSPECIFIED,
+            r.getPerStmtTypes().get(3).getRecovery());
+        assertEquals(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.UNSPECIFIED,
+            r.getPerStmtTypes().get(4).getRecovery());
+        for (int i = 0; i < 5; i++) {
+            assertEquals(i, r.getPerStmtTypes().get(i).getIndex());
+            assertEquals(0, r.getPerStmtTypes().get(i).getGroupOrdinal());
+            assertNotNull(r.getPerStmtTypes().get(i).getNote());
+        }
+    }
+
+    @Test
+    public void c10_typed_blankInput_nullTextEmptyCompanion() {
+        RollbackGenResult r = generator.generateTyped("   ", MY);
+        assertNull(r.getText());
+        assertTrue(r.getPerStmtTypes().isEmpty());
+        assertNull(generator.generate(null, PG));
+    }
+
+    @Test
+    public void c10_typed_textLegEqualsStringSignature() {
+        assertEquals(generator.generate("DROP TABLE t;", PG),
+            generator.generateTyped("DROP TABLE t;", PG).getText());
+    }
+
+    // ==================== C10: per-group combined generation ====================
+
+    @Test
+    public void c10_combined_singleGroup_degeneratesByteIdenticalNoHeader() {
+        // the identity pin (design D2): combinedSql of ONE group IS that group's SQL — the
+        // single-group combined output equals the legacy generate output byte-for-byte, header-free
+        for (String sql : new String[] { "DROP TABLE old_data;", "GRANT SELECT ON t TO u;" }) {
+            RollbackGenResult r = generator.generateCombined(java.util.List.of(
+                new RollbackSqlGenerator.GroupInput(sql, MY, "db1 (MySQL)")));
+            assertEquals(generator.generate(sql), r.getText());
+            assertFalse("no group header in the single-group shape", r.getText().contains("目标库"));
+        }
+    }
+
+    @Test
+    public void c10_combined_multiGroup_headersAndPerGroupDialects() {
+        RollbackGenResult r = generator.generateCombined(java.util.List.of(
+            new RollbackSqlGenerator.GroupInput("UPDATE t1 SET a=1 WHERE id=1;", MY, "db1 (MySQL)"),
+            new RollbackSqlGenerator.GroupInput("UPDATE t2 SET a=1 WHERE id=1;", PG, "db2 (PostgreSQL)")));
+        String text = r.getText();
+        assertNotNull(text);
+        assertTrue("group 1 header", text.contains("-- 目标库[1/2]: db1 (MySQL)"));
+        assertTrue("group 2 header", text.contains("-- 目标库[2/2]: db2 (PostgreSQL)"));
+        assertTrue("mysql section backticked", text.contains("`t1_bak_"));
+        assertTrue("pg section double-quoted", text.contains("\"t2_bak_"));
+        assertFalse("pg table never backticked", text.contains("`t2"));
+        assertTrue("each segment keeps the generation header",
+            text.indexOf("-- 系统自动生成") != text.lastIndexOf("-- 系统自动生成"));
+        // the companion list carries both groups' entries with re-stamped ordinals
+        assertEquals(2, r.getPerStmtTypes().size());
+        assertEquals(0, r.getPerStmtTypes().get(0).getGroupOrdinal());
+        assertEquals(1, r.getPerStmtTypes().get(1).getGroupOrdinal());
+        assertEquals("t1", r.getPerStmtTypes().get(0).getTable());
+        assertEquals("t2", r.getPerStmtTypes().get(1).getTable());
+    }
+
+    @Test
+    public void c10_combined_blankOrNullGroups_noMaterial() {
+        assertNull(generator.generateCombined(null).getText());
+        assertNull(generator.generateCombined(java.util.List.of()).getText());
+        // Arrays.asList tolerates the null element (List.of rejects it) — the null-group defensive arm
+        assertNull(generator.generateCombined(java.util.Arrays.asList(
+            new RollbackSqlGenerator.GroupInput("  ", MY, "db"), null)).getText());
+        assertTrue(generator.generateCombined(java.util.List.of(
+            new RollbackSqlGenerator.GroupInput("", MY, "db"))).getPerStmtTypes().isEmpty());
+    }
+
+    @Test
+    public void c10_combined_multiGroup_blankGroupSkippedNumberingDense() {
+        // a blank group is filtered BEFORE numbering — the [i/n] header stays dense
+        RollbackGenResult r = generator.generateCombined(java.util.List.of(
+            new RollbackSqlGenerator.GroupInput("DROP TABLE a;", MY, "db1"),
+            new RollbackSqlGenerator.GroupInput("   ", MY, "db-blank"),
+            new RollbackSqlGenerator.GroupInput("DROP TABLE b;", PG, "db2")));
+        assertTrue(r.getText().contains("-- 目标库[1/2]: db1"));
+        assertTrue(r.getText().contains("-- 目标库[2/2]: db2"));
+        assertFalse(r.getText().contains("db-blank"));
+        assertEquals(2, r.getPerStmtTypes().size());
+        assertEquals(1, r.getPerStmtTypes().get(1).getGroupOrdinal());
+    }
 }

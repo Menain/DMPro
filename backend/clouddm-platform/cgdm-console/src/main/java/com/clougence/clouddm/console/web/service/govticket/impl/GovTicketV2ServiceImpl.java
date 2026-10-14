@@ -125,6 +125,17 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
     /** N2: the audit operationUri marker of the window-crash manual-resolution retry (design §7.4). */
     private static final String DML_BATCH_RESOLUTION_URI = "/system/dbChangeV2/dmlBatch/resolution";
 
+    // C10 (design D7): operationUri markers of the ROLLBACK_MATERIAL audit rows. These are real
+    // user-plane actions (NEVER /system/): the console markers are the real endpoint URIs and the
+    // open marker follows the OPEN_SUBMIT_URI semantic shape — the sink's channel inference yields
+    // the true arrival plane (CONSOLE / OPENAPI) off them. Known caliber limitation (registered
+    // for check): the open-API SUBMIT plane shares the single public submit entry, so its row
+    // carries the console submit URI — full submit-plane fidelity would need an interface split
+    // (resubmit is faithful via the openCommand discriminator).
+    private static final String ROLLBACK_MATERIAL_SUBMIT_URI        = "/api/entry/dbChangeV2/submit";
+    private static final String ROLLBACK_MATERIAL_RESUBMIT_URI      = "/api/entry/dbChangeV2/resubmit";
+    private static final String ROLLBACK_MATERIAL_RESUBMIT_OPEN_URI = "/open/dbChange/tickets/resubmit";
+
     private static final RuleLevel[] BLOCK_LEVELS = { RuleLevel.FAILURE, RuleLevel.TICKET };
 
     @Resource
@@ -317,20 +328,28 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setFeatures(List.of(ApprovalFeature.values()));
         ticket.setRawSql(first.sqlContent);
         // Rollback SQL: applicant-provided takes priority; blank → system-generated backup template
-        // from the combined group SQL (ticket-level, zero DDL — stored on dm_approval.roll_back_sql).
-        if (StringUtils.isNotBlank(fo.getRollBackSql())) {
+        // (ticket-level, zero DDL — stored on dm_approval.roll_back_sql).
+        // C10 (design D2): generation is PER-GROUP — each group's template renders in the group's
+        // own dialect (the PG-ticket backtick blind-spot fix); the single-group shape degenerates
+        // byte-identical to the legacy combinedSql output (red line 1).
+        boolean rollbackUserProvided = StringUtils.isNotBlank(fo.getRollBackSql());
+        com.clougence.clouddm.console.web.component.governance.RollbackGenResult rollbackGen = null;
+        if (rollbackUserProvided) {
             ticket.setRollBackSql(fo.getRollBackSql());
             mo.setRollBackSqlGenerated(false);
         } else {
-            String combinedSql = prechecks.stream()
-                .map(pc -> pc.sqlContent)
-                .collect(Collectors.joining(";"));
-            String generated = rollbackSqlGenerator.generate(combinedSql);
-            if (StringUtils.isNotBlank(generated)) {
-                ticket.setRollBackSql(generated);
+            rollbackGen = rollbackSqlGenerator.generateCombined(
+                buildRollbackGroupInputs(ticketType, prechecks, firstPair, firstDs));
+            if (rollbackGen != null && StringUtils.isNotBlank(rollbackGen.getText())) {
+                ticket.setRollBackSql(rollbackGen.getText());
                 mo.setRollBackSqlGenerated(true);
             }
         }
+        // C10 (design D3/D4): recovery-type grading — the pure ladder over the in-transaction
+        // signals (statements[].type / segments / merged changeType / material source), landed on
+        // the SAME INSERT row (dm_approval.recovery_type). Never throws (inferrer degrades).
+        ticket.setRecoveryType(inferRecoveryTypeFromPrechecks(prechecks, mo.getRollBackSqlGenerated(),
+            rollbackUserProvided, rollbackGen).getRecoveryType());
         // Risk assessment (design D2: synchronous in submit transaction)
         String dsType = firstDs != null && firstDs.getDataSourceType() != null ? firstDs.getDataSourceType().name() : null;
         String envName = envDO != null ? envDO.getEnvName() : null;
@@ -357,6 +376,18 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         ticket.setStatusMessage(viaRelease ? "Waiting for release merge" : "Waiting for approval");
 
         approvalDal.approvalMapper().insert(ticket);
+
+        // C10 (design D7): the rollback-material trail — written iff material exists (a blank
+        // material has nothing to fingerprint; the grade itself rides the ticket row). In the
+        // submit transaction: a rolled-back submission leaves no audit row.
+        if (StringUtils.isNotBlank(ticket.getRollBackSql())) {
+            auditRollbackMaterial(puid, uid, ROLLBACK_MATERIAL_SUBMIT_URI, ticket.getId(),
+                rollbackUserProvided ? com.clougence.clouddm.console.web.model.vo.govticket
+                    .RollbackMaterialAuditObj.SOURCE_USER
+                    : com.clougence.clouddm.console.web.model.vo.govticket
+                        .RollbackMaterialAuditObj.SOURCE_GENERATED,
+                ticket.getRecoveryType(), ticket.getRollBackSql());
+        }
 
         // Create approval process — skipped for VIA_RELEASE (no approval persons / process rows;
         // canApproval=false by empty person list, approvalTicket rejects by status guard + NO_PERMISSION).
@@ -1400,27 +1431,40 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         //   - Applicant provided new rollback SQL → use it (rollBackSqlGenerated=false)
         //   - Blank + original was system-generated → regenerate from the new combined SQL
         //   - Blank + original was applicant-provided → keep existing value (rollBackSql not touched)
+        // C10 (design D4): branches 1-2 re-infer recovery_type from the FRESH authoritative
+        // signals; branch 3 leaves the field null so the MyBatis-Plus NOT_NULL update strategy
+        // keeps the old column value (material unchanged → grade unchanged → no audit row).
         Map<Long, GroupPrecheck> precheckByGroupId = prechecks.stream()
             .collect(Collectors.toMap(pc -> pc.groupId, pc -> pc));
-        String combinedResubmitSql = allGroups.stream()
-            .map(g -> {
-                GroupPrecheck pc = precheckByGroupId.get(g.getId());
-                return pc != null ? pc.sqlContent : g.getSqlContent();
-            })
-            .filter(StringUtils::isNotBlank)
-            .collect(Collectors.joining(";"));
         DmApprovalDO ticketUpdate = new DmApprovalDO();
         ticketUpdate.setId(ticketId);
         ticketUpdate.setRawSql(first.sqlContent);
-        if (StringUtils.isNotBlank(fo.getRollBackSql())) {
+        boolean rollbackUserProvided = StringUtils.isNotBlank(fo.getRollBackSql());
+        String rollbackAuditSource = null; // null = branch 3 (material kept) → no grade write, no audit row
+        com.clougence.clouddm.console.web.component.governance.RollbackGenResult resubmitGen = null;
+        if (rollbackUserProvided) {
             ticketUpdate.setRollBackSql(fo.getRollBackSql());
             mo.setRollBackSqlGenerated(false);
+            rollbackAuditSource = com.clougence.clouddm.console.web.model.vo.govticket
+                .RollbackMaterialAuditObj.SOURCE_USER;
         } else if (Boolean.TRUE.equals(mo.getRollBackSqlGenerated())) {
-            String generated = rollbackSqlGenerator.generate(combinedResubmitSql);
-            if (StringUtils.isNotBlank(generated)) {
-                ticketUpdate.setRollBackSql(generated);
+            // C10 (design D2): per-group regeneration in each group's own dialect; the
+            // single-group shape stays byte-identical to the legacy combinedSql generation.
+            resubmitGen = rollbackSqlGenerator.generateCombined(
+                buildResubmitRollbackGroupInputs(allGroups, precheckByGroupId));
+            if (resubmitGen != null && StringUtils.isNotBlank(resubmitGen.getText())) {
+                ticketUpdate.setRollBackSql(resubmitGen.getText());
                 mo.setRollBackSqlGenerated(true);
+                rollbackAuditSource = com.clougence.clouddm.console.web.model.vo.govticket
+                    .RollbackMaterialAuditObj.SOURCE_REGENERATED;
             }
+        }
+        if (rollbackAuditSource != null) {
+            // C10 re-grading: the authoritative precheck re-run refreshed the modified groups'
+            // statements/segments; untouched SUCCESS groups contribute their STORED
+            // precheck_result signals (SQL edits that flip DML→DDL naturally re-grade).
+            ticketUpdate.setRecoveryType(inferResubmitRecoveryType(allGroups, precheckByGroupId,
+                mo.getRollBackSqlGenerated(), rollbackUserProvided, resubmitGen));
         }
         // Risk assessment recompute (design D2: REVISION resubmit 重算)
         DmDsDO resubmitDs = dsDal.dsMapper().queryDsIdentityById(ticket.getBindDsId());
@@ -1451,6 +1495,15 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         rebuildGhostRouteFlags(mo, allGroups, precheckByGroupId);
         ticketUpdate.setTicketInfo(JsonUtils.toJson(mo));
         approvalDal.approvalMapper().updateById(ticketUpdate);
+
+        // C10 (design D7): the material-change trail — branches 1-2 only (branch 3 wrote no
+        // material and no grade → no row: no change, no trail). Channel stays truthful via the
+        // URI marker: console resubmit → CONSOLE, open command → OPENAPI (sink inference).
+        if (rollbackAuditSource != null && StringUtils.isNotBlank(ticketUpdate.getRollBackSql())) {
+            auditRollbackMaterial(puid, uid,
+                openCommand ? ROLLBACK_MATERIAL_RESUBMIT_OPEN_URI : ROLLBACK_MATERIAL_RESUBMIT_URI,
+                ticketId, rollbackAuditSource, ticketUpdate.getRecoveryType(), ticketUpdate.getRollBackSql());
+        }
 
         // Compute recomputed changeType for all groups (used by both the External direct-to-exec path
         // and the SUBMIT event). For modified groups, use the fresh precheck changeType; for SUCCESS
@@ -2998,6 +3051,194 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
         event.setEventData(JsonUtils.toJson(data));
 
         dbChangeEventDal.eventMapper().insert(event);
+    }
+
+    // ==================== C10 recovery-type grading (task 10-14, design D2/D3/D4/D7) ====================
+
+    /**
+     * Per-group rollback-template inputs for the SUBMIT write point (design D2): each group
+     * renders in its own dialect. The first group reuses the already-resolved pair/ds (zero
+     * redundant SELECT); additional groups resolve through METHOD-LOCAL caches (cache discipline
+     * — no field state). Never throws: an unresolvable pair/ds degrades to the MySQL default
+     * dialect (the pre-C10 shape).
+     */
+    private List<com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput>
+            buildRollbackGroupInputs(String ticketType, List<GroupPrecheck> prechecks,
+                                     DmDbPairDO firstPair, DmDsDO firstDs) {
+        List<com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput> inputs
+            = new ArrayList<>();
+        Map<Long, DmDbPairDO> pairCache = new HashMap<>();
+        Map<Long, DmDsDO> dsCache = new HashMap<>();
+        for (GroupPrecheck pc : prechecks) {
+            DmDbPairDO pair;
+            DmDsDO ds;
+            if (firstPair != null && firstPair.getId() != null && pc.pairId == firstPair.getId()) {
+                pair = firstPair;
+                ds = firstDs;
+            } else {
+                pair = pairCache.computeIfAbsent(pc.pairId, this::resolvePair);
+                ds = null;
+                if (pair != null) {
+                    long dsId = resolveDsId(ticketType, pair);
+                    ds = dsCache.computeIfAbsent(dsId, id -> dsDal.dsMapper().queryDsIdentityById(id));
+                }
+            }
+            com.clougence.clouddm.base.metadata.ds.DataSourceType dsType
+                = ds != null ? ds.getDataSourceType() : null;
+            String dbName = pair != null ? resolveDbName(ticketType, pair) : null;
+            inputs.add(new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput(
+                pc.sqlContent, dsType, rollbackGroupLabel(dbName, dsType)));
+        }
+        return inputs;
+    }
+
+    /**
+     * Per-group rollback-template inputs for the RESUBMIT write point: the group rows carry
+     * dsId/dbName (no pair resolution); modified groups contribute their NEW sqlContent,
+     * untouched groups the stored one (the legacy combinedResubmitSql content order).
+     */
+    private List<com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput>
+            buildResubmitRollbackGroupInputs(List<DmTicketDbStmtDO> allGroups,
+                                             Map<Long, GroupPrecheck> precheckByGroupId) {
+        List<com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput> inputs
+            = new ArrayList<>();
+        Map<Long, DmDsDO> dsCache = new HashMap<>(); // method-local cache keyed by dsId (discipline)
+        for (DmTicketDbStmtDO g : allGroups) {
+            GroupPrecheck pc = precheckByGroupId.get(g.getId());
+            String sql = pc != null ? pc.sqlContent : g.getSqlContent();
+            if (StringUtils.isBlank(sql)) {
+                continue;
+            }
+            com.clougence.clouddm.base.metadata.ds.DataSourceType dsType = null;
+            if (g.getDsId() != null) {
+                DmDsDO ds = dsCache.computeIfAbsent(g.getDsId(), id -> dsDal.dsMapper().queryDsIdentityById(id));
+                dsType = ds != null ? ds.getDataSourceType() : null;
+            }
+            inputs.add(new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator.GroupInput(
+                sql, dsType, rollbackGroupLabel(g.getDbName(), dsType)));
+        }
+        return inputs;
+    }
+
+    private static String rollbackGroupLabel(String dbName,
+            com.clougence.clouddm.base.metadata.ds.DataSourceType dsType) {
+        String dialect = dsType != null ? dsType.name() : null;
+        if (StringUtils.isNotBlank(dbName)) {
+            return dialect != null ? dbName + " (" + dialect + ")" : dbName;
+        }
+        return dialect;
+    }
+
+    /**
+     * SUBMIT-side inference: fresh typed precheck results → the pure ladder (design D3).
+     * The Result carries the per-statement companion view (裁决 2 display material — M1 persists
+     * ONLY the ticket-level grade; the view is the M2 detail-page source, never stored).
+     */
+    private com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Result
+            inferRecoveryTypeFromPrechecks(List<GroupPrecheck> prechecks, Boolean generated,
+                                           boolean userProvided,
+                                           com.clougence.clouddm.console.web.component.governance.RollbackGenResult gen) {
+        List<com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group> groups
+            = new ArrayList<>();
+        for (GroupPrecheck pc : prechecks) {
+            groups.add(recoveryGroupFromResult(pc.result));
+        }
+        return com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.infer(
+            recoveryInput(groups, generated, userProvided, gen));
+    }
+
+    /**
+     * RESUBMIT-side inference (design D4): modified groups contribute their FRESH precheck
+     * results; untouched SUCCESS groups contribute their STORED precheck_result JSON signals
+     * (groupFromPrecheckJson is never-throw). Returns the ticket-level grade only.
+     */
+    private com.clougence.clouddm.platform.dal.model.approval.RecoveryType inferResubmitRecoveryType(
+            List<DmTicketDbStmtDO> allGroups, Map<Long, GroupPrecheck> precheckByGroupId,
+            Boolean generated, boolean userProvided,
+            com.clougence.clouddm.console.web.component.governance.RollbackGenResult gen) {
+        List<com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group> groups
+            = new ArrayList<>();
+        for (DmTicketDbStmtDO g : allGroups) {
+            GroupPrecheck pc = precheckByGroupId.get(g.getId());
+            groups.add(pc != null ? recoveryGroupFromResult(pc.result)
+                : com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer
+                    .groupFromPrecheckJson(g.getPrecheckResult()));
+        }
+        return com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.infer(
+            recoveryInput(groups, generated, userProvided, gen)).getRecoveryType();
+    }
+
+    private static com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Input
+            recoveryInput(
+                List<com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group> groups,
+                Boolean generated, boolean userProvided,
+                com.clougence.clouddm.console.web.component.governance.RollbackGenResult gen) {
+        com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Input in
+            = new com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Input();
+        in.setGroups(groups);
+        in.setGenerated(generated);
+        in.setUserProvided(userProvided);
+        in.setGenResult(gen);
+        return in;
+    }
+
+    /** Map one fresh GroupResult's inference-relevant face (routed segments filtered). */
+    private static com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group
+            recoveryGroupFromResult(GovTicketV2CheckVO.GroupResult gr) {
+        com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group g
+            = new com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Group();
+        if (gr == null) {
+            return g;
+        }
+        g.setChangeType(gr.getChangeType());
+        if (gr.getStatements() != null) {
+            List<String> types = new ArrayList<>();
+            for (GovTicketV2CheckVO.StmtPreview sp : gr.getStatements()) {
+                types.add(sp != null ? sp.getType() : null);
+            }
+            g.setStatementTypes(types);
+        }
+        if (gr.getSegments() != null) {
+            List<com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Segment> segments
+                = new ArrayList<>();
+            for (com.clougence.clouddm.console.web.component.governance.TicketSegment seg : gr.getSegments()) {
+                if (seg != null && (com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_GHOST.equals(seg.getType())
+                        || com.clougence.clouddm.console.web.component.governance.TicketSegment.TYPE_DML_BATCH.equals(seg.getType()))) {
+                    segments.add(new com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Segment(
+                        seg.getType(), seg.getStmtIndex()));
+                }
+            }
+            g.setSegments(segments.isEmpty() ? null : segments);
+        }
+        return g;
+    }
+
+    /**
+     * The ROLLBACK_MATERIAL audit row (design D7): obj = the whitelist carrier (source /
+     * recoveryType / fingerprint / summary≤500 — NEVER the full material text, the C8 obj
+     * discipline); PURE_URL + the explicit "ticket:&lt;id&gt;" resourceName (the C4/C7
+     * getResourceName bypass); chain = ticket_id + fingerprint, channel via the sink's URI
+     * inference. Audit failure is logged and NEVER rolls back the decided submission
+     * (the GHOST_EXECUTE discipline).
+     */
+    private void auditRollbackMaterial(String puid, String uid, String uri, Long ticketId,
+                                       String source,
+                                       com.clougence.clouddm.platform.dal.model.approval.RecoveryType recoveryType,
+                                       String material) {
+        try {
+            String fingerprint = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(material);
+            com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj obj
+                = com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj.of(
+                    source, recoveryType != null ? recoveryType.name() : null, fingerprint, material);
+            rdpOpAuditService.logAndAddOperationAudit(puid, uid, uri, null, ticketId, obj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.NORMAL,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.ROLLBACK_MATERIAL,
+                com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL,
+                "ticket:" + ticketId,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticketId, fingerprint, null));
+        } catch (RuntimeException e) {
+            log.error("[GovTicketV2] ROLLBACK_MATERIAL audit failed for ticket {} (submission kept)", ticketId, e);
+        }
     }
 
     // Internal precheck result holder for submit

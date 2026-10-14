@@ -45,6 +45,15 @@ public class DmQueryTicketVO {
     private Boolean                     immediately;
     private String                      rollBackSql;
     private Boolean                     rollBackSqlGenerated;
+    // C10 recovery-type grading (task 10-14-recovery-type-grading): the RecoveryType enum name
+    // of the rollback material (dm_approval.recovery_type; stock rows are derived at READ time
+    // from the material-source flags — never backfilled, design D5). Never null on the wire
+    // (the honest UNSPECIFIED fallback).
+    private String                      recoveryType;
+    // C10 red line 4: NO recovery_verified DB column exists — the assembly stamps this CONSTANT
+    // false until a real recovery-artifact verification/drill mechanism lands (O-C10-1). No
+    // "verified" illusion is ever produced.
+    private Boolean                     recoveryVerified;
     // Risk level + impact scope (design D4/D5: exposed for detail-page display)
     private String                      riskLevel;
     private String                      impactScopeText;

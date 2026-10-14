@@ -125,6 +125,10 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private static final String         TICKET_TYPE_PROD_DML               = "PROD_DML";
     private static final String         EXEC_STATUS_PENDING                = "PENDING";
     private static final String         EXEC_STATUS_FAILED                 = "FAILED";
+    // C10 (design D7): operationUri of the legacy-create ROLLBACK_MATERIAL audit row — the real
+    // console endpoint (ApprovalController @RequestMapping), so the sink's channel inference
+    // yields the truthful CONSOLE arrival plane.
+    private static final String         ROLLBACK_MATERIAL_CREATE_URI       = "/api/entry/approval/create";
 
     @Resource
     private SystemDal                   systemDal;
@@ -176,6 +180,11 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
     private com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator rollbackSqlGenerator;
     @Resource
     private com.clougence.clouddm.console.web.component.governance.RiskAssessmentService riskAssessmentService;
+    // C10 (task 10-14, design D7): the ROLLBACK_MATERIAL trail of the legacy create write point.
+    // Plain injection (the GovTicketV2ServiceImpl precedent — RdpOpAuditServiceImpl only reaches
+    // Dals, no back-reference into the approval layer → no cycle, no @Lazy needed).
+    @Resource
+    private com.clougence.rdp.service.RdpOpAuditService rdpOpAuditService;
     @org.springframework.context.annotation.Lazy
     @Resource
     private com.clougence.clouddm.console.web.service.governance.ProdReleaseService prodReleaseService;
@@ -763,12 +772,14 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
         vo.setExpectedAffectedRows(approvalDO.getExpectedAffectedRows());
         this.fillAnalysisDetail(vo, approvalDO.getId());
 
+        Boolean rollBackSqlGenerated = null;
         if (StringUtils.isNotEmpty(approvalDO.getTicketInfo())) {
             ApprovalMO ticketInfo = JsonUtils.toObj(approvalDO.getTicketInfo(), ApprovalMO.class);
             String message = ticketInfo.getMessage();
             vo.setTicketMessage(message);
             vo.setAutoExec(ticketInfo.isAutoExec());
-            vo.setRollBackSqlGenerated(ticketInfo.getRollBackSqlGenerated());
+            rollBackSqlGenerated = ticketInfo.getRollBackSqlGenerated();
+            vo.setRollBackSqlGenerated(rollBackSqlGenerated);
             vo.setRiskLevel(ticketInfo.getRiskLevel());
             vo.setImpactScopeText(ticketInfo.getImpactScopeText());
             // rowsEstimated passthrough (task 10-11 M3): the detail page marks "affected-rows
@@ -780,7 +791,48 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
                 }
             }
         }
+        // C10 (design D5, 推荐 a): the persisted grade when present; stock rows (NULL column —
+        // NO backfill by contract) derive at READ time from the material-source signals and are
+        // NEVER written back (the deriveLegacyStepFinishTimes precedent). A missing generated
+        // flag (pre-09-17 stock) or absent material honestly yields UNSPECIFIED.
+        com.clougence.clouddm.platform.dal.model.approval.RecoveryType recoveryType
+            = approvalDO.getRecoveryType() != null ? approvalDO.getRecoveryType()
+                : com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer
+                    .deriveFromMaterial(rollBackSqlGenerated, approvalDO.getRollBackSql());
+        vo.setRecoveryType(recoveryType.name());
+        // C10 red line 4: NO recovery_verified column exists — the honesty flag is a read-time
+        // CONSTANT false until a real recovery-artifact verification/drill mechanism lands
+        // (O-C10-1). Never fake a "verified" signal (the C3 rowsEstimated honest-unknown precedent).
+        vo.setRecoveryVerified(false);
         return vo;
+    }
+
+    /**
+     * C10 (design D7): the ROLLBACK_MATERIAL audit row of the legacy create write point — the
+     * GovTicketV2ServiceImpl twin: obj = the whitelist carrier (source / recoveryType /
+     * fingerprint / summary≤500 — NEVER the full material text), PURE_URL + the explicit
+     * "ticket:&lt;id&gt;" resourceName (the C4/C7 getResourceName bypass), chain = ticket_id +
+     * fingerprint with the channel inferred off the real console URI. Audit failure is logged
+     * and NEVER rolls back the decided creation (the GHOST_EXECUTE discipline).
+     */
+    private void auditRollbackMaterial(String puid, String uid, String uri, Long ticketId,
+                                       String source,
+                                       com.clougence.clouddm.platform.dal.model.approval.RecoveryType recoveryType,
+                                       String material) {
+        try {
+            String fingerprint = com.clougence.clouddm.console.web.component.governance.GovSqlHashUtils.hash(material);
+            com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj obj
+                = com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj.of(
+                    source, recoveryType != null ? recoveryType.name() : null, fingerprint, material);
+            rdpOpAuditService.logAndAddOperationAudit(puid, uid, uri, null, ticketId, obj,
+                com.clougence.clouddm.platform.dal.model.monitor.SecurityLevel.NORMAL,
+                com.clougence.clouddm.platform.dal.model.monitor.AuditType.ROLLBACK_MATERIAL,
+                com.clougence.clouddm.platform.dal.model.ResourceType.PURE_URL,
+                "ticket:" + ticketId,
+                com.clougence.rdp.service.model.AuditChainMO.ofTicket(ticketId, fingerprint, null));
+        } catch (RuntimeException e) {
+            log.error("[ApprovalControl] ROLLBACK_MATERIAL audit failed for ticket {} (creation kept)", ticketId, e);
+        }
     }
 
     private void fillAnalysisDetail(DmQueryTicketVO vo, Long ticketId) {
@@ -1092,20 +1144,41 @@ public class ApprovalControlServiceImpl implements ApprovalControlService {
             case ATTACHMENT -> ticket.setRawSql(null);
         }
         // Rollback SQL: applicant-provided takes priority; blank → system-generated backup template.
-        if (StringUtils.isNotBlank(fo.getRollBackSql())) {
+        // C10 (design D2/D4): the generation is dialect-aware (this ticket's single ds type — the
+        // PG backtick blind-spot fix); grading uses the material-source signals ONLY — the legacy
+        // chain carries no structural precheck signals (ATTACHMENT / no material → UNSPECIFIED).
+        boolean rollbackUserProvided = StringUtils.isNotBlank(fo.getRollBackSql());
+        com.clougence.clouddm.console.web.component.governance.RollbackGenResult rollbackGen = null;
+        if (rollbackUserProvided) {
             ticket.setRollBackSql(fo.getRollBackSql());
             mo.setRollBackSqlGenerated(false);
         } else if (contentType == SqlContentType.INLINE && StringUtils.isNotBlank(fo.getRawSql())) {
-            String generated = rollbackSqlGenerator.generate(fo.getRawSql());
-            if (StringUtils.isNotBlank(generated)) {
-                ticket.setRollBackSql(generated);
+            rollbackGen = rollbackSqlGenerator.generateTyped(fo.getRawSql(), dsDO.getDataSourceType());
+            if (rollbackGen != null && StringUtils.isNotBlank(rollbackGen.getText())) {
+                ticket.setRollBackSql(rollbackGen.getText());
                 mo.setRollBackSqlGenerated(true);
             }
         }
+        com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Input recoveryInput
+            = new com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Input();
+        recoveryInput.setGenerated(mo.getRollBackSqlGenerated());
+        recoveryInput.setUserProvided(rollbackUserProvided);
+        recoveryInput.setGenResult(rollbackGen);
+        ticket.setRecoveryType(com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer
+            .infer(recoveryInput).getRecoveryType());
         ticket.setTicketInfo(JsonUtils.toJson(mo));
         ticket.setLevels(dsLevels.dbLevels());
 
         this.approvalDal.approvalMapper().insert(ticket);
+        // C10 (design D7): the rollback-material trail — written iff material exists, inside the
+        // creation transaction (a rolled-back creation leaves no audit row).
+        if (StringUtils.isNotBlank(ticket.getRollBackSql())) {
+            auditRollbackMaterial(puid, uid, ROLLBACK_MATERIAL_CREATE_URI, ticket.getId(),
+                rollbackUserProvided
+                    ? com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj.SOURCE_USER
+                    : com.clougence.clouddm.console.web.model.vo.govticket.RollbackMaterialAuditObj.SOURCE_GENERATED,
+                ticket.getRecoveryType(), ticket.getRollBackSql());
+        }
         if (contentType == SqlContentType.ATTACHMENT) {
             this.approvalService.checkSqlFile(fo.getAttachmentId(), uid);
             this.approvalService.confirmSqlFile(ticket.getId(), fo.getAttachmentId(), uid);

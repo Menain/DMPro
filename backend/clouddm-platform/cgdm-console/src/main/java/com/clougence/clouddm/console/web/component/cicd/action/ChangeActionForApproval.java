@@ -196,6 +196,10 @@ public class ChangeActionForApproval extends AbstractChangeAction {
         ticket.setTicketInfo(JsonUtils.toJson(ticketInfo));
         ticket.setLevels(dsLevels.dbLevels());
         ticket.setRollBackSql("");
+        // C10 (task 10-14, design D4): the CICD ATTACHMENT-shaped ticket carries NO rollback
+        // material (explicit empty string, nothing generated) → the honest UNSPECIFIED grade
+        // (不生成不推断 — no material to fingerprint, so no ROLLBACK_MATERIAL audit row either).
+        ticket.setRecoveryType(com.clougence.clouddm.platform.dal.model.approval.RecoveryType.UNSPECIFIED);
 
         this.approvalDal.approvalMapper().insert(ticket);
         this.localFileService.addAsLocked(change.getOwnerUid(), sqlFile, "cicd-" + change.getId() + ".sql", SysAttachmentType.SQL_FILE, ticket.getId());

@@ -153,6 +153,74 @@ public class ApprovalControlSkipContinueTest {
 
     // ======= helpers =======
 
+    // ==================== C10 detail assembly (task 10-14, design D5 + red line 4) ====================
+
+    private com.clougence.clouddm.console.web.model.vo.ticket.DmQueryTicketVO queryDetailWith(
+            com.clougence.clouddm.platform.dal.model.approval.RecoveryType persisted,
+            Boolean generatedFlag, String rollBackSql) {
+        DmApprovalDO head = new DmApprovalDO();
+        head.setId(TICKET_ID);
+        head.setBizId(BIZ_ID);
+        head.setApproBiz(com.clougence.clouddm.platform.dal.model.approval.ApprovalBiz.DM_QUERY);
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(head);
+
+        DmApprovalDO detail = new DmApprovalDO();
+        detail.setId(TICKET_ID);
+        detail.setBizId(BIZ_ID);
+        detail.setContentType(com.clougence.clouddm.platform.dal.model.approval.SqlContentType.INLINE);
+        detail.setRecoveryType(persisted);
+        detail.setRollBackSql(rollBackSql);
+        ApprovalMO mo = new ApprovalMO();
+        mo.setRollBackSqlGenerated(generatedFlag);
+        detail.setTicketInfo(JsonUtils.toJson(mo));
+        when(approvalMapper.queryByBizIdWithoutRawSql(BIZ_ID)).thenReturn(detail);
+
+        com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalProcessActivityMapper activityMapper
+            = mock(com.clougence.clouddm.platform.dal.mapper.approval.DmApprovalProcessActivityMapper.class);
+        when(activityMapper.queryByTicketId(TICKET_ID)).thenReturn(java.util.Collections.emptyList());
+        when(approvalDal.activityMapper()).thenReturn(activityMapper);
+
+        com.clougence.clouddm.console.web.model.fo.ticket.DmQueryTicketDetailFO fo
+            = new com.clougence.clouddm.console.web.model.fo.ticket.DmQueryTicketDetailFO();
+        fo.setTicketId(TICKET_ID);
+        return service.queryTicketDetail(PUID, fo);
+    }
+
+    @Test
+    public void c10_detail_persistedGrade_passesThrough_verifiedConstantFalse() {
+        var vo = queryDetailWith(
+            com.clougence.clouddm.platform.dal.model.approval.RecoveryType.TRANSACTION,
+            Boolean.TRUE, "-- 系统自动生成…");
+        assertEquals("TRANSACTION", vo.getRecoveryType());
+        // red line 4: the honesty flag is a read-time CONSTANT — no recovery_verified column exists
+        assertEquals(Boolean.FALSE, vo.getRecoveryVerified());
+    }
+
+    @Test
+    public void c10_detail_stockNullColumn_derivedAtReadTime_neverWrittenBack() {
+        // stock row: column NULL + generated=true → read-time derivation to BACKUP_TEMPLATE
+        var vo = queryDetailWith(null, Boolean.TRUE, "-- 系统自动生成…CREATE TABLE `t_bak_x` AS SELECT…");
+        assertEquals("BACKUP_TEMPLATE", vo.getRecoveryType());
+        assertEquals(Boolean.FALSE, vo.getRecoveryVerified());
+        // the derivation NEVER writes back (推荐 a — no UPDATE of any shape on the read path)
+        verify(approvalMapper, never()).updateById(any(DmApprovalDO.class));
+    }
+
+    @Test
+    public void c10_detail_stockUserMaterial_derivesCompensationSql() {
+        var vo = queryDetailWith(null, Boolean.FALSE, "DELETE FROM t WHERE id=1;");
+        assertEquals("COMPENSATION_SQL", vo.getRecoveryType());
+    }
+
+    @Test
+    public void c10_detail_missingGeneratedFlag_honestlyUnspecified() {
+        // pre-09-17 stock: ticket_info without the rollBackSqlGenerated key → null flag → UNSPECIFIED
+        // even when material exists (the source is ambiguous — never guess)
+        var vo = queryDetailWith(null, null, "DELETE FROM t WHERE id=1;");
+        assertEquals("UNSPECIFIED", vo.getRecoveryType());
+        verify(approvalMapper, never()).updateById(any(DmApprovalDO.class));
+    }
+
     private DmQueryAutoExecFO buildFO() {
         DmQueryAutoExecFO fo = new DmQueryAutoExecFO();
         fo.setTicketId(TICKET_ID);

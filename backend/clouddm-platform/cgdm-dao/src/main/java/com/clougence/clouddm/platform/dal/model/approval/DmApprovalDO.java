@@ -75,6 +75,16 @@ public class DmApprovalDO {
     private String                rollBackSql;
     private String                ticketInfo;
 
+    // C10 recovery-type grading (task 10-14-recovery-type-grading; migration V202610140001,
+    // additive nullable — stock rows NULL, read-time derived, never backfilled). The ticket-level
+    // recovery semantics of the rollBackSql material (RecoveryType enum name in a varchar(32);
+    // plain enum field like approBiz/ticketStatus — MyBatis maps by name). Written by the
+    // rollback-material write points; the resubmit "material kept" branch leaves it null so the
+    // MyBatis-Plus NOT_NULL strategy keeps the old value out of the UPDATE set. Deliberately NOT
+    // in ApprovalMO/ticket_info (red line 5 — the JSON read-modify-write trap, database-guidelines
+    // Common Mistake #5); NO recovery_verified companion column (red line 4 — VO constant instead).
+    private RecoveryType          recoveryType;
+
     // DingTalk bridge outbound runtime state (task 10-09-dingtalk-approval-bridge, design §3.1).
     // Written ONLY by the outbound machinery (trigger/sweep/reissue) of External-channel rows;
     // NULL on every non-applicable row. Status vocabulary: NOT_STARTED/STARTING/STARTED/FAILED
