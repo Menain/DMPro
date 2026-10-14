@@ -28,5 +28,14 @@ public class QueryForm extends ApprovalForm {
 
     private String executeSql;
     private String rollBackSql;
+    /**
+     * C10 M2 (task 10-14-recovery-type-grading, design D6): the rollback material's recovery-type
+     * annotation for the OA approver — a localized label + the constant 未演练 suffix (red line 3:
+     * no verified illusion on any surface), assembled by QueryApprovalHandler. The OA form
+     * component name ("恢复类型") is an OA-template string — the DingTalk/Feishu templates must
+     * carry a matching control for the value to display (联调对齐项; the WeCom template's
+     * positional control contract defers its mapping to the same alignment round).
+     */
+    private String recoveryType;
     private Long   affectCount;
 }

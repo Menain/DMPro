@@ -29,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.clougence.clouddm.console.web.component.approval.ApprovalHandler;
 import com.clougence.clouddm.console.web.component.approval.ApprovalService;
 import com.clougence.clouddm.console.web.component.approval.ApprovalStateService;
+import com.clougence.clouddm.console.web.component.approval.model.ApprovalMO;
 import com.clougence.clouddm.console.web.component.cicd.ImSenderService;
 import com.clougence.clouddm.console.web.component.config.UserConfigService;
 import com.clougence.clouddm.console.web.global.i18n.DmI18nUtils;
@@ -54,6 +55,7 @@ import com.clougence.clouddm.sdk.security.auth.def.SecDataAuthLabel;
 import com.clougence.clouddm.sdk.security.auth.def.SecRoleAuthLabel;
 import com.clougence.utils.CollectionUtils;
 import com.clougence.utils.JsonUtils;
+import com.clougence.utils.StringUtils;
 import com.clougence.utils.i18n.I18nUtils;
 
 import jakarta.annotation.Resource;
@@ -293,6 +295,26 @@ public class QueryApprovalHandler implements ApprovalHandler {
             return prefix.substring(0, contentLength) + separator + truncatedMessage;
         }));
         form.setRollBackSql(approvalDO.getRollBackSql());
+        // C10 M2 (design D6): the recovery-type annotation for the OA approver — the persisted
+        // grade when present, else the READ-TIME derivation (design D5, never written back);
+        // value = localized label + the constant 未演练 suffix (red line 3 — no surface may fake
+        // a verified drill). Locale = the submitter's default language (the SQL-truncated-message
+        // precedent in this same method). OA-template alignment: the component name "恢复类型"
+        // must exist in the DingTalk/Feishu template for the value to display (联调对齐项).
+        Boolean rollBackSqlGenerated = null;
+        if (StringUtils.isNotBlank(approvalDO.getTicketInfo())) {
+            ApprovalMO ticketInfo = JsonUtils.toObj(approvalDO.getTicketInfo(), ApprovalMO.class);
+            if (ticketInfo != null) {
+                rollBackSqlGenerated = ticketInfo.getRollBackSqlGenerated();
+            }
+        }
+        RecoveryType recoveryType = approvalDO.getRecoveryType() != null ? approvalDO.getRecoveryType()
+            : com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer
+                .deriveFromMaterial(rollBackSqlGenerated, approvalDO.getRollBackSql());
+        Locale formLocale = I18nUtils.getLocale(this.userConfigService.defaultLanguage());
+        form.setRecoveryType(
+            DmI18nUtils.getMessage("RECOVERY_TYPE_LABEL_" + recoveryType.name(), formLocale)
+                + DmI18nUtils.getMessage("RECOVERY_TYPE_UNVERIFIED_SUFFIX", formLocale));
         form.setAffectCount(approvalDO.getExpectedAffectedRows());
         form.setTargetDs(approvalDO.getTargetInfo());
         form.setTicketDesc(approvalDO.getDescription());

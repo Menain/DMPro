@@ -244,6 +244,99 @@ public class GhostGroupListTest {
         assertNull(ghostVo.getGhostOldTableName());
     }
 
+    // ==================== C10 M2: recoveryStatements read-time projection ====================
+    // 裁决 2 "读时重算不落库": the per-statement recovery view is recomputed from signals this
+    // endpoint ALREADY carries (precheck_result + sqlContent + the generated flag) — zero extra
+    // SELECT, never persisted. These pins are ADDITIVE (task 10-14 M2 authorization: extend the
+    // existing groupList harness, no new test class).
+
+    @Test
+    public void recoveryStatements_structuralArmsWithoutGenerator_degradeHonestly() {
+        // generator NOT wired (the dmlBatchService-null degradation precedent): the structural
+        // arms (irreversible types / routed segments) still grade; the generator companion arm
+        // (UPDATE → BACKUP_TEMPLATE) degrades to UNSPECIFIED instead of faking a classification
+        DmTicketDbStmtDO g = group(GHOST_GROUP_ID);
+        g.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\","
+            + "\"statements\":[{\"index\":0,\"type\":\"UPDATE\",\"sql\":\"…\"},"
+            + "{\"index\":1,\"type\":\"DROP_TABLE\",\"sql\":\"…\"}]}");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(g, group(PLAIN_GROUP_ID)));
+
+        List<GovTicketV2GroupVO.RecoveryStmtVO> views = service.groupList(PUID, UID, TICKET_ID).get(0).getRecoveryStatements();
+
+        assertEquals(2, views.size());
+        assertEquals(Integer.valueOf(0), views.get(0).getIndex());
+        assertEquals("UPDATE", views.get(0).getType());
+        assertEquals("UNSPECIFIED", views.get(0).getInferredRecovery());
+        assertEquals("DROP_TABLE", views.get(1).getType());
+        assertEquals("IRREVERSIBLE", views.get(1).getInferredRecovery());
+    }
+
+    @Test
+    public void recoveryStatements_generatedMaterial_rerunsGeneratorCompanion() {
+        // generated material → the read-time generator re-run reproduces the write-time per-stmt
+        // typing (the classification is dialect-independent; only the template TEXT quotes differ)
+        ReflectionTestUtils.setField(service, "rollbackSqlGenerator",
+            new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator());
+        DmApprovalDO ticket = ticket(List.of(false, false));
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        mo.setRollBackSqlGenerated(true);
+        ticket.setTicketInfo(JsonUtils.toJson(mo));
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
+        DmTicketDbStmtDO g = group(GHOST_GROUP_ID);
+        g.setSqlContent("UPDATE t SET a = 1 WHERE id < 9; DROP TABLE t2;");
+        g.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"MIXED\","
+            + "\"statements\":[{\"index\":0,\"type\":\"UPDATE\",\"sql\":\"…\"},"
+            + "{\"index\":1,\"type\":\"DROP_TABLE\",\"sql\":\"…\"}]}");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(g, group(PLAIN_GROUP_ID)));
+
+        List<GovTicketV2GroupVO.RecoveryStmtVO> views = service.groupList(PUID, UID, TICKET_ID).get(0).getRecoveryStatements();
+
+        assertEquals(2, views.size());
+        assertEquals("BACKUP_TEMPLATE", views.get(0).getInferredRecovery());
+        assertEquals("IRREVERSIBLE", views.get(1).getInferredRecovery());
+    }
+
+    @Test
+    public void recoveryStatements_userProvidedMaterial_routedArmsSurvive_perStmtUnspecified() {
+        // 裁决 1: user-provided material is never inspected — no generator re-run; per-statement
+        // rows stay UNSPECIFIED while the structural routed arm (GHOST) survives
+        DmApprovalDO ticket = ticket(List.of(true, false));
+        ApprovalMO mo = JsonUtils.toObj(ticket.getTicketInfo(), ApprovalMO.class);
+        mo.setRollBackSqlGenerated(false);
+        ticket.setTicketInfo(JsonUtils.toJson(mo));
+        ticket.setRollBackSql("-- 提交人手写的补偿材料");
+        when(approvalMapper.queryById(TICKET_ID)).thenReturn(ticket);
+        ReflectionTestUtils.setField(service, "rollbackSqlGenerator",
+            new com.clougence.clouddm.console.web.component.governance.RollbackSqlGenerator());
+        DmTicketDbStmtDO g = group(GHOST_GROUP_ID);
+        g.setPrecheckResult("{\"checkStatus\":\"PASS\",\"changeType\":\"DDL\","
+            + "\"statements\":[{\"index\":0,\"type\":\"ALTER_TABLE\",\"sql\":\"…\"},"
+            + "{\"index\":1,\"type\":\"UPDATE\",\"sql\":\"…\"}],"
+            + "\"segments\":[{\"segIdx\":1,\"type\":\"GHOST\",\"stmtIndex\":1,\"table\":\"t_big\"}]}");
+        when(stmtMapper.queryByTicketId(TICKET_ID)).thenReturn(List.of(g, group(PLAIN_GROUP_ID)));
+        when(ghostService.findTaskForTicketGroup(TICKET_ID, GHOST_GROUP_ID)).thenReturn(null);
+
+        List<GovTicketV2GroupVO.RecoveryStmtVO> views = service.groupList(PUID, UID, TICKET_ID).get(0).getRecoveryStatements();
+
+        assertEquals(2, views.size());
+        assertEquals("GHOST_OLD_TABLE", views.get(0).getInferredRecovery()); // routed arm, 1-based stmtIndex=1
+        assertEquals("UNSPECIFIED", views.get(1).getInferredRecovery());     // content never inspected
+    }
+
+    @Test
+    public void recoveryStatements_noSignals_emptyList_baseProjectionIntact() {
+        // legacy fixture (no precheck_result, no generated flag): honest empty list — the
+        // frontend fold renders nothing at all (信号不足如实降级), base projection untouched
+        List<GovTicketV2GroupVO> list = service.groupList(PUID, UID, TICKET_ID);
+
+        assertEquals(2, list.size());
+        for (GovTicketV2GroupVO vo : list) {
+            assertNotNull(vo.getRecoveryStatements());
+            assertTrue(vo.getRecoveryStatements().isEmpty());
+        }
+        assertEquals("db-1", list.get(0).getDbName());
+    }
+
     // ==================== fixtures ====================
 
     private DmApprovalDO ticket(List<Boolean> ghostFlags) {

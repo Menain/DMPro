@@ -15,6 +15,8 @@
  */
 package com.clougence.clouddm.console.web.model.vo.govticket;
 
+import java.util.List;
+
 import lombok.Getter;
 import lombok.Setter;
 
@@ -91,6 +93,22 @@ public class GovTicketV2GroupVO {
      */
     private DmlBatchProgressVO dmlBatchProgress;
 
+    // ---- C10 M2 recovery-type per-statement view, additive ----
+
+    /**
+     * C10 (task 10-14-recovery-type-grading, 裁决 2 "读时重算不落库"): this group's per-statement
+     * recovery inference, RECOMPUTED AT READ TIME by the groupList assembly from the signals it
+     * ALREADY carries (precheck_result + sqlContent + the ticket's rollBackSqlGenerated flag) —
+     * pure function, zero extra SELECT, never persisted. Mirrors the write-time inference input:
+     * the generator companion runs ONLY for system-generated material; user-provided material
+     * keeps per-statement UNSPECIFIED (裁决 1 — the content is never inspected).
+     * <p>
+     * The backend StmtView.note is deliberately NOT on the wire — it is a zh debug string; the
+     * frontend re-renders the semantic note via i18n off {@code inferredRecovery} (M2.2 措辞表).
+     * Empty for groups without structural signals (honest degradation, 信号不足如实降级).
+     */
+    private List<RecoveryStmtVO> recoveryStatements;
+
     /**
      * B7 N3: the batch-loop projection of one group's newest DML_BATCH task (design §10 —
      * {batchesDone, rowsDone, percentApprox, lagState, paused, unresolvedIntent, intentSeq,
@@ -143,5 +161,21 @@ public class GovTicketV2GroupVO {
         private Double  lastLagSec;
         /** throttledAt != null — the batch loop is yielding to replica lag right now. */
         private Boolean throttled;
+    }
+
+    /**
+     * C10 M2: one statement's per-statement recovery view {index, type, inferredRecovery} (the
+     * design-D3 display material — NEVER persisted; the note stays backend-side, see the
+     * {@code recoveryStatements} field javadoc).
+     */
+    @Getter
+    @Setter
+    public static class RecoveryStmtVO {
+        /** 0-based statement position within the group (the precheck preview domain). */
+        private Integer index;
+        /** SplitQueryType name; null when no structural signal exists for the statement. */
+        private String  type;
+        /** RecoveryType enum name — the statement's inferred recovery semantics. */
+        private String  inferredRecovery;
     }
 }

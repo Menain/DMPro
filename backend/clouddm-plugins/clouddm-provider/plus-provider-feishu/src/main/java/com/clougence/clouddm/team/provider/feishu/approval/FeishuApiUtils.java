@@ -82,6 +82,12 @@ public class FeishuApiUtils {
                     widget.setValue(safeLength(info.getRollBackSql(), 4000, false));
                     break;
                 }
+                // C10 M2: 恢复类型标注(值=本地化标签+恒常未演练后缀)。widget 迭代是模板驱动的——
+                // 仅当飞书模板含「恢复类型」控件时本 case 才触发(联调对齐项,模板未配置零影响)
+                case FeishuConstant.FORM_SQL_RECOVERY_TYPE: {
+                    widget.setValue(safeLength(info.getRecoveryType(), 400, true));
+                    break;
+                }
                 case FeishuConstant.FORM_SQL_AFFECT_LINE: {
                     if (info.getAffectCount() != null) {
                         widget.setValue(info.getAffectCount().toString());

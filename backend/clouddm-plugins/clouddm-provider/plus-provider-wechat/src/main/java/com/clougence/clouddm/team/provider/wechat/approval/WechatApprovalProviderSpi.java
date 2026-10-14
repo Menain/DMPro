@@ -157,6 +157,9 @@ public class WechatApprovalProviderSpi implements ApprovalProviderSpi {
     private static List<ContentDataValue> getContentDataValues(ApprovalForm form) {
         if (form instanceof QueryForm) {
             QueryForm queryForm = (QueryForm) form;
+            // C10 M2: queryForm.getRecoveryType()(恢复类型标注)刻意不追加——企微模板控件与本值列表
+            // 按位置配对(positional contract),追加第 7 个值必须先在企微模板加「恢复类型」控件
+            // (联调对齐项,随 O-C10-4 ChangeForm 缺口桥接期一并评估;钉钉/飞书为按名匹配已接入)
             return Arrays.asList(//
                     TextValue.from(safeLength(queryForm.getTicketTitle(), 400, true)),   //
                     TextValue.from(safeLength(queryForm.getTargetDs(), 400, true)),      //

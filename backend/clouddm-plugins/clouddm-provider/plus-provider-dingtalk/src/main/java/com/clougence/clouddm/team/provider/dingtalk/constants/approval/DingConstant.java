@@ -25,6 +25,8 @@ public class DingConstant {
     public static final String FORM_SQL_TARGET          = "目标数据源";
     public static final String FORM_SQL_EXECUTE_SQL     = "执行 SQL";
     public static final String FORM_SQL_ROLLBACK_SQL    = "回滚 SQL";
+    /** C10 M2: 恢复类型标注组件名(OA 模板字符串——模板需配置同名控件方可展示,联调对齐项) */
+    public static final String FORM_SQL_RECOVERY_TYPE   = "恢复类型";
     public static final String FORM_SQL_AFFECT_LINE     = "预计受影响行数";
 
     // for Auth

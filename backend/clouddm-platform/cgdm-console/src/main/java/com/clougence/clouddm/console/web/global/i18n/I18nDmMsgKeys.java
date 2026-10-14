@@ -706,4 +706,24 @@ public enum I18nDmMsgKeys {
     // -- Masking fail-closed hardening (task 10-11-masking-fail-closed, C6 design §3) --
     /** 悬空/失效脱敏绑定(DANGLING)→ 分析期拒绝查询(B2 裁决:未知策略≠明示不启用) */
     MASKING_BINDING_DANGLING_ERROR,
+
+    // -- C10 M2 recovery-type annotation for the external OA approval form (task
+    // 10-14-recovery-type-grading, design D6 措辞表; key = RECOVERY_TYPE_LABEL_<enum name>,
+    // declaration order = the RecoveryType severity order) --
+    /** 恢复类型标注:不可逆(DROP/TRUNCATE 类,平台无恢复物) */
+    RECOVERY_TYPE_LABEL_IRREVERSIBLE,
+    /** 恢复类型标注:分批检查点(部分成功非回滚) */
+    RECOVERY_TYPE_LABEL_BATCH_CHECKPOINT,
+    /** 恢复类型标注:gh-ost 旧表(cut-over 后保留、删除前可人工回退) */
+    RECOVERY_TYPE_LABEL_GHOST_OLD_TABLE,
+    /** 恢复类型标注:补偿 SQL(提交人提供) */
+    RECOVERY_TYPE_LABEL_COMPENSATION_SQL,
+    /** 恢复类型标注:事务回滚 */
+    RECOVERY_TYPE_LABEL_TRANSACTION,
+    /** 恢复类型标注:备份模板(系统生成) */
+    RECOVERY_TYPE_LABEL_BACKUP_TEMPLATE,
+    /** 恢复类型标注:未分级(存量/信号不足,如实标注) */
+    RECOVERY_TYPE_LABEL_UNSPECIFIED,
+    /** 恢复类型标注恒常后缀:未演练(红线 3——平台无恢复物验证/演练机制,O-C10-1) */
+    RECOVERY_TYPE_UNVERIFIED_SUFFIX,
 }

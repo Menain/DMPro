@@ -1690,6 +1690,10 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             // B6 M4: segment runtime passthrough (verbatim column, ungated — the frontend falls
             // back to the precheck_result plan and renders nothing for unsegmented groups)
             vo.setExecSegments(g.getExecSegments());
+            // C10 M2 (裁决 2 读时重算不落库): the per-statement recovery view — a pure-function
+            // recompute from signals this assembly ALREADY carries (zero extra SELECT); groups
+            // without structural signals keep an empty list (信号不足如实降级)
+            vo.setRecoveryStatements(buildGroupRecoveryStatements(g, mo, ticket.getRollBackSql()));
             if (anyGhostRouted
                 && com.clougence.clouddm.console.web.component.governance.GhostRouteFlags.isRouted(mo, i)) {
                 fillGhostTaskProjection(vo, ticketId, g.getId());
@@ -3211,6 +3215,47 @@ public class GovTicketV2ServiceImpl implements GovTicketV2Service {
             g.setSegments(segments.isEmpty() ? null : segments);
         }
         return g;
+    }
+
+    /**
+     * C10 M2 (裁决 2 读时重算不落库): one stored group's per-statement recovery view for the
+     * detail page — a pure-function recompute from the signals the groupList assembly ALREADY
+     * carries (zero extra SELECT): the stored precheck_result JSON (structural arms via
+     * groupFromPrecheckJson, never-throw), the ApprovalMO generated flag + the ticket material
+     * blankness (material-source arms), and — ONLY for system-generated material with the
+     * generator wired — a generateTyped re-run whose per-statement classification is
+     * dialect-independent (the dsType argument only renders template-text quoting), so the
+     * null-dialect re-run reproduces the write-time typing exactly. A null generator (unwired
+     * engine / hand-built test service) degrades to the structural arms alone — the
+     * dmlBatchService != null precedent. User-provided material keeps per-statement UNSPECIFIED
+     * (裁决 1: the content is never inspected). Never throws; missing signals → an empty list
+     * (信号不足如实降级).
+     */
+    private List<GovTicketV2GroupVO.RecoveryStmtVO> buildGroupRecoveryStatements(DmTicketDbStmtDO g,
+                                                                                 ApprovalMO mo,
+                                                                                 String ticketRollBackSql) {
+        Boolean generated = mo != null ? mo.getRollBackSqlGenerated() : null;
+        com.clougence.clouddm.console.web.component.governance.RollbackGenResult gen = null;
+        if (Boolean.TRUE.equals(generated) && rollbackSqlGenerator != null) {
+            gen = rollbackSqlGenerator.generateTyped(g.getSqlContent(), null);
+        }
+        com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.Result result
+            = com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.infer(
+                recoveryInput(
+                    List.of(com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer
+                        .groupFromPrecheckJson(g.getPrecheckResult())),
+                    generated,
+                    Boolean.FALSE.equals(generated) && StringUtils.isNotBlank(ticketRollBackSql),
+                    gen));
+        List<GovTicketV2GroupVO.RecoveryStmtVO> views = new ArrayList<>();
+        for (com.clougence.clouddm.console.web.component.governance.RecoveryTypeInferrer.StmtView v : result.getStatements()) {
+            GovTicketV2GroupVO.RecoveryStmtVO item = new GovTicketV2GroupVO.RecoveryStmtVO();
+            item.setIndex(v.getIndex());
+            item.setType(v.getType());
+            item.setInferredRecovery(v.getInferredRecovery() != null ? v.getInferredRecovery().name() : null);
+            views.add(item);
+        }
+        return views;
     }
 
     /**

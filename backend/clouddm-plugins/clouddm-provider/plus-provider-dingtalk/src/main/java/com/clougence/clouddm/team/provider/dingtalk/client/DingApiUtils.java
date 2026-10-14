@@ -53,6 +53,11 @@ class DingApiUtils {
         if (form.getRollBackSql() != null) {
             params.add(new StartProcessInstanceRequestFormComponentValues().setName(DingConstant.FORM_SQL_ROLLBACK_SQL).setValue(safeLength(form.getRollBackSql(), 4000, false)));
         }
+        // C10 M2: 恢复类型标注(值=本地化标签+恒常未演练后缀,QueryApprovalHandler 装配);
+        // 组件按名匹配 OA 模板控件——模板未配置同名控件时该值不展示(联调对齐项)
+        if (form.getRecoveryType() != null) {
+            params.add(new StartProcessInstanceRequestFormComponentValues().setName(DingConstant.FORM_SQL_RECOVERY_TYPE).setValue(safeLength(form.getRecoveryType(), 400, true)));
+        }
         if (form.getAffectCount() != null) {
             params.add(new StartProcessInstanceRequestFormComponentValues().setName(DingConstant.FORM_SQL_AFFECT_LINE).setValue(String.valueOf(form.getAffectCount())));
         }
@@ -94,6 +99,10 @@ class DingApiUtils {
         params.add(new ProcessForecastRequestFormComponentValues().setName(DingConstant.FORM_SQL_EXECUTE_SQL).setValue(safeLength(form.getExecuteSql(), 4000, false)));
         if (form.getRollBackSql() != null) {
             params.add(new ProcessForecastRequestFormComponentValues().setName(DingConstant.FORM_SQL_ROLLBACK_SQL).setValue(safeLength(form.getRollBackSql(), 4000, false)));
+        }
+        // C10 M2: 恢复类型标注(与 getQueryFormParams 同款按名匹配,联调对齐项)
+        if (form.getRecoveryType() != null) {
+            params.add(new ProcessForecastRequestFormComponentValues().setName(DingConstant.FORM_SQL_RECOVERY_TYPE).setValue(safeLength(form.getRecoveryType(), 400, true)));
         }
         if (form.getAffectCount() != null) {
             params.add(new ProcessForecastRequestFormComponentValues().setName(DingConstant.FORM_SQL_AFFECT_LINE).setValue(String.valueOf(form.getAffectCount())));

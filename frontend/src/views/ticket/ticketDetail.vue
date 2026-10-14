@@ -569,6 +569,14 @@
               {{ $t('cha-kan-hui-gun-sql') }}
               <Tag v-if="ticketDetail.rollBackSqlGenerated" size="small" color="warning">{{ $t('xi-tong-sheng-cheng') }}</Tag>
               <Tag v-else size="small" color="success">{{ $t('shen-qing-ren-tian-xie') }}</Tag>
+              <!-- C10 M2 (design D6 色阶): 恢复类型 Tag + 恒常「未演练」伴随标注(红线 3——
+                   recoveryVerified 是读时常量 false,平台无恢复物验证/演练机制,不造已验证幻觉) -->
+              <Tag v-if="ticketDetail.recoveryType" size="small" :color="recoveryTagColor(ticketDetail.recoveryType)">
+                {{ $t(recoveryLabelI18n(ticketDetail.recoveryType)) }}
+              </Tag>
+              <Tag v-if="ticketDetail.recoveryType && ticketDetail.recoveryVerified === false" size="small" color="default">
+                {{ $t('recovery-unverified') }}
+              </Tag>
             </Button>
             <Button v-if="ticketDetail.impactScopeText" type="text" @click="showImpactScopeModal = true">
               <Icon type="ios-information-circle-outline" />
@@ -797,8 +805,35 @@
         {{ $t('cha-kan-hui-gun-sql') }}
         <Tag v-if="ticketDetail.rollBackSqlGenerated" size="small" color="warning">{{ $t('xi-tong-sheng-cheng') }}</Tag>
         <Tag v-else size="small" color="success">{{ $t('shen-qing-ren-tian-xie') }}</Tag>
+        <!-- C10 M2 (design D6): 恢复类型 Tag + 恒常「未演练」伴随标注(红线 3,与按钮区同源) -->
+        <Tag v-if="ticketDetail.recoveryType" size="small" :color="recoveryTagColor(ticketDetail.recoveryType)">
+          {{ $t(recoveryLabelI18n(ticketDetail.recoveryType)) }}
+        </Tag>
+        <Tag v-if="ticketDetail.recoveryType && ticketDetail.recoveryVerified === false" size="small" color="default">
+          {{ $t('recovery-unverified') }}
+        </Tag>
       </template>
       <read-only-editor :text="ticketDetail.rollBackSql" key="rollback" :max-height="500" :ds-type="ticketDetail.dataSourceType" />
+      <!-- C10 M2 (裁决 2 逐语句清单展示不落库): 读时重算的逐语句恢复推断折叠区(数据源=groupList
+           VO recoveryStatements 投影)。空清单(legacy/无结构信号)→ 整块不渲染,如实降级。note 一律
+           按 inferredRecovery 用 i18n 重渲染(后端 StmtView.note 为中文调试串,不出后端)。 -->
+      <div v-if="recoveryStmtViews.length" class="recovery-stmt-fold">
+        <div class="recovery-stmt-fold__head" @click="recoveryStmtsOpen = !recoveryStmtsOpen">
+          <Icon :type="recoveryStmtsOpen ? 'ios-arrow-down' : 'ios-arrow-forward'" />
+          <span class="recovery-stmt-fold__title">{{ $t('recovery-stmt-list-title') }}</span>
+          <span class="recovery-stmt-fold__count">{{ recoveryStmtViews.length }}</span>
+          <span class="recovery-stmt-fold__action">{{ recoveryStmtsOpen ? $t('wu-suo-seg-shou-qi') : $t('wu-suo-seg-zhan-kai') }}</span>
+        </div>
+        <div v-show="recoveryStmtsOpen" class="recovery-stmt-fold__body">
+          <div v-for="row in recoveryStmtViews" :key="row.key" class="recovery-stmt-row">
+            <span v-if="row.groupName" class="recovery-stmt-row__group">{{ row.groupName }}</span>
+            <span class="recovery-stmt-row__index">{{ $t('wu-suo-seg-yu-ju', [row.index + 1]) }}</span>
+            <Tag v-if="row.type" size="small">{{ row.type }}</Tag>
+            <Tag size="small" :color="recoveryTagColor(row.recovery)">{{ $t(recoveryLabelI18n(row.recovery)) }}</Tag>
+            <span class="recovery-stmt-row__note">{{ $t(recoveryNoteI18n(row.recovery)) }}</span>
+          </div>
+        </div>
+      </div>
       <template #footer>
         <Button type="primary" @click="copyText(ticketDetail.rollBackSql)">
           {{ $t('fu-zhi-sql') }}
@@ -1033,6 +1068,7 @@ import DmlBatchGroupPanel from './components/DmlBatchGroupPanel.vue';
 import DingBridgeOutboundPanel from '@/components/function/DingBridgeOutboundPanel.vue';
 import { SEGMENT_STATUS_I18N, segmentRangeI18n } from '@/const/ghost';
 import { segmentTypeBadgeI18n, mapDmlBatchSegmentError } from '@/const/dmlBatch';
+import { recoveryTagColor, recoveryLabelI18n, recoveryNoteI18n } from '@/const/recoveryType';
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 5000;
 const TICKET_TERMINAL_STATUSES = new Set(['REJECTED', 'FINISHED', 'CLOSED', 'CANCELED', 'FAILED']);
@@ -1246,6 +1282,9 @@ export default {
       showAutoExecuteModal: false,
       showManualExecuteModal: false,
       showRollbackSqlModal: false,
+      // C10 M2: the per-statement recovery-inference fold inside the rollback modal (collapsed by
+      // default — companion display material, 裁决 2)
+      recoveryStmtsOpen: false,
       showImpactScopeModal: false,
       showTicketContentModal: false,
       sqlContentAction: '',
@@ -1371,6 +1410,27 @@ export default {
     // backstop — 裁决 #11) and SPECIFY_TIME is rejected (AsyncTask 无定时承载 — 裁决 #17).
     ticketHasDmlBatchSegment() {
       return this.v2GroupList.some((group) => this.groupSegments(group).some((seg) => seg && seg.type === 'DML_BATCH'));
+    },
+    // C10 M2 (裁决 2 读时重算不落库): the rollback modal's per-statement recovery-inference fold —
+    // flattened off the groupList VO's recoveryStatements projection (backend recomputes it at
+    // read time; never persisted). Empty for legacy/unsegmented tickets → the fold renders
+    // nothing at all (信号不足如实降级). The backend StmtView.note is a zh debug string and stays
+    // backend-side — the semantic note is re-rendered via i18n off inferredRecovery (M2.2 措辞表).
+    recoveryStmtViews() {
+      const views = [];
+      const multiGroup = this.v2GroupList.length > 1;
+      this.v2GroupList.forEach((group) => {
+        (group.recoveryStatements || []).forEach((stmt) => {
+          views.push({
+            key: `${group.groupId}-${stmt.index}`,
+            groupName: multiGroup ? group.dbName : '',
+            index: stmt.index,
+            type: stmt.type,
+            recovery: stmt.inferredRecovery || 'UNSPECIFIED'
+          });
+        });
+      });
+      return views;
     },
     // ---- the adjudication modal's material (design §7.4: 批定位+幂等红绿字+lastBatchError) ----
     dmlResolutionProgress() {
@@ -2295,6 +2355,11 @@ export default {
               this.ticketDetail.ticketMessage = resQuery.data?.ticketMessage || '';
               this.ticketDetail.rollBackSql = resQuery.data?.rollBackSql || '';
               this.ticketDetail.rollBackSqlGenerated = resQuery.data?.rollBackSqlGenerated || false;
+              // C10 M2 (design D5): the recovery grade — never null on the wire (the honest
+              // UNSPECIFIED fallback; the || is the frontend tolerance) + the CONSTANT-false
+              // honesty flag (red line 4: no recovery_verified column exists, no verified illusion)
+              this.ticketDetail.recoveryType = resQuery.data?.recoveryType || 'UNSPECIFIED';
+              this.ticketDetail.recoveryVerified = resQuery.data?.recoveryVerified ?? false;
               this.ticketDetail.riskLevel = resQuery.data?.riskLevel || '';
               this.ticketDetail.impactScopeText = resQuery.data?.impactScopeText || '';
               this.ticketDetail.rowsEstimated = resQuery.data?.rowsEstimated ?? null;
@@ -2585,6 +2650,16 @@ export default {
     // ==================== B7 N3: DML_BATCH segment face (design §10) ====================
     segmentTypeBadgeI18n(segType) {
       return segmentTypeBadgeI18n(segType);
+    },
+    // C10 M2: recovery-type display maps (const/recoveryType.js single authority — design D6 措辞表)
+    recoveryTagColor(recoveryType) {
+      return recoveryTagColor(recoveryType);
+    },
+    recoveryLabelI18n(recoveryType) {
+      return recoveryLabelI18n(recoveryType);
+    },
+    recoveryNoteI18n(recoveryType) {
+      return recoveryNoteI18n(recoveryType);
     },
     // GHOST plan segments freeze `rows` (B6), DML_BATCH plan segments freeze `estimatedRows` (B7)
     segmentRowsOf(seg) {
@@ -5101,6 +5176,67 @@ export default {
     font-size: 14px;
     font-weight: 500;
     color: #181d26;
+  }
+}
+
+// C10 M2: 逐语句恢复推断折叠区(回滚SQL modal 内)——flat style mirroring .gov-v2-segments
+// (soft surface + row contrast, no nested frames per ui-layout-consistency)
+.recovery-stmt-fold {
+  margin-top: 12px;
+  background: var(--bg-secondary, #f8fafc);
+  border-radius: 6px;
+  padding: 8px 12px;
+
+  .recovery-stmt-fold__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: #181d26;
+  }
+
+  .recovery-stmt-fold__title {
+    font-weight: 500;
+  }
+
+  .recovery-stmt-fold__count {
+    color: #707070;
+    font-size: 12px;
+  }
+
+  .recovery-stmt-fold__action {
+    margin-left: auto;
+    color: #707070;
+    font-size: 12px;
+  }
+
+  .recovery-stmt-fold__body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 10px;
+  }
+
+  .recovery-stmt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+
+    .recovery-stmt-row__group {
+      color: #707070;
+    }
+
+    .recovery-stmt-row__index {
+      color: #41454d;
+    }
+
+    .recovery-stmt-row__note {
+      color: #707070;
+    }
   }
 }
 
