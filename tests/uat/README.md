@@ -15,17 +15,19 @@
 | `README.md` | 本总纲:索引+口径+Runbook+映射表 | M1 交付 |
 | `traceability-matrix.md` | 需求追踪矩阵三件套:C 级 12 行主表 + 计划 §7 硬门槛 17 条对照表 + R 级 91 行附录 | M1 交付 |
 | `integration-scenarios.md` | 联调场景汇总:D3 联调债 14 项 + C7 真库六场景成文 + 真库场景 5/6 + 九迁移首启幂等 + 桥接 M5/5A 索引 | M1 交付 |
-| `e1-datasource.md` | E1 数据源管理(C1 审计净化验收/凭据轮转后回归/CRUD 冒烟) | M2 填充(占位) |
-| `e2-query-masking.md` | E2 查询与脱敏(C6 五类出口 + 真库场景 6 展开 + C3 诚实标注) | M2 填充(占位) |
-| `e3-ticket-approval.md` | E3 工单与审批(C3/C5 round/C10 恢复类型标注;prod-verification Chain One/Two 收编索引) | M2 填充(占位) |
-| `e4-release-chain.md` | E4 发布链(最大域:C4 撞闸+override/C7 门禁序+冻结计划/override 双表隔离) | M2 填充(占位) |
-| `e5-lockfree.md` | E5 无锁变更(两手册引用 + 发布链 GHOST 重放/DML_BATCH 阻断,与 e4 交叉) | M2 填充(占位) |
-| `e6-diagnosis.md` | E6 诊断与会话运维(无 C 波次改动,冒烟级回归) | M2 填充(占位) |
-| `e7-dingtalk-bridge.md` | E7 钉钉桥接(dingtalk_bridge.md 索引+增量核对,不复制) | M2 填充(占位) |
-| `e8-audit-permission.md` | E8 审计与权限(C8 四列/详情端点/retention/导出 15 列 + 五角色矩阵 + 权限拒绝面) | M2 填充(占位) |
-| `e9-openapi.md` | E9 开放 API(15 端点×签名/租户隔离/守卫三维抽查;5A 命令面交叉引用 e7) | M2 填充(占位) |
+| `e1-datasource.md` | E1 数据源管理(C1 审计净化验收/凭据轮转后回归/CRUD 冒烟) | M2 交付(8 用例,F1 区间 6~10) |
+| `e2-query-masking.md` | E2 查询与脱敏(C6 五类出口每类 ≥2 + 真库场景 6 UI 面展开 + C3 诚实标注) | M2 交付(18 用例,F1 区间 15~20) |
+| `e3-ticket-approval.md` | E3 工单与审批(C3/C5 round 观察面/C10 恢复类型标注;prod-verification Chain One/Two 收编索引) | M2 交付(16 用例,F1 区间 15~20) |
+| `e4-release-chain.md` | E4 发布链(最大域:C4 撞闸+override/C7 门禁序+冻结计划/override 双表隔离;安全底线+DENY+N1~N6 收编索引) | M2 交付(21 用例,F1 区间 20~25) |
+| `e5-lockfree.md` | E5 无锁变更(两手册引用 + 发布链 GHOST 重放/DML_BATCH 阻断交叉 e4 + 三点明示/gh-ost 旧表文案零削弱核验) | M2 交付(13 用例,F1 区间 12~18) |
+| `e6-diagnosis.md` | E6 诊断与会话运维(无 C 波次改动,冒烟级回归) | M2 交付(6 用例,F1 区间 4~6) |
+| `e7-dingtalk-bridge.md` | E7 钉钉桥接(dingtalk_bridge.md 章节路由索引+6 项增量核对,不复制) | M2 交付(索引+6 增量核对,F1 口径=收编手册不重写) |
+| `e8-audit-permission.md` | E8 审计与权限(C8 四列/详情端点/retention/导出 15 列 + ROLLBACK_MATERIAL 行 + 五角色矩阵 + GOV_*_OVERRIDE 双标签拒绝面) | M2 交付(16 用例,F1 区间 15~20) |
+| `e9-openapi.md` | E9 开放 API(15 端点全集×签名/租户隔离/守卫三维抽查;additive 面 externalRound/skipOutbound/ledger-list;5A 交叉 e7) | M2 交付(11 用例,F1 区间 10~15) |
 
 九域划分出处:survey E 节(E1~E9 入口清单,9/9 域均具备「前端页面+后端 API+权限点」三要素)。
+
+**用例总数对账(M2.10)**:8+18+16+21+13+6+6+16+11 = **115 条**(含 e2 E2-12a),落于 F1 总量级 ~110-135 区间;每域均达 F1 区间下限(机械计数见各文件用例编号)。既有手册承载的场景(手册 §1~§10 约 60 场景+prod-verification Chain/底线/DENY+两无锁契约手册套件)不计入本数(引用不复制,裁决 4)。交叉引用双向可达口径(A8):每域文件头部「矩阵对应」节→矩阵 C 级/R 级行,矩阵「验收方式②」列→e 域编号;IS-*/MIG-* 引用↔integration-scenarios 定义;手册章节引用↔dingtalk_bridge/prod-verification 实存章节。
 
 ## 2. 既有手册收编索引(只索引不复制,单一权威源)
 
@@ -95,7 +97,7 @@ G 级(6 差距)不单设表——由 C 级「需求源(G 映射)」列表达(G4/
 | DML 分批 | DmlBatch* 12 类 | e5 + tests/dml/lockfree_dml.md + 真库场景 4 |
 | DDL/在线变更 | Ghost* 10 类 + plus-online-ddl 65 | e5 + tests/ghost/lockfree_ddl.md + 真库场景 3 |
 | 脱敏 | plus-sec-rules 49 + DbErrorSanitizerTest 17 | e2 + 真库场景 6(integration-scenarios §3) |
-| 回滚/恢复 | RecoveryTypeInferTest 42 + RollbackSqlGeneratorTest 16 pin | e3(C10 Tag/未演练/折叠区) |
+| 回滚/恢复 | RecoveryTypeInferTest 42 + RollbackSqlGeneratorTest 27(含 16 逐字节 pin,当前 XML 实测) | e3(C10 Tag/未演练/折叠区) |
 | 前端流程 | tests/frontend/ 30 文档(人工) | e1~e9 浏览器面交叉引用 |
 | 升级/安装 | **无自动化承载**(survey C5/G10) | integration-scenarios.md §4(MIG-1~9 首启+重跑幂等) |
 

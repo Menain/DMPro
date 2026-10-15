@@ -127,7 +127,7 @@
 | R2 | dm_approval.approval_round int NOT NULL DEFAULT 1(V202610110002)+DO/XML additive | ①+③(MIG-3/5A.10) | 4c31d85c;手册 5A.10 |
 | R3 | clearOutboundForNewRound 改 round+1 语义(appro_identity 置 NULL+出站四列重置+自增) | ① | ResubmitOutboundResetTest |
 | R4 | 出站 flows/create.context additive 携带 round(桥接不升级不破) | ①+③(5A.0 桥接侧适配) | BridgeCreateRequest.Context;手册 5A.0 |
-| R5 | 入站 externalRound additive+比对不等→ROUND_MISMATCH 拒绝 | ①+③(5A.5) | ExternalCommandTest |
+| R5 | 入站 externalRound additive+比对不等→ROUND_MISMATCH 拒绝 | ①+③(5A.4/5A.5)〔check 修正:原仅 5A.5,round 不符拒绝载体=5A.4,宽松跳过=5A.5〕 | ExternalCommandTest |
 | R6 | identity 空窗观测:log.warn+成功事件 identityBackfill 标记(不拒绝) | ① | 4c31d85c |
 | R7 | strict 档预留:govExternalCommandStrictFlow 默认 false(宽松);语义文档化 | ①+③(5A.9/IS-D3-13 灰度评估) | RootUserConfig;手册 5A.9 |
 | R8 | executeTicket/returnTicket 拒绝路径落 EXTERNAL_COMMAND_REJECTED 审计(O-C2-1 关闭) | ①+③(5A.8) | GovOpenApiServiceImpl;4c31d85c M8 |
@@ -196,11 +196,11 @@
 | R | 摘要 | 验收方式 | 证据指针 |
 |---|---|---|---|
 | R1 | 出站发起基建:桥接 KV 四键(dingBridgeBaseUrl/AuthToken(isSecret)/TimeoutMs/OutboundEnable 默认 false)+HTTP 客户端 never-throw+afterCommit 触发+outbound_status 状态机+externalFlowId 双源回填+业务单号幂等键 | ①+③(手册 §0/§1) | ba6bd748;DingBridgeOutboundServiceTest 29 |
-| R2 | 出站发起场景:途径 2(发布单 External 创建成功)+途径 3(PROD_DML DIRECT 落 WAIT_APPROVAL)+止血开关关闭全不出站(纯拉模式向后兼容) | ①+③(手册 §1~§2) | ba6bd748;DingBridgeFlowTriggerTest |
-| R3 | 发起失败补偿:FAILED+原因落库+AlertPush 告警+详情页手动重发端点+后台 sweep 重试(上限+退避)+重试幂等 | ①+③(手册 §3;§9.1 STARTING 悬挂窗口) | ba6bd748;DingBridgeSweepRetryTest |
-| R4 | 出站撤销通知:工单 cancel/close、发布单 cancel/return 人工终止点 afterCommit 调桥接撤销;失败不阻塞;无 externalFlowId 跳过 | ①+③(手册 §4) | ba6bd748;DingBridgeCancelNotifyTest |
-| R5 | 台账开放读:/api/open/dbchange/ledger/list——AK/SK puid 强制租户隔离(绝不继承 console 无过滤)+分页过滤对齐+VO 脱敏+@McpTool | ①+③(手册 §5) | 1ec7ddf7;GovOpenApiLedgerListTest |
-| R6 | PROD_DML 单级审批选项显性化:提交页 approvalMode 语义联动(External→「钉钉审批(外部流程)」文案);VIA_RELEASE 逐位不变(回归 pin) | ①+②(提交页文案)+③(手册 §6) | 11418b0f |
+| R2 | 出站发起场景:途径 2(发布单 External 创建成功)+途径 3(PROD_DML DIRECT 落 WAIT_APPROVAL)+止血开关关闭全不出站(纯拉模式向后兼容) | ①+③(手册 §1/§3)〔check 修正 2026-10-15:原 §1~§2,止血臂载体=§3〕 | ba6bd748;DingBridgeFlowTriggerTest |
+| R3 | 发起失败补偿:FAILED+原因落库+AlertPush 告警+详情页手动重发端点+后台 sweep 重试(上限+退避)+重试幂等 | ①+③(手册 §2;§9.1 STARTING 悬挂窗口)〔check 修正:原 §3,失败补偿载体=§2〕 | ba6bd748;DingBridgeSweepRetryTest |
+| R4 | 出站撤销通知:工单 cancel/close、发布单 cancel/return 人工终止点 afterCommit 调桥接撤销;失败不阻塞;无 externalFlowId 跳过 | ①+③(手册 §6)〔check 修正:原 §4,撤销通知载体=§6〕 | ba6bd748;DingBridgeCancelNotifyTest |
+| R5 | 台账开放读:/api/open/dbchange/ledger/list——AK/SK puid 强制租户隔离(绝不继承 console 无过滤)+分页过滤对齐+VO 脱敏+@McpTool | ①+③(手册 §4)〔check 修正:原 §5,ledger/list 载体=§4.1~4.3〕 | 1ec7ddf7;GovOpenApiLedgerListTest |
+| R6 | PROD_DML 单级审批选项显性化:提交页 approvalMode 语义联动(External→「钉钉审批(外部流程)」文案);VIA_RELEASE 逐位不变(回归 pin) | ①+②(提交页文案)+③(手册 §5/§8.1)〔check 修正:原 §6,途径 3 载体=§5+浏览器面 §8.1〕 | 11418b0f |
 | R7 | 直连通道 deprecated:SQL_TICKET_INFO 类型下拉不再提供 DingTalk/Feishu/Wechat(前端过滤+后端同步);**存量已配置环境行为逐位不变**;插件零删除 | ①+②(下拉)+③(手册 §7) | d5386a86;ApprovalTypeDeprecationTest |
 | R8 | 契约文档:orchestration §10(出站桥接)/§11(三途径时序)+桥接侧新增接口契约+联调手册新建 | ①(文档) | 67afc8ee;tests/governance/dingtalk_bridge.md |
 | R9 | 联调验收:与桥接项目实际联调三途径(还 09-16 欠账);checklist 入 tests/ 手册 | **③(IS-D3-1;手册 §1~§10 全表执行——本行即「留联调」硬判据典型)** | dingtalk_bridge.md §10 A1~A9 对照 |
