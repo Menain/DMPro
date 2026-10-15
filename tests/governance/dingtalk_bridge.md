@@ -1,8 +1,8 @@
 # 钉钉审批桥接集成联调手册
 
 > 覆盖:出站发起主链(途径 2/3)/ 失败补偿 / 止血开关 / 途径 1 全链(台账开放读+组合命令)/ 途径 3 全链(双选项+退回映射)/ **审批轮次绑定(ADR-012,5A 章,项目末尾统一联调)** / 撤销通知 / 直连通道退役 / 前端三面浏览器验收 / 运维处置。
-> 代码基线:4 笔提交(`ba6bd748` 出站基建 / `1ec7ddf7` 台账开放读 / `d5386a86` 直连 deprecated / `11418b0f` 前端三面)+ M4 文档面 + **M4b skipOutbound 补丁**(2026-10-10,待提交:开放 create FO additive 参数 + 透传 + 钩子守卫 + 5 钉)。
-> 自动化基线:`:cgdm-console:test` 114 类 / 1604 / 0 失败(M4b +5 钉);全后端 2157 / 0(skip 10 = 插件模块预存;M4b 仅 console 模块 +5,其余 21 模块由 M3 check 复跑背书)——桥接七套 102 钉 + GovOpenApiServiceImplTest 2 透传钉背书,本手册聚焦**真实桥接联调 + 浏览器面**。
+> 代码基线:4 笔提交(`ba6bd748` 出站基建 / `1ec7ddf7` 台账开放读 / `d5386a86` 直连 deprecated / `11418b0f` 前端三面)+ M4 文档面(`67afc8ee`)+ **M4b skipOutbound 补丁**(2026-10-10,**已提交 `96f2e70e`**:开放 create FO additive 参数 + 透传 + 钩子守卫 + 5 钉)。〔措辞修正 2026-10-14,C9 G5:原「待提交」为过时表述〕
+> 自动化基线(2026-10-14 更新,HEAD=`9a0e6352`,C9 G5 修正):`:cgdm-console:test` 124 类 / 1876 / 0 失败;全后端 2438 / 0 失败 / 10 skip(插件模块预存)——桥接七套 106 钉(29/11/24/18/5/13/6)+ GovOpenApiServiceImplTest 2 透传钉背书,本手册聚焦**真实桥接联调 + 浏览器面**。(M4b 提交时点 2026-10-10 旧基线:114 类 / 1604,七套 102 钉;全后端 2157 / 0 / skip 10;桥接面自 `96f2e70e` 后仅 C5 additive 改动——出站 context 携带 round(`4c31d85c`,OutboundService +3 钉/ResubmitOutboundReset +1 钉),手册场景语义不变;其余基线增量为 C1~C10 波次)
 > 契约参考:`docs/governance/openapi-orchestration.md` §10(出站桥接)/§11(三途径时序);`.trellis/spec/backend/governance-contracts.md`(出站桥接契约段)。
 
 ## ⛔ 红线(执行前必读)

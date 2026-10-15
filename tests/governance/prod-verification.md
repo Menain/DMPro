@@ -345,6 +345,24 @@
 
 ---
 
+## C4~C10 波次增量门禁抽查点（2026-10-14 C9 增补；只增不删——上方安全底线 8 条与 DENY 矩阵 12 case 原文零削弱、全部继续有效）
+
+> 背景：本清单成文后的 P0 加固波次（C4 schema 门禁 fail-closed / C5 审批轮次绑定 / C6 脱敏 fail-closed / C7 发布链冻结计划 / C8 审计链）新增了服务端门禁面。以下增量 case 与既有 DENY 矩阵同纪律：真实环境抽查只做安全关键项，service 级断言已由自动化测试钉住（console 1876 / 0 失败，2026-10-14，HEAD=9a0e6352）。完整执行载体（前置/步骤/预期/证据五元组留位）见 `tests/uat/integration-scenarios.md`（IS-C7-1~6、IS-D3-3/4/5/7、IS-SEC-5、IS-MASK-6）；本节只登记抽查点，两处描述不一致时以 integration-scenarios.md 执行块为准。
+> 凭据纪律沿本清单既有约定：验证 SQL 只写口径不回显值；篡改类操作仅限隔离测试环境（Skip Conditions 末条同款）。
+
+| # | 增量 case | 真实环境操作步骤（测试库） | 预期结果 | 出处 |
+|---|-----------|--------------------------|----------|------|
+| N1 | Schema 门禁 UNVERIFIABLE 拒绝（默认生产模式无「WARN_SKIP 后自动继续」） | 构造发布单后、派发前使 PROD schema 不可读（临时断开目标库连接或收回元数据读取权限）→ 开始执行 | 不派发，stmt FAILED + 事件 `RELEASE_SCHEMA_GATE_UNVERIFIABLE`（基础设施不可知拦截，与确认违规 `RELEASE_SCHEMA_PRECHECK_FAILED` 区分）；数据库无对应变更；9 类原 WARN_SKIP 场景同样拒绝（17 类分类反转） | C4/ADR-011（`9b4d70ef`）；硬门槛 P0-2/P0-3 |
+| N2 | Schema 门禁 override 一次性消费放行 | N1 拒绝后，持 `GOV_SCHEMA_GATE_OVERRIDE` 标签账号在发布单详情入口 grant override（理由必填+有效期）→ 重新派发 → 再次派发 | grant 落 HIGH 授权审计；重派发消费 override 放行 + 事件 `RELEASE_SCHEMA_GATE_OVERRIDE`；override 行 consumed（一次性 CAS），第二次派发需重新 grant；break-glass KV（govReleaseSchemaPrecheckBlock/DiffBlock）降级仅影响 UNVERIFIABLE，确认违规不可 override | C4 R5/R6；IS-D3-3；硬门槛 P0-3 |
+| N3 | override 双表隔离（Schema 门禁 vs 发布路由） | 仅持 `GOV_SCHEMA_GATE_OVERRIDE` 标签的账号调用 route override 端点（grant/list），及仅持 `GOV_ROUTE_OVERRIDE` 标签的账号调用 schema gate override 端点 | 两方向均服务端拒绝（前端隐藏不代替后端拒绝）；`dm_gov_schema_gate_override` 与 `dm_gov_route_override` 各自标签管理、互不串位；活性行唯一（V202610130004 生成列唯一约束）阻止重复 grant | C4 R4 + C7 R8 + C8 M5.3（`9b4d70ef`/`f6180cb7`/`a36cea1f`）；硬门槛 F-6 |
+| N4 | 发布计划漂移永不可 override | 篡改 `dm_prod_release_stmt_segment` 任一 plan 列（隔离测试库）→ 派发或 retry | stmt FAILED「Plan drift」+ 事件 `RELEASE_PLAN_DRIFT`（stored vs recomputed hash）；拒发且**无任何 override 出路**（门禁结构不引用 override 服务）；grant route override 后重派发仍拒；plan 拒绝后 precheck/diff 不再执行（门禁序 hash→plan→precheck→diff） | C7 R7/M3（`f6180cb7`）；硬门槛 P0-4 |
+| N5 | DML_BATCH 段发布链阻断 → 路由 override 显式直发 | 含 DML_BATCH 段的冻结计划进发布链 → 派发 → 持 `GOV_ROUTE_OVERRIDE` 账号 grant（理由 ≤1024 + 有效期 ≤7 天）→ 重派发 | 首次派发阻断：stmt FAILED + 事件 `RELEASE_ROUTE_UNSUPPORTED`（披露段号/表/估算行/源工单）+ 前端阻断横幅；override 后重派发：一次性 CAS 消费 + 该段按 AUTOEXEC 显式直发 + 事件 `RELEASE_ROUTE_OVERRIDE`（含覆盖 segIdx 清单）+ HIGH 授权审计 | C7 R5/R8（`478e4f8e`/`f6180cb7`）；IS-C7-5；硬门槛 P0-2「执行计划不支持」 |
+| N6 | 审计详情端点鉴权 + 租户隔离 + 出口掩码 | 无 `RDP_OP_AUDIT_READ` 标签账号调 `GET /api/entry/audit/detail?id=`；再持标签账号读跨租户/不存在 id；再读本租户含敏感键 log_info 的行 | 无标签 → 服务端拒绝；跨租户/缺失 → not-found 语义（不以 403 泄漏存在性）；返回 log_info 敏感键值已 `******`（读侧第二保险，C1 双层敏感键判定，存量未清理行同样被掩） | C8 R6（`a36cea1f`）；IS-D3-7③；硬门槛 P0-7 |
+
+其余 C 波次新增门禁面（GHOST 段能力复核 `RELEASE_ROUTE_CAPABILITY`、审批轮次 `FLOW_ID_MISMATCH`/`ROUND_MISMATCH` 拒绝、脱敏三态 NOT_BOUND/DANGLING/VALID 分层、未知段型 fail-closed 无 DIRECT 回退）执行载体分别在 `tests/uat/integration-scenarios.md`（IS-C7-3、IS-SEC-5、IS-D3-4/5）与 `tests/governance/dingtalk_bridge.md`（§5A），本节不重复登记。
+
+---
+
 ## 双方言真实验证点
 
 > spec §7.2：同一治理链路用例在 MySQL 与 PG 各跑一遍。
